@@ -1,0 +1,5 @@
+# Godot skips this folder. It holds the ORIGINAL Blender/FBX zombie sources
+# (.blend/.fbx). They were converted to .glb in models/characters/ (zombie_1..3,
+# zombie_mix_1/3, ghoul) -- the game uses those. Importing .blend needs Blender
+# installed and breaks the headless sim tests, so the sources stay ignored here
+# as an archive. Safe to move out of the project entirely once you're happy.

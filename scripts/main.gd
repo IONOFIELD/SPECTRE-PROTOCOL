@@ -28,6 +28,21 @@ const MUSIC_BED: String = "res://audio/music/music1.wav"   # loops; Audio owns t
 const AMBIENCE_BED: String = "res://audio/ambience/ghost_town.wav"   # ghost-town bed
 const HUD_FONT: String = "res://fonts/inversionz_unboxed.ttf"   # Inversionz Unboxed, Darrell Flood
 
+# --- Phase 01: living units. [glb, thermal key, scale to ~1.8 m off the model's
+# bounds]. Placeholder temps -- Grok's per-mesh maps refine them later.
+const UNIT_SQUAD: Array = ["res://models/characters/ps1low_poly_night_vision_special_forces_soldier.glb", "cloth", 0.38]
+const UNIT_CIV: Array   = ["res://models/characters/ps1_game_character.glb", "skin", 0.069]
+const UNIT_SAN: Array   = ["res://models/characters/lowpoly_hazmat_suit_ps1_style.glb", "suit_elite", 3.21]
+const ZOMBIES: Array = [
+	"res://models/characters/zombie_1.glb",
+	"res://models/characters/zombie_2.glb",
+	"res://models/characters/zombie_3.glb",
+]
+const ZOMBIE_SCALE: float = 0.32
+const POP_INFECTED: int = 20
+const POP_CIV: int = 12
+const POP_SAN: int = 4
+
 var res_idx := 1
 var snap_res: Vector2i = RESOLUTIONS[1]
 
@@ -45,7 +60,12 @@ var cut_mat: ShaderMaterial
 var agc := AGC.new()
 
 var sim: WorldSim = WorldSim.new()
-var troopers: Array[Trooper] = []
+var views: Array[Node3D] = []          # one visual per sim unit, index-aligned
+var _sfx_pool: Array[AudioStreamPlayer3D] = []
+var _sfx_next: int = 0
+var _sfx_gun: AudioStream
+var _sfx_claw: AudioStream
+var _sfx_death: AudioStream
 var sel_layer: Control
 var drag_start: Vector2 = Vector2.ZERO
 var dragging: bool = false
@@ -99,6 +119,9 @@ func _ready() -> void:
 	set_process_input(true)
 	Audio.play_music(MUSIC_BED, 0.0)   # abrupt cut-in; the track has its own hard start
 	Audio.play_ambience(AMBIENCE_BED, 3.0)   # ghost-town ambience swells under the mix
+	_sfx_gun = load("res://audio/sfx/gun_rifle.wav")
+	_sfx_claw = load("res://audio/sfx/zed_attack.wav")
+	_sfx_death = load("res://audio/sfx/zed_death.wav")
 
 
 func _build_tree() -> void:
@@ -156,6 +179,19 @@ func _build_tree() -> void:
 	cam.far = 2200.0
 	vp.add_child(cam)
 
+	# The ear rides the optic. Combat SFX play from an AudioStreamPlayer3D pool
+	# positioned at each event, so a shot across town reads as distant.
+	var listener: AudioListener3D = AudioListener3D.new()
+	cam.add_child(listener)
+	listener.make_current()
+	for _i in 16:
+		var sp: AudioStreamPlayer3D = AudioStreamPlayer3D.new()
+		sp.bus = "SFX"
+		sp.unit_size = 6.0
+		sp.max_distance = 500.0
+		vp.add_child(sp)
+		_sfx_pool.append(sp)
+
 	city = CityGen.new()
 	vp.add_child(city)
 	city.generate(snap_res)
@@ -212,26 +248,104 @@ func _push_res() -> void:
 	ThermalLib.clear_cache()   # snap_res is baked into every material
 
 
-## PS1 props, thermal-reskinned. FIRST PASS: a short diagnostic row just south of
-## the deploy zone -- verify scale + orientation in the feed, then tune per model
-## and scatter city-wide. Proves the .glb load + thermal re-skin path before we
-## place models for buildings, cars, and bodies.
+## PS1 props, thermal-reskinned.
+## 1) Diagnostic row south of deploy zone (scale / orientation check).
+## 2) Scatter street props on lots/sidewalks + roof HVAC/tank on buildings.
 func _spawn_props() -> void:
 	props = Node3D.new()
+	props.name = "Props"
 	vp.add_child(props)
-	var specs: Array = [
-		["res://models/buildings and scenery/ps1_barrel.glb", "tank", 0.45],
-		["res://models/buildings and scenery/low_poly_psxps2_trash_filled_metal_dumpster.glb", "tank", 0.70],
-		["res://models/buildings and scenery/psx_jerry_can.glb", "tank", 0.30],
-		["res://models/buildings and scenery/psx_air_conditioner.glb", "hvac", 0.40],
-		["res://models/buildings and scenery/stop_sign_psx.glb", "tank", 1.00],
-	]
-	for i in specs.size():
-		var spec: Array = specs[i]
-		var prop: Node3D = ThermalModel.spawn(spec[0], spec[1], snap_res, spec[2])
+	_spawn_prop_diag_row()
+	_scatter_street_props()
+	_scatter_roof_props()
+
+
+## Path, thermal key, uniform scale. Scales are starting guesses — tune in feed.
+const PROP_CATALOG: Dictionary = {
+	"barrel": ["res://models/buildings and scenery/ps1_barrel.glb", "tank", 0.55],
+	"dumpster": ["res://models/buildings and scenery/low_poly_psxps2_trash_filled_metal_dumpster.glb", "body_cold", 0.85],
+	"dumpster_set": ["res://models/buildings and scenery/psx_style_dumpster_set.glb", "body_cold", 0.90],
+	"trash": ["res://models/buildings and scenery/trash_container.glb", "body_cold", 0.80],
+	"jerry": ["res://models/buildings and scenery/psx_jerry_can.glb", "tank", 0.45],
+	"ac": ["res://models/buildings and scenery/psx_air_conditioner.glb", "hvac", 0.55],
+	"tank": ["res://models/buildings and scenery/lowpoly_rusty_tank.glb", "tank", 0.35],
+	"generator": ["res://models/buildings and scenery/emergency_power_station_ps1.glb", "hvac", 0.50],
+	"stop": ["res://models/buildings and scenery/stop_sign_psx.glb", "body_cold", 1.00],
+}
+
+
+func _make_prop(id: String, yaw: float = 0.0) -> Node3D:
+	if not PROP_CATALOG.has(id):
+		return null
+	var s: Array = PROP_CATALOG[id]
+	return ThermalModel.spawn(s[0], s[1], snap_res, s[2], yaw, true)
+
+
+func _spawn_prop_diag_row() -> void:
+	var order: Array = ["barrel", "dumpster", "jerry", "ac", "tank", "generator", "trash", "stop"]
+	for i in order.size():
+		var prop: Node3D = _make_prop(order[i], float(i) * 0.15)
 		if prop != null:
-			prop.position = Vector3(60.0 + float(i) * 4.0, 0.0, 62.0)
+			prop.position = Vector3(58.0 + float(i) * 4.5, 0.0, 60.0)
 			props.add_child(prop)
+
+
+func _scatter_street_props() -> void:
+	if city == null:
+		return
+	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
+	rng.seed = city.seed_value + 91
+	var kinds: Array = ["barrel", "dumpster", "jerry", "trash", "generator", "dumpster_set"]
+	var n: int = mini(28, city.buildings.size() * 2)
+	for i in n:
+		if city.buildings.is_empty():
+			break
+		var b: Dictionary = city.buildings[rng.randi() % city.buildings.size()]
+		# kerb / alley: just outside the footprint
+		var side: int = rng.randi() % 4
+		var x: float = b["x"] + b["w"] * 0.5
+		var z: float = b["z"] + b["d"] * 0.5
+		var pad: float = 1.2 + rng.randf() * 1.5
+		match side:
+			0: z = b["z"] - pad
+			1: z = b["z"] + b["d"] + pad
+			2: x = b["x"] - pad
+			_: x = b["x"] + b["w"] + pad
+		x += rng.randf_range(-1.5, 1.5)
+		z += rng.randf_range(-1.5, 1.5)
+		var id: String = kinds[rng.randi() % kinds.size()]
+		var prop: Node3D = _make_prop(id, rng.randf() * TAU)
+		if prop != null:
+			prop.position = Vector3(x, 0.0, z)
+			props.add_child(prop)
+
+
+func _scatter_roof_props() -> void:
+	if city == null:
+		return
+	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
+	rng.seed = city.seed_value + 17
+	for b in city.buildings:
+		var h: float = float(b["fl"]) * CityGen.FLOOR_H
+		# HVAC: warm condenser on most roofs (replaces greybox tell)
+		if rng.randf() > 0.22:
+			var ac: Node3D = _make_prop("ac", rng.randf() * TAU)
+			if ac != null:
+				var ax: float = b["x"] + b["w"] * rng.randf_range(0.25, 0.75)
+				var az: float = b["z"] + b["d"] * rng.randf_range(0.25, 0.75)
+				ac.position = Vector3(ax, h + 0.9, az)
+				# ground_align put bottom at local 0; roof is world y = h+0.9 base
+				# _make_prop already aligned to y=0 of mesh; position.y is roof deck
+				props.add_child(ac)
+		# Water tank on some roofs
+		if rng.randf() < 0.28:
+			var tk: Node3D = _make_prop("tank", rng.randf() * TAU)
+			if tk != null:
+				tk.position = Vector3(
+					b["x"] + b["w"] * rng.randf_range(0.55, 0.85),
+					h + 0.9,
+					b["z"] + b["d"] * rng.randf_range(0.55, 0.85))
+				props.add_child(tk)
 
 
 func _spawn() -> void:
@@ -243,26 +357,87 @@ func _spawn() -> void:
 	var classes: Array = [&"cdr", &"cbt", &"med", &"snp", &"rec", &"eod"]
 	for i in classes.size():
 		var p: Vector2 = Vector2(70.0 + float(i % 3) * 1.4, 68.0 + float(i / 3) * 1.4)
-		sim.spawn(p, classes[i])
-		var t: Trooper = Trooper.new()
-		t.unit_type = classes[i]
-		t.gait = i * 1.6
-		vp.add_child(t)
-		t.setup(snap_res)
-		troopers.append(t)
+		sim.spawn(p, classes[i], WorldSim.SQUAD)
+	sim.populate(POP_INFECTED, POP_CIV, POP_SAN)   # the horde, the crowd, the hunters
+	# one visual per sim unit, index-aligned with the sim arrays.
+	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
+	rng.randomize()
+	for i in sim.count():
+		var v: Node3D = _make_unit_view(sim.team[i], rng)
+		if v != null:
+			v.position = Vector3(sim.pos[i].x, 0.0, sim.pos[i].y)
+			vp.add_child(v)
+		views.append(v)
 
 
-## The sim owns position and heading. The Trooper node owns nothing but its pose.
-func _sync_visuals(delta: float) -> void:
-	for i in troopers.size():
-		var t: Trooper = troopers[i]
-		t.position = Vector3(sim.pos[i].x, 0.0, sim.pos[i].y)
-		# Godot models face -Z. A yaw of theta points forward at (-sin, 0, -cos).
-		var v: Vector2 = sim.vel[i]
-		if v.length_squared() > 0.04:
-			t.rotation.y = atan2(-v.x, -v.y)
-		t.speed_mps = v.length()
-		t.advance(delta, sim.moving(i))
+## Build the visual for one sim unit: the right model, thermal-reskinned, scaled
+## to human height, ground-aligned. Rigged models get a looping idle so they read
+## as alive. Returns null for an unknown team (still kept in the array, for index
+## alignment).
+func _make_unit_view(team: int, rng: RandomNumberGenerator) -> Node3D:
+	var path: String = ""
+	var mat: String = ""
+	var scale: float = 1.0
+	match team:
+		WorldSim.SQUAD:
+			path = UNIT_SQUAD[0]
+			mat = UNIT_SQUAD[1]
+			scale = UNIT_SQUAD[2]
+		WorldSim.INFECTED:
+			path = ZOMBIES[rng.randi() % ZOMBIES.size()]
+			mat = "zed"
+			scale = ZOMBIE_SCALE
+		WorldSim.CIVILIAN:
+			path = UNIT_CIV[0]
+			mat = UNIT_CIV[1]
+			scale = UNIT_CIV[2]
+		WorldSim.SANITATION:
+			path = UNIT_SAN[0]
+			mat = UNIT_SAN[1]
+			scale = UNIT_SAN[2]
+		_:
+			return null
+	var v: Node3D = ThermalModel.spawn(path, mat, snap_res, scale, 0.0, true)
+	if v != null:
+		_play_idle(v)
+	return v
+
+
+## A rigged model gets its first walk/idle clip, looped, so it isn't frozen in the
+## bind pose. Static models have no AnimationPlayer and no-op.
+func _play_idle(node: Node) -> void:
+	var ap: AnimationPlayer = node.find_child("AnimationPlayer", true, false) as AnimationPlayer
+	if ap == null:
+		return
+	var clips: PackedStringArray = ap.get_animation_list()
+	if clips.is_empty():
+		return
+	var pick: String = clips[0]
+	for c in clips:
+		var lc: String = String(c).to_lower()
+		if lc.contains("walk") or lc.contains("idle") or lc.contains("run"):
+			pick = c
+			break
+	var anim: Animation = ap.get_animation(pick)
+	if anim != null:
+		anim.loop_mode = Animation.LOOP_LINEAR
+	ap.play(pick)
+
+
+## The sim owns position + heading; the view owns nothing but where it stands.
+func _sync_visuals(_delta: float) -> void:
+	for i in views.size():
+		var v: Node3D = views[i]
+		if v == null:
+			continue
+		if not sim.alive[i]:
+			v.visible = false
+			continue
+		v.position = Vector3(sim.pos[i].x, 0.0, sim.pos[i].y)
+		# Godot models face -Z; a heading theta points forward at (-sin, 0, -cos).
+		var vel: Vector2 = sim.vel[i]
+		if vel.length_squared() > 0.04:
+			v.rotation.y = atan2(-vel.x, -vel.y)
 
 
 ## Mouse pixel -> point on the ground plane. The mouse is in window pixels and
@@ -284,6 +459,39 @@ func _screen_of(i: int) -> Vector2:
 	var win: Vector2 = Vector2(get_viewport().get_visible_rect().size)
 	var p: Vector2 = cam.unproject_position(Vector3(sim.pos[i].x, 0.9, sim.pos[i].y))
 	return p * (win / Vector2(snap_res))
+
+
+## The camera holds on the squad -- the first living operator, else its last mark.
+func _follow_point() -> Vector3:
+	for i in sim.count():
+		if sim.team[i] == WorldSim.SQUAD and sim.alive[i]:
+			return Vector3(sim.pos[i].x, 0.0, sim.pos[i].y)
+	return Vector3(cam_tx, 0.0, cam_tz)
+
+
+## Turn the sim's per-tick combat log into positional sound at each event's spot.
+func _drain_audio() -> void:
+	for e in sim.events:
+		var at: Vector3 = Vector3(e["pos"].x, 1.0, e["pos"].y)
+		match e["kind"]:
+			"gunfire":
+				_sfx_at(at, _sfx_gun)
+			"claw":
+				_sfx_at(at, _sfx_claw)
+			"zed_death":
+				_sfx_at(at, _sfx_death)
+			"man_down":
+				Audio.comms("need_backup", 2500)
+
+
+func _sfx_at(at: Vector3, stream: AudioStream) -> void:
+	if stream == null or _sfx_pool.is_empty():
+		return
+	var p: AudioStreamPlayer3D = _sfx_pool[_sfx_next]
+	_sfx_next = (_sfx_next + 1) % _sfx_pool.size()
+	p.stream = stream
+	p.position = at
+	p.play()
 
 
 func _process(delta: float) -> void:
@@ -322,6 +530,7 @@ func _process(delta: float) -> void:
 
 	sim.step(delta)
 	_sync_visuals(delta)
+	_drain_audio()
 
 	var p: float = -1.0
 	if cut_t >= 0.0:
@@ -341,7 +550,7 @@ func _process(delta: float) -> void:
 
 	var f: Dictionary = FEED[feed]
 	if f.follow:
-		var c: Vector3 = troopers[0].position
+		var c: Vector3 = _follow_point()
 		cam_tx = lerpf(cam_tx, c.x, minf(1.0, delta * 1.6))
 		cam_tz = lerpf(cam_tz, c.z, minf(1.0, delta * 1.6))
 	if orbit_auto and f.orbit > 0.0 and cut_t < 0.0:
@@ -479,6 +688,9 @@ func _input(e: InputEvent) -> void:
 			KEY_C: cctv = 0.0 if cctv > 0.0 else 0.85
 			KEY_G: agc.frozen = not agc.frozen
 			KEY_O: orbit_auto = not orbit_auto
+			KEY_F:
+				sim.weapons_free = not sim.weapons_free
+				Audio.comms("open_fire" if sim.weapons_free else "hold_fire", 0)
 			KEY_M:
 				ThermalLib.maps_on = not ThermalLib.maps_on
 				ThermalLib.clear_cache()
@@ -505,9 +717,10 @@ func _rebuild_world() -> void:
 		cars.queue_free()
 	if props != null:
 		props.queue_free()
-	for t in troopers:
-		t.queue_free()
-	troopers.clear()
+	for v in views:
+		if v != null:
+			v.queue_free()
+	views.clear()
 	await get_tree().process_frame
 	city = CityGen.new()
 	vp.add_child(city)
