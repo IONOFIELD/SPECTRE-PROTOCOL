@@ -20,8 +20,6 @@ config/features=PackedStringArray("4.7", "Forward Plus")
 
 [autoload]
 
-; Audio side built in code (buses, ducking, master limiter, music bed).
-; See scripts/audio/audio_director.gd. Reachable everywhere as `Audio`.
 Audio="*res://scripts/audio/audio_director.gd"
 
 [display]

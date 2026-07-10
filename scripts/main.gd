@@ -94,7 +94,7 @@ func _ready() -> void:
 	_build_tree()
 	_spawn()
 	set_process_input(true)
-	Audio.play_music(MUSIC_BED, 2.0)   # the bed fades up over the cold open
+	Audio.play_music(MUSIC_BED, 0.0)   # abrupt cut-in; the track has its own hard start
 
 
 func _build_tree() -> void:

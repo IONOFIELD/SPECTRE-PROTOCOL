@@ -110,8 +110,9 @@ func _clear_effects(bus_idx: int) -> void:
 # ---- music -----------------------------------------------------------------
 
 ## Start (or crossfade to) a looping bed. `source` is a res:// path or an
-## AudioStream. Two players ping-pong so a track change is a real crossfade, not
-## a cut. Loop is forced on the stream here -- see _apply_loop.
+## AudioStream. Two players ping-pong so a track change is a real crossfade.
+## Pass fade_in <= 0 for an abrupt cut-in: full level from the first sample.
+## Loop is forced on the stream here -- see _apply_loop.
 func play_music(source, fade_in := 0.8) -> void:
 	var stream: AudioStream = _as_stream(source)
 	if stream == null:
@@ -120,11 +121,18 @@ func play_music(source, fade_in := 0.8) -> void:
 	_apply_loop(stream)
 	var incoming: AudioStreamPlayer = _music_b if _music_cur == _music_a else _music_a
 	incoming.stream = stream
-	incoming.volume_db = FADE_FLOOR_DB
-	incoming.play()
-	_fade(incoming, 0.0, maxf(0.01, fade_in))
-	if _music_cur != null and _music_cur.playing:
-		_fade(_music_cur, FADE_FLOOR_DB, maxf(0.01, fade_in), true)
+	var was_playing: bool = _music_cur != null and _music_cur.playing
+	if fade_in <= 0.0:
+		incoming.volume_db = 0.0          # abrupt: no ramp from silence
+		incoming.play()
+		if was_playing:
+			_music_cur.stop()
+	else:
+		incoming.volume_db = FADE_FLOOR_DB
+		incoming.play()
+		_fade(incoming, 0.0, fade_in)
+		if was_playing:
+			_fade(_music_cur, FADE_FLOOR_DB, fade_in, true)
 	_music_cur = incoming
 
 
@@ -213,24 +221,30 @@ func _as_stream(source) -> AudioStream:
 	return null
 
 
-## Force a full-file loop regardless of how (or whether) the asset was imported.
-## The WAV importer defaults loop to Disabled; rather than ship a hand-edited
-## .import that Godot may regenerate on open, we set it here at load time. OGG
-## and MP3 use a single `loop` flag.
+## Ensure a full-file forward loop. The loop itself is baked by the importer
+## (edit/loop_mode=1 in music1.wav.import); here we just guarantee FORWARD and,
+## for the raw-parse fallback path only, fill in the bounds.
+##
+## Do NOT derive loop_end from data.size() unless the sample is uncompressed
+## PCM. Godot 4.7 imports WAV as QOA by default, where data.size() is the
+## COMPRESSED byte count -- dividing it by the frame size gives a loop_end far
+## too early (the original "loops as the drums start" bug).
 func _apply_loop(stream: AudioStream) -> void:
 	if stream is AudioStreamWAV:
 		var w := stream as AudioStreamWAV
 		w.loop_mode = AudioStreamWAV.LOOP_FORWARD
-		w.loop_begin = 0
-		var chans: int = 1
-		if w.stereo:
-			chans = 2
-		var bytes_per_sample: int = 2
-		if w.format == AudioStreamWAV.FORMAT_8_BITS:
-			bytes_per_sample = 1
-		var frame_bytes: int = bytes_per_sample * chans
-		if frame_bytes > 0:
-			w.loop_end = w.data.size() / frame_bytes
+		if w.loop_end <= 0:                # only when the import baked no loop
+			var chans: int = 1
+			if w.stereo:
+				chans = 2
+			var frame_bytes: int = 0
+			if w.format == AudioStreamWAV.FORMAT_16_BITS:
+				frame_bytes = 2 * chans
+			elif w.format == AudioStreamWAV.FORMAT_8_BITS:
+				frame_bytes = chans
+			if frame_bytes > 0:
+				w.loop_begin = 0
+				w.loop_end = w.data.size() / frame_bytes
 	elif stream is AudioStreamOggVorbis:
 		(stream as AudioStreamOggVorbis).loop = true
 	elif stream is AudioStreamMP3:
