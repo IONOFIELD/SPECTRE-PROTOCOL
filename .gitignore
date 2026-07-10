@@ -1,0 +1,14 @@
+# --- Godot 4 ---
+# Import cache + generated data; the editor regenerates it on open.
+.godot/
+/android/
+
+# --- Spectre capture rig ---
+# Screenshot output from the SPECTRE_SHOT automated capture path.
+/_verify_*/
+
+# --- OS / editor cruft ---
+desktop.ini
+Thumbs.db
+.DS_Store
+*.tmp
