@@ -17,14 +17,23 @@ const MAX_PUSH: float = 2.4           # m/s of separation velocity, capped
 const CELL: float = 12.0              # measured knee: rebuild cost falls with cell size,
                                       # query cost is flat (call overhead dominates candidates).
 
-# type: [speed m/s, hp, sight m, weapon range m]
+# teams. Civilians never fight (they run); everyone else is hostile across team
+# lines. Infected hunt every warm body; the Sanitation Force clears the lot.
+enum { SQUAD = 0, INFECTED = 1, CIVILIAN = 2, SANITATION = 3 }
+
+# type: [speed m/s, hp, sight m, range m, damage, interval s]. Range is a rifle
+# reach for shooters and a claw reach for the infected; interval is the seconds
+# between a unit's shots or strikes.
 const STATS: Dictionary = {
-	&"cbt": [2.6, 100.0, 80.0, 67.0],
-	&"rec": [4.2, 70.0, 133.0, 52.0],
-	&"snp": [2.3, 80.0, 129.0, 138.0],
-	&"eod": [2.5, 130.0, 73.0, 67.0],
-	&"med": [2.9, 90.0, 77.0, 39.0],
-	&"cdr": [2.8, 120.0, 129.0, 67.0],
+	&"cbt": [2.6, 100.0, 80.0, 67.0, 20.0, 0.5],
+	&"rec": [4.2, 70.0, 133.0, 52.0, 14.0, 0.4],
+	&"snp": [2.3, 80.0, 129.0, 138.0, 65.0, 1.8],
+	&"eod": [2.5, 130.0, 73.0, 67.0, 30.0, 0.9],
+	&"med": [2.9, 90.0, 77.0, 39.0, 12.0, 0.5],
+	&"cdr": [2.8, 120.0, 129.0, 67.0, 22.0, 0.55],
+	&"zed": [1.4, 55.0, 40.0, 1.4, 11.0, 1.1],      # infected: slow, melee, near-ambient
+	&"civ": [2.2, 20.0, 30.0, 0.0, 0.0, 0.0],       # civilian: unarmed, runs
+	&"san": [3.4, 150.0, 95.0, 60.0, 24.0, 0.6],    # Sanitation Force: fast, armoured, ranged
 }
 
 # struct of arrays. Cache friendly, trivially serialisable, and the grid can
@@ -39,6 +48,16 @@ var team: Array[int] = []
 var hp: Array[float] = []
 var alive: Array[bool] = []
 var selected: Array[bool] = []
+var foe: Array[int] = []              # current target index, -1 = none
+var cd: Array[float] = []             # seconds until this unit may fire/strike again
+
+## Combat discipline + output. weapons_free gates squad auto-fire (the hold-fire /
+## open-fire toggle). events is the per-tick log main drains for positional audio:
+## [{kind, pos, team, unit}]. Both cleared at the top of every step().
+var weapons_free: bool = true
+var events: Array = []
+var _dmg: Dictionary = {}             # target index -> damage queued this tick
+var _tick: int = 0
 
 var buildings: Array[Rect2] = []      # ground-plane AABBs, metres
 var nav: NavGrid = NavGrid.new()
@@ -79,6 +98,8 @@ func spawn(p: Vector2, t: StringName, tm: int = 0) -> int:
 	hp.append(STATS[t][1])
 	alive.append(true)
 	selected.append(false)
+	foe.append(-1)
+	cd.append(0.0)
 	return pos.size() - 1
 
 
@@ -176,13 +197,20 @@ func _resolve_buildings(p: Vector2, r: float) -> Vector2:
 
 func step(dt: float) -> void:
 	grid.rebuild(pos, alive)
-
+	events.clear()
+	_dmg.clear()
+	_tick += 1
 
 	for i in count():
 		if not alive[i]:
 			continue
 		var sp: float = speed_of(i)
-		var desired: Vector2 = Vector2.ZERO
+		cd[i] = maxf(0.0, cd[i] - dt)
+		# perception is staggered across ticks; AI units draw their desired
+		# velocity from the fight, the squad's comes from player orders below.
+		if (_tick + i) % 4 == 0:
+			_acquire(i)
+		var desired: Vector2 = _combat(i, sp)
 
 		if has_order[i]:
 			var last: bool = path_i[i] >= path[i].size() - 1
@@ -222,6 +250,8 @@ func step(dt: float) -> void:
 		if vel[i].length_squared() > 0.04:
 			heading[i] = atan2(vel[i].x, vel[i].y)
 
+	_reap()
+
 
 func moving(i: int) -> bool:
 	return vel[i].length_squared() > 0.04
@@ -245,3 +275,153 @@ func load_buildings(rects: Array[Rect2]) -> void:
 	# clearance is the operator radius plus half a nav cell, so a path down the
 	# middle of a free cell always clears the wall.
 	nav.build(rects, lo, hi, RADIUS + NavGrid.CELL * 0.5)
+
+
+# ---- combat ----------------------------------------------------------------
+
+## Does team `a` shoot/claw team `b`? Civilians fight no one. Infected hunt every
+## non-infected; the Sanitation Force clears everyone but itself; the squad
+## engages infected + sanitation.
+func _targets(a: int, b: int) -> bool:
+	if a == b:
+		return false
+	match a:
+		SQUAD:
+			return b == INFECTED or b == SANITATION
+		INFECTED:
+			return b != INFECTED
+		SANITATION:
+			return b != SANITATION
+	return false
+
+
+## Refresh foe[i]: keep a live target still in sight, else acquire the nearest
+## hostile with a clear line. Civilians never acquire -- they only flee.
+func _acquire(i: int) -> void:
+	if team[i] == CIVILIAN:
+		foe[i] = -1
+		return
+	var sight: float = STATS[kind[i]][2]
+	var f: int = foe[i]
+	if f != -1 and f < count() and alive[f] and pos[i].distance_to(pos[f]) <= sight and _los(pos[i], pos[f]):
+		return
+	grid.query_into(pos[i], sight, _near)
+	var best: int = -1
+	var bestd: float = sight * sight
+	for j in _near:
+		if j == i or not alive[j] or not _targets(team[i], team[j]):
+			continue
+		var dd: float = pos[i].distance_squared_to(pos[j])
+		if dd < bestd and _los(pos[i], pos[j]):
+			bestd = dd
+			best = j
+	foe[i] = best
+
+
+## AI desired velocity + any shot/strike for unit i. Squad movement stays player-
+## driven (this returns ZERO for the squad); it only fires here.
+func _combat(i: int, sp: float) -> Vector2:
+	var t: int = team[i]
+	if t == CIVILIAN:
+		return _flee(i, sp)
+	var f: int = foe[i]
+	if f == -1 or not alive[f]:
+		return Vector2.ZERO
+	var d: float = pos[i].distance_to(pos[f])
+	var reach: float = STATS[kind[i]][3]
+	if t == INFECTED:
+		if d <= reach:
+			if cd[i] <= 0.0:
+				_strike(i, f)
+			return Vector2.ZERO
+		return (pos[f] - pos[i]) / maxf(d, 1e-5) * sp
+	# shooters: squad + sanitation. Fire in range with a clear line.
+	if d <= reach and _los(pos[i], pos[f]):
+		if cd[i] <= 0.0 and (t == SANITATION or weapons_free):
+			_strike(i, f)
+		return Vector2.ZERO          # in range: stand and shoot (squad also holds; orders move it)
+	if t == SANITATION:
+		return (pos[f] - pos[i]) / maxf(d, 1e-5) * sp   # out of range: close in
+	return Vector2.ZERO              # squad out of range: hold (the player orders it forward)
+
+
+## A civilian steers directly away from the nearest thing that would kill it.
+func _flee(i: int, sp: float) -> Vector2:
+	var sight: float = STATS[kind[i]][2]
+	grid.query_into(pos[i], sight, _near)
+	var away: Vector2 = Vector2.ZERO
+	for j in _near:
+		if j == i or not alive[j] or not _targets(team[j], CIVILIAN):
+			continue
+		var off: Vector2 = pos[i] - pos[j]
+		var dist: float = off.length()
+		if dist > 1e-3 and dist < sight:
+			away += off / dist * (1.0 - dist / sight)
+	if away.length() > 0.0:
+		return away.normalized() * sp
+	return Vector2.ZERO
+
+
+## Queue a hit on `f` and log the muzzle/claw for audio. Damage is applied in
+## _reap() after the loop, so a kill never depends on unit iteration order.
+func _strike(i: int, f: int) -> void:
+	cd[i] = STATS[kind[i]][5]
+	_dmg[f] = float(_dmg.get(f, 0.0)) + STATS[kind[i]][4]
+	var what: String = "claw" if team[i] == INFECTED else "gunfire"
+	events.append({"kind": what, "pos": pos[i], "team": team[i], "unit": kind[i]})
+
+
+## Apply the tick's queued damage; anything that drops dies and is logged.
+func _reap() -> void:
+	for k in _dmg:
+		if not alive[k]:
+			continue
+		hp[k] -= _dmg[k]
+		if hp[k] <= 0.0:
+			alive[k] = false
+			vel[k] = Vector2.ZERO
+			has_order[k] = false
+			selected[k] = false
+			foe[k] = -1
+			var kd: String = "man_down" if team[k] == SQUAD else ("zed_death" if team[k] == INFECTED else "kill")
+			events.append({"kind": kd, "pos": pos[k], "team": team[k], "unit": kind[k]})
+
+
+## Line of sight on the ground plane: no building blocks the segment a->b. O(buildings)
+## with a cheap bbox reject; buildings are few and this is only asked on a fresh
+## acquire or a shot, never every unit every tick.
+func _los(a: Vector2, b: Vector2) -> bool:
+	var lo: Vector2 = a.min(b)
+	var hi: Vector2 = a.max(b)
+	for r in buildings:
+		if r.position.x > hi.x or r.end.x < lo.x or r.position.y > hi.y or r.end.y < lo.y:
+			continue
+		if _seg_hits_rect(a, b, r):
+			return false
+	return true
+
+
+## Segment [a,b] vs an axis-aligned rect, by slab-clipping the parameter range.
+func _seg_hits_rect(a: Vector2, b: Vector2, r: Rect2) -> bool:
+	var d: Vector2 = b - a
+	var tmin: float = 0.0
+	var tmax: float = 1.0
+	for axis in 2:
+		var da: float = d[axis]
+		var r0: float = r.position[axis]
+		var r1: float = r.end[axis]
+		if absf(da) < 1e-9:
+			if a[axis] < r0 or a[axis] > r1:
+				return false
+		else:
+			var t1: float = (r0 - a[axis]) / da
+			var t2: float = (r1 - a[axis]) / da
+			if t1 > t2:
+				var tmp: float = t1
+				t1 = t2
+				t2 = tmp
+			tmin = maxf(tmin, t1)
+			tmax = minf(tmax, t2)
+			if tmin > tmax:
+				return false
+	return true

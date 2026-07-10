@@ -23,6 +23,8 @@ func _initialize() -> void:
 	test_tunnelling_bound()
 	test_rig_joints_bend_like_a_human()
 	test_navigation_beats_a_wall()
+	test_combat_resolves()
+	test_civilian_flees()
 	perf()
 	print("=== %d failure(s) ===" % failures)
 	quit(1 if failures > 0 else 0)
@@ -239,6 +241,47 @@ func test_rig_joints_bend_like_a_human() -> void:
 			"%d/288 samples inverted, worst margin %.4f" % [bad_knee, worst_knee])
 	check("elbows hang below the shoulder-hand line", bad_elbow == 0,
 			"%d/288 samples inverted, worst margin %.4f" % [bad_elbow, worst_elbow])
+
+
+## A rifleman and one infected in the open: the squad must fire, the infected
+## must take the hits and drop, and it must have closed ground while it lived.
+func test_combat_resolves() -> void:
+	var s: WorldSim = WorldSim.new()
+	s.set_bounds(Vector2(-20, -20), Vector2(120, 120))
+	var trooper: int = s.spawn(Vector2(50, 50), &"cbt", WorldSim.SQUAD)
+	var zed: int = s.spawn(Vector2(50, 62), &"zed", WorldSim.INFECTED)   # 12 m off, inside cbt reach
+	var start: float = s.hp[zed]
+	var shots: int = 0
+	var killed: bool = false
+	for tick in 1800:
+		s.step(1.0 / 60.0)
+		for e in s.events:
+			if e["kind"] == "gunfire":
+				shots += 1
+			if e["kind"] == "zed_death":
+				killed = true
+		if not s.alive[zed]:
+			break
+	check("squad opens fire on the infected", shots > 0, "%d shots" % shots)
+	check("the infected takes fire and drops", killed and not s.alive[zed], "hp %.0f -> %.0f" % [start, s.hp[zed]])
+	check("the infected closed distance while alive", s.pos[zed].distance_to(Vector2(50, 50)) < 12.0,
+			"%.1f m from the trooper" % s.pos[zed].distance_to(Vector2(50, 50)))
+	# the trooper (i=0) must survive: the zed never crossed 12 m to claw reach
+	check("the rifleman is still standing", s.alive[trooper], "trooper hp %.0f" % s.hp[trooper])
+
+
+## An unarmed civilian sees the infected and must gain ground, never fighting.
+func test_civilian_flees() -> void:
+	var s: WorldSim = WorldSim.new()
+	s.set_bounds(Vector2(-60, -60), Vector2(160, 160))
+	var zed: int = s.spawn(Vector2(50, 50), &"zed", WorldSim.INFECTED)
+	var civ: int = s.spawn(Vector2(50, 55), &"civ", WorldSim.CIVILIAN)   # 5 m off, inside civ sight
+	var d0: float = s.pos[civ].distance_to(s.pos[zed])
+	for tick in 360:
+		s.step(1.0 / 60.0)
+	var d1: float = s.pos[civ].distance_to(s.pos[zed])
+	check("a civilian outruns the infected", d1 > d0 + 2.0, "gap %.1f -> %.1f m" % [d0, d1])
+	check("the civilian never shoots back", s.foe[civ] == -1, "foe=%d" % s.foe[civ])
 
 
 func perf() -> void:
