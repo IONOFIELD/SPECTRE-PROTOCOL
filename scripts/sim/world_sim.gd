@@ -302,24 +302,41 @@ func _targets(a: int, b: int) -> bool:
 ## Refresh foe[i]: keep a live target still in sight, else acquire the nearest
 ## hostile with a clear line. Civilians never acquire -- they only flee.
 func _acquire(i: int) -> void:
-	if team[i] == CIVILIAN:
+	var t: int = team[i]
+	if t == CIVILIAN:
 		foe[i] = -1
 		return
+	# Infected + Sanitation HUNT: they sense the nearest warm body anywhere on the
+	# map, no line of sight -- the horde closes on you rather than standing idle.
+	# The scan is O(n) but staggered (see step), so it costs a fraction of a tick.
+	if t == INFECTED or t == SANITATION:
+		var best: int = -1
+		var bestd: float = INF
+		for j in count():
+			if j == i or not alive[j] or not _targets(t, team[j]):
+				continue
+			var dd: float = pos[i].distance_squared_to(pos[j])
+			if dd < bestd:
+				bestd = dd
+				best = j
+		foe[i] = best
+		return
+	# The squad only engages what it can actually see: sight radius + a clear line.
 	var sight: float = STATS[kind[i]][2]
 	var f: int = foe[i]
 	if f != -1 and f < count() and alive[f] and pos[i].distance_to(pos[f]) <= sight and _los(pos[i], pos[f]):
 		return
 	grid.query_into(pos[i], sight, _near)
-	var best: int = -1
-	var bestd: float = sight * sight
+	var best2: int = -1
+	var bestd2: float = sight * sight
 	for j in _near:
 		if j == i or not alive[j] or not _targets(team[i], team[j]):
 			continue
 		var dd: float = pos[i].distance_squared_to(pos[j])
-		if dd < bestd and _los(pos[i], pos[j]):
-			bestd = dd
-			best = j
-	foe[i] = best
+		if dd < bestd2 and _los(pos[i], pos[j]):
+			bestd2 = dd
+			best2 = j
+	foe[i] = best2
 
 
 ## AI desired velocity + any shot/strike for unit i. Squad movement stays player-
@@ -403,6 +420,39 @@ func _los(a: Vector2, b: Vector2) -> bool:
 		if _seg_hits_rect(a, b, r):
 			return false
 	return true
+
+
+## Seed the map with the ambient population + the hostile elements, scattered on
+## walkable ground (rejected out of buildings). Call after load_buildings and the
+## squad spawn. seed_value < 0 => randomize (different scatter every play).
+func populate(n_infected: int, n_civ: int, n_san: int, seed_value: int = -1) -> void:
+	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
+	if seed_value < 0:
+		rng.randomize()
+	else:
+		rng.seed = seed_value
+	_scatter(&"zed", INFECTED, n_infected, rng)
+	_scatter(&"civ", CIVILIAN, n_civ, rng)
+	_scatter(&"san", SANITATION, n_san, rng)
+
+
+func _scatter(unit_kind: StringName, team_id: int, n: int, rng: RandomNumberGenerator) -> void:
+	var placed: int = 0
+	var tries: int = 0
+	while placed < n and tries < n * 40:
+		tries += 1
+		var p: Vector2 = Vector2(
+			rng.randf_range(_bounds_lo.x, _bounds_hi.x),
+			rng.randf_range(_bounds_lo.y, _bounds_hi.y))
+		var blocked: bool = false
+		for bi in bgrid.at(p):
+			if buildings[bi].has_point(p):
+				blocked = true
+				break
+		if blocked:
+			continue
+		spawn(p, unit_kind, team_id)
+		placed += 1
 
 
 ## Segment [a,b] vs an axis-aligned rect, by slab-clipping the parameter range.

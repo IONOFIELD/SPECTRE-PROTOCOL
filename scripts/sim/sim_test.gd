@@ -25,6 +25,7 @@ func _initialize() -> void:
 	test_navigation_beats_a_wall()
 	test_combat_resolves()
 	test_civilian_flees()
+	test_population_hunts_and_fights()
 	perf()
 	print("=== %d failure(s) ===" % failures)
 	quit(1 if failures > 0 else 0)
@@ -282,6 +283,41 @@ func test_civilian_flees() -> void:
 	var d1: float = s.pos[civ].distance_to(s.pos[zed])
 	check("a civilian outruns the infected", d1 > d0 + 2.0, "gap %.1f -> %.1f m" % [d0, d1])
 	check("the civilian never shoots back", s.foe[civ] == -1, "foe=%d" % s.foe[civ])
+
+
+## A populated city: factions land on walkable ground, and the hunting horde
+## converges and fights within the window -- nothing stands idle in a field.
+func test_population_hunts_and_fights() -> void:
+	var city: CityGen = CityGen.new()
+	city.generate(Vector2i(640, 360))
+	var s: WorldSim = WorldSim.new()
+	s.load_buildings(city.building_rects())
+	var classes: Array = [&"cdr", &"cbt", &"med", &"snp", &"rec", &"eod"]
+	for i in classes.size():
+		s.spawn(Vector2(70.0 + float(i % 3) * 1.4, 68.0 + float(i / 3) * 1.4), classes[i], WorldSim.SQUAD)
+	s.populate(22, 12, 4, 7)
+	check("population spawns in full", s.count() == 6 + 22 + 12 + 4, "count=%d" % s.count())
+
+	var rects: Array[Rect2] = city.building_rects()
+	var inside: int = 0
+	for i in s.count():
+		for r in rects:
+			if r.has_point(s.pos[i]):
+				inside += 1
+	check("nobody spawns inside a building", inside == 0, "%d inside" % inside)
+
+	var gunfire: int = 0
+	var deaths: int = 0
+	for tick in 5400:      # 90 s -- time for the horde to close
+		s.step(1.0 / 60.0)
+		for e in s.events:
+			if e["kind"] == "gunfire":
+				gunfire += 1
+			elif e["kind"] == "zed_death" or e["kind"] == "man_down" or e["kind"] == "kill":
+				deaths += 1
+	check("the horde closes and the guns open up", gunfire > 0, "%d shots" % gunfire)
+	check("bodies drop in a populated map", deaths > 0, "%d deaths" % deaths)
+	city.free()
 
 
 func perf() -> void:
