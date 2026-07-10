@@ -25,6 +25,7 @@ const RESOLUTIONS: Array = [Vector2i(320, 180), Vector2i(640, 360), Vector2i(960
 const CUT_DUR: float = 0.52
 const CUT_SWAP: float = 0.30          # the new feed goes live here, under the snow
 const MUSIC_BED: String = "res://audio/music/music1.wav"   # loops; Audio owns the level
+const HUD_FONT: String = "res://fonts/inversionz_unboxed.ttf"   # Inversionz Unboxed, Darrell Flood
 
 var res_idx := 1
 var snap_res: Vector2i = RESOLUTIONS[1]
@@ -179,6 +180,7 @@ func _build_tree() -> void:
 
 	hud = Label.new()
 	hud.position = Vector2(24, 20)
+	hud.add_theme_font_override("font", load(HUD_FONT))
 	hud.add_theme_font_size_override("font_size", 13)
 	layer.add_child(hud)
 
