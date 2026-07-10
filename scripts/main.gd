@@ -24,6 +24,7 @@ extends Node
 const RESOLUTIONS: Array = [Vector2i(320, 180), Vector2i(640, 360), Vector2i(960, 540)]
 const CUT_DUR: float = 0.52
 const CUT_SWAP: float = 0.30          # the new feed goes live here, under the snow
+const MUSIC_BED: String = "res://audio/music/music1.wav"   # loops; Audio owns the level
 
 var res_idx := 1
 var snap_res: Vector2i = RESOLUTIONS[1]
@@ -91,6 +92,7 @@ func _ready() -> void:
 	_build_tree()
 	_spawn()
 	set_process_input(true)
+	Audio.play_music(MUSIC_BED, 2.0)   # the bed fades up over the cold open
 
 
 func _build_tree() -> void:
