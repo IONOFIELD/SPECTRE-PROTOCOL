@@ -36,6 +36,7 @@ var vp: SubViewport
 var cam: Camera3D
 var city: CityGen
 var cars: Vehicles
+var props: Node3D
 var cut_rect: ColorRect
 var hud: Label
 
@@ -161,6 +162,7 @@ func _build_tree() -> void:
 	cars = Vehicles.new()
 	vp.add_child(cars)
 	cars.generate(snap_res, city, 26)
+	_spawn_props()
 
 	var layer: CanvasLayer = CanvasLayer.new()
 	layer.layer = 1
@@ -208,6 +210,28 @@ func _push_res() -> void:
 	sensor_mat.set_shader_parameter("res", Vector2(snap_res))
 	cut_mat.set_shader_parameter("res", Vector2(snap_res))
 	ThermalLib.clear_cache()   # snap_res is baked into every material
+
+
+## PS1 props, thermal-reskinned. FIRST PASS: a short diagnostic row just south of
+## the deploy zone -- verify scale + orientation in the feed, then tune per model
+## and scatter city-wide. Proves the .glb load + thermal re-skin path before we
+## place models for buildings, cars, and bodies.
+func _spawn_props() -> void:
+	props = Node3D.new()
+	vp.add_child(props)
+	var specs: Array = [
+		["res://models/buildings and scenery/ps1_barrel.glb", "tank", 0.45],
+		["res://models/buildings and scenery/low_poly_psxps2_trash_filled_metal_dumpster.glb", "tank", 0.70],
+		["res://models/buildings and scenery/psx_jerry_can.glb", "tank", 0.30],
+		["res://models/buildings and scenery/psx_air_conditioner.glb", "hvac", 0.40],
+		["res://models/buildings and scenery/stop_sign_psx.glb", "tank", 1.00],
+	]
+	for i in specs.size():
+		var spec: Array = specs[i]
+		var prop: Node3D = ThermalModel.spawn(spec[0], spec[1], snap_res, spec[2])
+		if prop != null:
+			prop.position = Vector3(60.0 + float(i) * 4.0, 0.0, 62.0)
+			props.add_child(prop)
 
 
 func _spawn() -> void:
@@ -479,6 +503,8 @@ func _rebuild_world() -> void:
 	city.queue_free()
 	if cars != null:
 		cars.queue_free()
+	if props != null:
+		props.queue_free()
 	for t in troopers:
 		t.queue_free()
 	troopers.clear()
@@ -489,4 +515,5 @@ func _rebuild_world() -> void:
 	cars = Vehicles.new()
 	vp.add_child(cars)
 	cars.generate(snap_res, city, 26)
+	_spawn_props()
 	_spawn()
