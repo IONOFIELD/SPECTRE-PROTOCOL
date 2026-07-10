@@ -25,6 +25,7 @@ const RESOLUTIONS: Array = [Vector2i(320, 180), Vector2i(640, 360), Vector2i(960
 const CUT_DUR: float = 0.52
 const CUT_SWAP: float = 0.30          # the new feed goes live here, under the snow
 const MUSIC_BED: String = "res://audio/music/music1.wav"   # loops; Audio owns the level
+const AMBIENCE_BED: String = "res://audio/ambience/ghost_town.wav"   # ghost-town bed
 const HUD_FONT: String = "res://fonts/inversionz_unboxed.ttf"   # Inversionz Unboxed, Darrell Flood
 
 var res_idx := 1
@@ -96,6 +97,7 @@ func _ready() -> void:
 	_spawn()
 	set_process_input(true)
 	Audio.play_music(MUSIC_BED, 0.0)   # abrupt cut-in; the track has its own hard start
+	Audio.play_ambience(AMBIENCE_BED, 3.0)   # ghost-town ambience swells under the mix
 
 
 func _build_tree() -> void:
@@ -439,10 +441,13 @@ func _input(e: InputEvent) -> void:
 					_select_nearest(_ground_pick(e.position))
 				else:
 					_select_in_rect(Rect2(drag_start, e.position - drag_start))
+				if not sim.selected_ids().is_empty():
+					Audio.comms("ack_affirmative", 2500)   # "affirmative" on select
 		elif e.button_index == MOUSE_BUTTON_RIGHT and e.pressed:
 			var ids: Array = sim.selected_ids()
 			if not ids.is_empty():
 				sim.order_move(ids, _ground_pick(e.position))
+				Audio.comms_order()   # squad acks the move over the net
 	elif e is InputEventKey and e.pressed and not e.echo:
 		match e.keycode:
 			KEY_SPACE: _channel_change("orbit" if feed == "deploy" else "deploy")

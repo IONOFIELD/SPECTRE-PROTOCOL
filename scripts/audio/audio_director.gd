@@ -21,8 +21,8 @@ extends Node
 ##
 ## API:
 ##   Audio.play_music("res://audio/music/music1.wav")   # loops, fades in
-##   Audio.crossfade_music(path, 2.0)
-##   Audio.stop_music(1.5)
+##   Audio.play_ambience("res://audio/ambience/ghost_town.wav")
+##   Audio.comms("order_go")      Audio.comms_order()   # radio callouts
 ##   Audio.sfx(stream_or_path, -3.0)      Audio.ui(stream_or_path)
 ##   Audio.set_bus_linear("Music", 0.7)                 # for an options slider
 
@@ -43,10 +43,18 @@ const MASTER_CEILING_DB := -0.5
 
 const FADE_FLOOR_DB := -60.0   # "silent" for fades; below audibility, cheap
 
+## A second looping bed under the music: the mission ambience (ghost-town wind,
+## distant dread). Ducked by SFX like the music, and pitched lower still.
+const BUS_AMBIENCE := "Ambience"
+const AMBIENCE_BED_DB := -12.0
+const COMMS_DIR := "res://audio/comms/"   # radio callouts, one file per phrase
+
 var _music_a: AudioStreamPlayer
 var _music_b: AudioStreamPlayer
 var _music_cur: AudioStreamPlayer
 var _oneshots: Array[AudioStreamPlayer] = []
+var _ambience: AudioStreamPlayer
+var _comms_next_ms: int = 0
 
 
 func _ready() -> void:
@@ -54,15 +62,18 @@ func _ready() -> void:
 	_music_a = _new_player(BUS_MUSIC)
 	_music_b = _new_player(BUS_MUSIC)
 	_music_cur = _music_a
+	_ambience = _new_player(BUS_AMBIENCE)
 
 
 # ---- bus graph -------------------------------------------------------------
 
 func _setup_buses() -> void:
 	_ensure_bus(BUS_MUSIC, BUS_MASTER, MUSIC_BED_DB)
+	_ensure_bus(BUS_AMBIENCE, BUS_MASTER, AMBIENCE_BED_DB)
 	_ensure_bus(BUS_SFX, BUS_MASTER, 0.0)
 	_ensure_bus(BUS_UI, BUS_MASTER, 0.0)
 	_install_ducking(BUS_MUSIC, BUS_SFX)
+	_install_ducking(BUS_AMBIENCE, BUS_SFX)
 	_install_master_limiter()
 
 
@@ -160,6 +171,48 @@ func sfx(source, volume_db := 0.0) -> void:
 
 func ui(source, volume_db := 0.0) -> void:
 	_one_shot(source, BUS_UI, volume_db)
+
+
+# ---- ambience bed + radio comms --------------------------------------------
+
+## The mission ambience loop -- a second bed beneath the music. fade_in <= 0 cuts
+## in hard; otherwise it swells up over fade_in seconds.
+func play_ambience(source, fade_in := 3.0) -> void:
+	var stream: AudioStream = _as_stream(source)
+	if stream == null:
+		push_warning("[Audio] could not load ambience: %s" % [source])
+		return
+	_apply_loop(stream)
+	_ambience.stream = stream
+	if fade_in <= 0.0:
+		_ambience.volume_db = 0.0
+		_ambience.play()
+	else:
+		_ambience.volume_db = FADE_FLOOR_DB
+		_ambience.play()
+		_fade(_ambience, 0.0, fade_in)
+
+
+func stop_ambience(fade_out := 2.0) -> void:
+	if _ambience != null and _ambience.playing:
+		_fade(_ambience, FADE_FLOOR_DB, maxf(0.01, fade_out), true)
+
+
+## A radio callout by file stem under audio/comms/ (e.g. "order_go"). Cooldown-
+## gated so rapid orders don't stack voice lines. Plays on SFX, so it ducks the
+## music + ambience -- the radio cuts through.
+func comms(stem: String, cooldown_ms := 1200) -> void:
+	var now: int = Time.get_ticks_msec()
+	if now < _comms_next_ms:
+		return
+	_comms_next_ms = now + cooldown_ms
+	sfx(COMMS_DIR + stem + ".wav", 0.0)
+
+
+## A random move-order acknowledgement.
+func comms_order() -> void:
+	var lines: Array = ["order_go", "order_move_out", "order_push", "order_ready"]
+	comms(lines[randi() % lines.size()])
 
 
 func _one_shot(source, bus: String, volume_db: float) -> void:
