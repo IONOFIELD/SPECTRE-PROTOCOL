@@ -90,6 +90,20 @@ That last beat is what sells it. The camera does not arrive already exposed.
 | `scripts/citygen.gd` | low-poly city. box + parapet + HVAC + tank. |
 | `scripts/agc.gd` | percentile stretch from a downscaled viewport read. |
 | `scripts/main.gd` | builds the whole tree in code. no .tscn to desync. |
+| `scripts/audio/audio_director.gd` | autoload `Audio`. bus graph, ducking, master limiter, music bed. |
+| `audio/music/music1.wav` | the bed. a seamless loop, mastered hot; level set on the bus. |
+
+## Audio
+
+Built after r8. The whole mix comes up in code in `scripts/audio/audio_director.gd`
+(autoload `Audio`), for the same reason the render tree does — nothing to desync.
+Bus graph is `Master -> {Music, SFX, UI}`, with a compressor on `Music`
+sidechained to `SFX` so world sound ducks the bed, and a hard limiter on `Master`
+because every asset here is mastered hot (`music1` peaks at 0 dBFS). The bed loops,
+forced in code rather than trusted to the WAV importer. Drop new sounds in
+`audio/sfx` / `audio/ui`, trigger with `Audio.sfx(...)` / `Audio.ui(...)`. Full
+notes, the tuning knobs, and the obvious wiring hooks (the channel cut is the
+first SFX cue that should exist) are in **`audio/README.md`**.
 
 ## Fixed in r2
 

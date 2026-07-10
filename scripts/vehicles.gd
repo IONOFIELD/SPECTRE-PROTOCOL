@@ -59,8 +59,9 @@ func generate(snap_res: Vector2i, city: CityGen, count: int, seed_value: int = 3
 	for i in count:
 		# park along a street kerb, facing down the street
 		var vertical: bool = rng.randf() < 0.5
-		var lane: float = float(rng.randi() % (city.grid_n + 1)) * pitch - CityGen.STREET * 0.5
-		lane += CityGen.STREET * (0.28 if rng.randf() < 0.5 else 0.72)
+		# the kerb is at centre +/- HALF_ST; park 1.9 m off it, either side
+		var lane: float = float(rng.randi() % (city.grid_n + 1)) * pitch
+		lane += (CityGen.HALF_ST - 1.9) * (1.0 if rng.randf() < 0.5 else -1.0)
 		var along: float = rng.randf_range(4.0, float(city.grid_n) * pitch - 4.0)
 		var at: Vector2 = Vector2(lane, along) if vertical else Vector2(along, lane)
 		var yaw: float = 0.0 if vertical else PI * 0.5

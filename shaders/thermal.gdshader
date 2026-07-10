@@ -28,11 +28,22 @@ uniform float radiance_scale = 1.0;   // requires SubViewport.use_hdr_2d = true
 uniform vec3  sun_dir       = vec3(0.855, 0.300, -0.425);
 uniform float solar_gain    = 0.0;
 
-// 0 none | 1 concrete+windows | 2 roof gravel | 3 asphalt | 4 vehicle panel | 5 glass
+// 0 none | 1 concrete+windows | 2 roof gravel | 3 asphalt | 4 vehicle panel
+// 5 glass | 6 sidewalk | 7 grass | 8 parking lot
 uniform int   detail        = 0;
 uniform float detail_temp   = 0.0;    // degrees C, peak to peak
 uniform float detail_emis   = 0.0;
 uniform float storey_h      = 3.4;
+
+// Optional photographic detail. NOT albedo: the map holds the high-pass residual
+// of a real texture, which is structure (mortar, gaps, rivets) rather than colour.
+// 0.5 is a flat surface, below is recessed, above is proud.
+uniform sampler2D thermal_map : source_color, filter_nearest_mipmap, repeat_enable;
+uniform bool  use_map       = false;
+uniform vec2  map_scale     = vec2(2.4);  // metres per tile, u and v.
+                                          // Non-square source art stretches if this is scalar.
+uniform float map_temp      = 1.6;    // degrees C at full-scale structure
+uniform float map_emis      = 0.05;
 
 uniform vec2  snap_res      = vec2(640.0, 360.0);
 uniform bool  snap_enabled  = true;
@@ -138,12 +149,50 @@ void fragment() {
     } else if (detail == 5) {
         float streak = fbm(vec2(uv.x * 2.0, uv.y * 0.35)) - 0.5;
         dT = streak * detail_temp;
+    } else if (detail == 6) {
+        // Poured concrete walk. Expansion joints on a 1.5 m grid: more mass,
+        // they lag, they read cold. Occasional cast-iron cover: low emissivity,
+        // so it reads very cold even though it is the same temperature.
+        float j = min(seam(uv.x, 1.5), seam(uv.y, 1.5));
+        float joint = smoothstep(0.06, 0.0, j);
+        vec2 cell = floor(uv / 6.0);
+        float cover = (hash21(cell) > 0.94) ? smoothstep(0.42, 0.30, length(fract(uv / 6.0) - 0.5) * 6.0) : 0.0;
+        dT = (fbm(uv * 2.4) - 0.5) * detail_temp - joint * 0.8;
+        dE = -joint * detail_emis - cover * 0.55;
+    } else if (detail == 7) {
+        // Vegetation. Evaporative, so it runs cold and blotchy. The blotches are
+        // where the canopy is thin and bare soil shows through, which is warmer.
+        float coarse = fbm(uv * 0.35) - 0.5;
+        float fine = fbm(uv * 3.2) - 0.5;
+        dT = coarse * detail_temp * 1.3 + fine * detail_temp * 0.5;
+        dE = fine * detail_emis;
+    } else if (detail == 8) {
+        // Surface parking. Stall lines every 2.6 m, and asphalt patches of a
+        // different age that never quite match the temperature around them.
+        float stall = smoothstep(0.07, 0.0, seam(uv.x, 2.6)) * step(seam(uv.y, 11.0), 2.6);
+        float patch = step(0.62, fbm(uv * 0.22));
+        dT = (fbm(uv * 4.0) - 0.5) * detail_temp + patch * 1.1 - stall * 0.6;
+        dE = stall * detail_emis;
+    }
+
+    if (use_map) {
+        float s = texture(thermal_map, uv / map_scale).r * 2.0 - 1.0;
+        // A recess (s < 0) is a cavity. Cavities approach a blackbody, so their
+        // apparent emissivity RISES. They also sit behind more mass, so their
+        // temperature falls. The two fight; the cavity usually wins on a facade.
+        dT += s * map_temp * 0.35;
+        dE += -s * map_emis;
     }
 
     float solar = solar_gain * max(0.0, dot(n, normalize(sun_dir)));
     float sky   = sky_loss * max(0.0, n.y);
+    // Emissivity is flat out to roughly 55 degrees of incidence and then falls
+    // off a cliff. The old linear term (0.62 + 0.38*graze) put a 19% radiance
+    // ramp across every flat facet, which is exactly the gouraud gradient that
+    // made this look like a cheap render.
     float graze = abs(dot(normalize(NORMAL), VIEW));
-    float em    = clamp(emissivity + dE, 0.05, 1.0) * (0.62 + 0.38 * graze);
+    float fall = 1.0 - 0.30 * pow(1.0 - graze, 5.0);   // flat to ~60 deg, then a cliff
+    float em    = clamp(emissivity + dE, 0.05, 1.0) * fall;
 
     float r = radiance(temp_c - sky + solar + dT) * em * (1.0 + fpn);
     ALBEDO = vec3(r * radiance_scale);

@@ -1,0 +1,24 @@
+TEXTURE PROVENANCE
+==================
+All source textures are from ambientCG (ambientcg.com), released under the
+Creative Commons CC0 1.0 Universal Public Domain Dedication.
+https://docs.ambientcg.com/license/
+
+Only the Displacement channel is used. It is high-passed and normalised into a
+greyscale structure map; no albedo survives into the build.
+
+  material   ambientCG asset        page
+  wall       Concrete034            https://ambientcg.com/a/Concrete034
+  window     MetalPlates006         https://ambientcg.com/a/MetalPlates006
+  parapet    Concrete012            https://ambientcg.com/a/Concrete012
+  road       Asphalt002             https://ambientcg.com/a/Asphalt002
+  sidewalk   PavingStones037        https://ambientcg.com/a/PavingStones037
+  park       Ground037              https://ambientcg.com/a/Ground037
+  grass      Grass001               https://ambientcg.com/a/Grass001
+  tank       CorrugatedSteel005     https://ambientcg.com/a/CorrugatedSteel005
+  hvac       Grate001               https://ambientcg.com/a/Grate001
+
+  wall (brick alternate)  Bricks021  https://ambientcg.com/a/Bricks021   NOT BAKED
+
+Attribution is not required by CC0. It is here because knowing where a file came
+from is worth more than the licence obligation.

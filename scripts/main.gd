@@ -87,6 +87,8 @@ func _maybe_capture() -> void:
 func _ready() -> void:
 	if OS.get_environment("SPECTRE_NODETAIL") != "":
 		ThermalLib.detail_on = false
+	if OS.get_environment("SPECTRE_NOMAPS") != "":
+		ThermalLib.maps_on = false
 	if OS.get_environment("SPECTRE_NOSNAP") != "":
 		ThermalLib.snap_default = false
 	_build_tree()
@@ -144,8 +146,10 @@ func _build_tree() -> void:
 
 	cam = Camera3D.new()
 	cam.fov = 24.0
-	cam.near = 0.08
-	cam.far = 6000.0
+	# 0.08/6000 gave 47 mm of depth resolution at 250 m. The road slabs were
+	# 40 mm apart. Now 0.35/2200: 1.6 mm at 250 m, and nothing is coplanar anyway.
+	cam.near = 0.35
+	cam.far = 2200.0
 	vp.add_child(cam)
 
 	city = CityGen.new()
@@ -444,6 +448,10 @@ func _input(e: InputEvent) -> void:
 			KEY_C: cctv = 0.0 if cctv > 0.0 else 0.85
 			KEY_G: agc.frozen = not agc.frozen
 			KEY_O: orbit_auto = not orbit_auto
+			KEY_M:
+				ThermalLib.maps_on = not ThermalLib.maps_on
+				ThermalLib.clear_cache()
+				_rebuild_world()
 			KEY_K:
 				ThermalLib.detail_on = not ThermalLib.detail_on
 				ThermalLib.clear_cache()
