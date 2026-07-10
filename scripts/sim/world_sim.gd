@@ -206,9 +206,13 @@ func step(dt: float) -> void:
 			continue
 		var sp: float = speed_of(i)
 		cd[i] = maxf(0.0, cd[i] - dt)
-		# perception is staggered across ticks; AI units draw their desired
-		# velocity from the fight, the squad's comes from player orders below.
-		if (_tick + i) % 4 == 0:
+		# Perception scans the SIGHT radius -- the sim's most expensive query -- so
+		# each unit re-acquires only every 20th tick (~0.33 s to notice a NEW foe),
+		# staggered by index so the cost spreads evenly. A unit already locked onto
+		# a live, visible foe keeps it (see _acquire) and reacts instantly, so this
+		# cadence only gates fresh scans. AI draws its desired velocity from the
+		# fight; the squad's comes from player orders below.
+		if (_tick + i) % 20 == 0:
 			_acquire(i)
 		var desired: Vector2 = _combat(i, sp)
 
