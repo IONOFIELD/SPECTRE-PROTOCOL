@@ -12,3 +12,12 @@ desktop.ini
 Thumbs.db
 .DS_Store
 *.tmp
+
+# --- Godot GLB-import artifacts ---
+# Godot extracts each .glb's embedded textures on import (<model>_N.png/.jpg)
+# and writes .import sidecars. They regenerate from the .glb (the LFS source of
+# truth), so treat them as cache. If a fresh clone ever shows untextured models,
+# commit these via LFS instead.
+/models/**/*.png
+/models/**/*.jpg
+/models/**/*.import
