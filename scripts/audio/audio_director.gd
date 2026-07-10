@@ -105,10 +105,37 @@ func _install_ducking(target_bus: String, sidechain_bus: String) -> void:
 	AudioServer.add_bus_effect(idx, comp)
 
 
+## The whole picture is an AC-130 ISR downlink, so the whole SOUND is too. The
+## master runs the gunship-headset chain and everything rides it -- guns, zeds,
+## comms, the bed: a radio band (420 Hz - 3.4 kHz), bit/sample crushed for the
+## low-bitrate feed, AGC-squashed like a squelched net, then limited. Tune the
+## four numbers here; this is the only place the ISR character lives.
 func _install_master_limiter() -> void:
 	var idx: int = AudioServer.get_bus_index(BUS_MASTER)
 	_clear_effects(idx)
-	var lim := AudioEffectHardLimiter.new()
+
+	var hp := AudioEffectHighPassFilter.new()   # kill the bass -- no chest, all comms
+	hp.cutoff_hz = 420.0
+	AudioServer.add_bus_effect(idx, hp)
+
+	var lp := AudioEffectLowPassFilter.new()    # kill the air -- bandlimited downlink
+	lp.cutoff_hz = 3400.0
+	AudioServer.add_bus_effect(idx, lp)
+
+	var crush := AudioEffectDistortion.new()    # the "low bitrate": sample/bit reduction
+	crush.mode = AudioEffectDistortion.MODE_LOFI
+	crush.drive = 0.35
+	crush.post_gain = -2.0
+	AudioServer.add_bus_effect(idx, crush)
+
+	var agc := AudioEffectCompressor.new()      # radio AGC: pull everything to one level
+	agc.threshold = -20.0
+	agc.ratio = 4.0
+	agc.attack_us = 400.0
+	agc.release_ms = 180.0
+	AudioServer.add_bus_effect(idx, agc)
+
+	var lim := AudioEffectHardLimiter.new()     # the safety rail stays last
 	lim.ceiling_db = MASTER_CEILING_DB
 	AudioServer.add_bus_effect(idx, lim)
 

@@ -61,6 +61,8 @@ var agc := AGC.new()
 
 var sim: WorldSim = WorldSim.new()
 var views: Array[Node3D] = []          # one visual per sim unit, index-aligned
+var _anim: Array = []                  # an Animator per view (or null), index-aligned
+var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 var _sfx_pool: Array[AudioStreamPlayer3D] = []
 var _sfx_next: int = 0
 var _sfx_gun: AudioStream
@@ -368,6 +370,7 @@ func _spawn() -> void:
 			v.position = Vector3(sim.pos[i].x, 0.0, sim.pos[i].y)
 			vp.add_child(v)
 		views.append(v)
+		_anim.append(Animator.new(v, _rng) if v != null else null)
 
 
 ## Build the visual for one sim unit: the right model, thermal-reskinned, scaled
@@ -397,35 +400,11 @@ func _make_unit_view(team: int, rng: RandomNumberGenerator) -> Node3D:
 			scale = UNIT_SAN[2]
 		_:
 			return null
-	var v: Node3D = ThermalModel.spawn(path, mat, snap_res, scale, 0.0, true)
-	if v != null:
-		_play_idle(v)
-	return v
-
-
-## A rigged model gets its first walk/idle clip, looped, so it isn't frozen in the
-## bind pose. Static models have no AnimationPlayer and no-op.
-func _play_idle(node: Node) -> void:
-	var ap: AnimationPlayer = node.find_child("AnimationPlayer", true, false) as AnimationPlayer
-	if ap == null:
-		return
-	var clips: PackedStringArray = ap.get_animation_list()
-	if clips.is_empty():
-		return
-	var pick: String = clips[0]
-	for c in clips:
-		var lc: String = String(c).to_lower()
-		if lc.contains("walk") or lc.contains("idle") or lc.contains("run"):
-			pick = c
-			break
-	var anim: Animation = ap.get_animation(pick)
-	if anim != null:
-		anim.loop_mode = Animation.LOOP_LINEAR
-	ap.play(pick)
+	return ThermalModel.spawn(path, mat, snap_res, scale, 0.0, true)
 
 
 ## The sim owns position + heading; the view owns nothing but where it stands.
-func _sync_visuals(_delta: float) -> void:
+func _sync_visuals(delta: float) -> void:
 	for i in views.size():
 		var v: Node3D = views[i]
 		if v == null:
@@ -438,6 +417,8 @@ func _sync_visuals(_delta: float) -> void:
 		var vel: Vector2 = sim.vel[i]
 		if vel.length_squared() > 0.04:
 			v.rotation.y = atan2(-vel.x, -vel.y)
+		if _anim[i] != null:
+			_anim[i].update(vel.length_squared() > 0.09, delta, _rng)
 
 
 ## Mouse pixel -> point on the ground plane. The mouse is in window pixels and
@@ -721,6 +702,7 @@ func _rebuild_world() -> void:
 		if v != null:
 			v.queue_free()
 	views.clear()
+	_anim.clear()
 	await get_tree().process_frame
 	city = CityGen.new()
 	vp.add_child(city)
@@ -730,3 +712,77 @@ func _rebuild_world() -> void:
 	cars.generate(snap_res, city, 26)
 	_spawn_props()
 	_spawn()
+
+
+## Drives a rigged unit's clips. Walk when moving, idle when stopped; the infected
+## (which carry damage/die/climb/bite clips) also throw the odd one-shot -- a
+## convulse, a lunge, or a full collapse-and-rise -- so the horde shambles, heaves,
+## and falls about instead of gliding in one frozen pose. Non-infected just walk
+## and idle (no fidget clips to draw from).
+class Animator extends RefCounted:
+	var ap: AnimationPlayer
+	var walk: String = ""
+	var idle: String = ""
+	var fall: String = ""      # DieZ  -- collapse
+	var rise: String = ""      # ClimbGraveZ -- struggle back up
+	var fidgets: Array = []    # convulse / lunge one-shots
+	var t: float = 0.0
+	var busy: bool = false
+
+	func _init(node: Node3D, rng: RandomNumberGenerator) -> void:
+		ap = node.find_child("AnimationPlayer", true, false) as AnimationPlayer
+		if ap == null:
+			return
+		var clips: PackedStringArray = ap.get_animation_list()
+		walk = _pick(clips, ["walk"])
+		idle = _pick(clips, ["idle", "default", "pose"])
+		fall = _pick(clips, ["die", "death"])
+		rise = _pick(clips, ["climb"])
+		for key in ["damage", "grabbite", "bite", "howl", "taunt"]:
+			var c: String = _pick(clips, [key])
+			if c != "" and not fidgets.has(c):
+				fidgets.append(c)
+		if walk == "" and idle == "" and clips.size() > 0:
+			idle = String(clips[0])
+		for c in [walk, idle]:
+			if c != "":
+				ap.get_animation(c).loop_mode = Animation.LOOP_LINEAR
+		t = rng.randf_range(2.0, 7.0)
+
+	func update(moving: bool, dt: float, rng: RandomNumberGenerator) -> void:
+		if ap == null:
+			return
+		if busy:
+			if ap.is_playing():
+				return
+			busy = false
+		if moving:
+			_loop(walk if walk != "" else idle)
+			return
+		t -= dt
+		if t > 0.0:
+			_loop(idle if idle != "" else walk)
+			return
+		t = rng.randf_range(4.0, 10.0)
+		if fall != "" and rise != "" and rng.randf() < 0.3:
+			ap.get_animation(fall).loop_mode = Animation.LOOP_NONE
+			ap.get_animation(rise).loop_mode = Animation.LOOP_NONE
+			ap.play(fall)
+			ap.queue(rise)
+			busy = true
+		elif not fidgets.is_empty():
+			var c: String = fidgets[rng.randi() % fidgets.size()]
+			ap.get_animation(c).loop_mode = Animation.LOOP_NONE
+			ap.play(c)
+			busy = true
+
+	func _loop(clip: String) -> void:
+		if clip != "" and ap.current_animation != clip:
+			ap.play(clip)
+
+	static func _pick(clips: PackedStringArray, keys: Array) -> String:
+		for k in keys:
+			for c in clips:
+				if String(c).to_lower().contains(k):
+					return String(c)
+		return ""
