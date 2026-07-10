@@ -47,6 +47,7 @@ const FADE_FLOOR_DB := -60.0   # "silent" for fades; below audibility, cheap
 ## distant dread). Ducked by SFX like the music, and pitched lower still.
 const BUS_AMBIENCE := "Ambience"
 const AMBIENCE_BED_DB := -12.0
+const BUS_ISR := "ISR"   # gunship-downlink filter; diegetic buses route through it, music bypasses
 const COMMS_DIR := "res://audio/comms/"   # radio callouts, one file per phrase
 
 var _music_a: AudioStreamPlayer
@@ -68,10 +69,16 @@ func _ready() -> void:
 # ---- bus graph -------------------------------------------------------------
 
 func _setup_buses() -> void:
-	_ensure_bus(BUS_MUSIC, BUS_MASTER, MUSIC_BED_DB)
-	_ensure_bus(BUS_AMBIENCE, BUS_MASTER, AMBIENCE_BED_DB)
-	_ensure_bus(BUS_SFX, BUS_MASTER, 0.0)
-	_ensure_bus(BUS_UI, BUS_MASTER, 0.0)
+	# The ISR filter bus sits between the diegetic buses and Master. The MUSIC bed
+	# BYPASSES it -- the score isn't coming through the gunship headset, so it
+	# stays full-fidelity, straight to Master. Create ISR first so the buses that
+	# route into it get a higher index (Godot processes high -> low).
+	_ensure_bus(BUS_ISR, BUS_MASTER, 0.0)
+	_install_isr(BUS_ISR)
+	_ensure_bus(BUS_MUSIC, BUS_MASTER, MUSIC_BED_DB)        # clean, straight to Master
+	_ensure_bus(BUS_AMBIENCE, BUS_ISR, AMBIENCE_BED_DB)     # ambience is a "noise" -> ISR
+	_ensure_bus(BUS_SFX, BUS_ISR, 0.0)
+	_ensure_bus(BUS_UI, BUS_ISR, 0.0)
 	_install_ducking(BUS_MUSIC, BUS_SFX)
 	_install_ducking(BUS_AMBIENCE, BUS_SFX)
 	_install_master_limiter()
@@ -105,13 +112,25 @@ func _install_ducking(target_bus: String, sidechain_bus: String) -> void:
 	AudioServer.add_bus_effect(idx, comp)
 
 
-## The whole picture is an AC-130 ISR downlink, so the whole SOUND is too. The
-## master runs the gunship-headset chain and everything rides it -- guns, zeds,
-## comms, the bed: a radio band (420 Hz - 3.4 kHz), bit/sample crushed for the
-## low-bitrate feed, AGC-squashed like a squelched net, then limited. Tune the
-## four numbers here; this is the only place the ISR character lives.
+## The safety rail. Everything -- the filtered diegetic feed AND the clean music
+## bed -- lands on Master, so the brickwall limiter lives here and only here.
 func _install_master_limiter() -> void:
 	var idx: int = AudioServer.get_bus_index(BUS_MASTER)
+	_clear_effects(idx)
+	var lim := AudioEffectHardLimiter.new()
+	lim.ceiling_db = MASTER_CEILING_DB
+	AudioServer.add_bus_effect(idx, lim)
+
+
+## The AC-130 ISR downlink. Every DIEGETIC sound -- guns, zeds, comms, the
+## ambience -- routes through this bus, so it all comes through the gunship
+## headset: a radio band (420 Hz - 3.4 kHz), bit/sample crushed for the low-bitrate
+## feed, then AGC-squashed like a squelched net. The music bed skips it entirely.
+## Four numbers to tune the character; this is the only place it lives.
+func _install_isr(bus_name: String) -> void:
+	var idx: int = AudioServer.get_bus_index(bus_name)
+	if idx == -1:
+		return
 	_clear_effects(idx)
 
 	var hp := AudioEffectHighPassFilter.new()   # kill the bass -- no chest, all comms
@@ -134,10 +153,6 @@ func _install_master_limiter() -> void:
 	agc.attack_us = 400.0
 	agc.release_ms = 180.0
 	AudioServer.add_bus_effect(idx, agc)
-
-	var lim := AudioEffectHardLimiter.new()     # the safety rail stays last
-	lim.ceiling_db = MASTER_CEILING_DB
-	AudioServer.add_bus_effect(idx, lim)
 
 
 func _clear_effects(bus_idx: int) -> void:
