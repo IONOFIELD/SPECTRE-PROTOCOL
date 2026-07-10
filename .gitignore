@@ -21,3 +21,10 @@ Thumbs.db
 /models/**/*.png
 /models/**/*.jpg
 /models/**/*.import
+
+# --- Audio library (~4 GB source palette; local-only) ---
+# The full SFX/music library the user assembled lives under audio/library/ as a
+# pull-from palette. Too big for git (GitHub LFS quota), and .gdignore'd so Godot
+# never imports its ~1,800 files. Wired sounds get COPIED out into
+# audio/{music,ambience,comms,sfx}/ where they ARE tracked + imported.
+/audio/library/
