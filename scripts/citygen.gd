@@ -185,8 +185,11 @@ func _block(rng: RandomNumberGenerator, bx: float, bz: float, dc: float) -> void
 
 func _building(rng: RandomNumberGenerator, x: float, z: float, w: float, d: float, fl: int) -> void:
 	var h: float = float(fl) * FLOOR_H
+	# 35% of facades are brick (Bricks021) instead of cast concrete -- same wall
+	# temperature, different structure map. The asset CREDITS had as "not baked".
+	var wall_mat: String = "brick" if rng.randf() < 0.35 else "wall"
 	buildings.append({"x": x, "z": z, "w": w, "d": d, "fl": fl})
-	_add_box(Vector3(x + w * 0.5, 0.0, z + d * 0.5), Vector3(w, h, d), "wall")
+	_add_box(Vector3(x + w * 0.5, 0.0, z + d * 0.5), Vector3(w, h, d), wall_mat)
 
 	var t: float = maxf(0.6, minf(w, d) * 0.03)
 	_add_box(Vector3(x + w * 0.5, h, z + t * 0.5), Vector3(w, 0.9, t), "parapet")
@@ -203,4 +206,4 @@ func _building(rng: RandomNumberGenerator, x: float, z: float, w: float, d: floa
 		_add_box(Vector3(tx, h + 0.9, tz), Vector3(3.0, 1.2, 3.0), "parapet")
 		_add_box(Vector3(tx, h + 2.1, tz), Vector3(2.2, 3.2, 2.2), "tank")
 	if fl >= 4 and rng.randf() > 0.55:
-		_add_box(Vector3(x + w * 0.5, h + 0.9, z + d * 0.5), Vector3(2.0, 2.6, 2.0), "wall")
+		_add_box(Vector3(x + w * 0.5, h + 0.9, z + d * 0.5), Vector3(2.0, 2.6, 2.0), wall_mat)
