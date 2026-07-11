@@ -26,6 +26,7 @@ func _initialize() -> void:
 	test_combat_resolves()
 	test_civilian_flees()
 	test_population_hunts_and_fights()
+	test_elements_and_medic()
 	perf()
 	print("=== %d failure(s) ===" % failures)
 	quit(1 if failures > 0 else 0)
@@ -318,6 +319,22 @@ func test_population_hunts_and_fights() -> void:
 	check("the horde closes and the guns open up", gunfire > 0, "%d shots" % gunfire)
 	check("bodies drop in a populated map", deaths > 0, "%d deaths" % deaths)
 	city.free()
+
+
+## Four teams live as elements, and a medic keeps its own patched up.
+func test_elements_and_medic() -> void:
+	var s: WorldSim = WorldSim.new()
+	s.set_bounds(Vector2(-20, -20), Vector2(120, 120))
+	s.spawn(Vector2(50, 50), &"cdr", WorldSim.SQUAD, 0)
+	s.spawn(Vector2(51, 50), &"med", WorldSim.SQUAD, 0)
+	var hurt: int = s.spawn(Vector2(52, 50), &"cbt", WorldSim.SQUAD, 0)
+	s.spawn(Vector2(80, 80), &"cdr", WorldSim.SQUAD, 1)
+	check("element 0 holds its three", s.element_ids(0).size() == 3, "got %d" % s.element_ids(0).size())
+	check("element 1 holds its one", s.element_ids(1).size() == 1, "got %d" % s.element_ids(1).size())
+	s.hp[hurt] = 20.0
+	for tick in 120:      # 2 s beside the medic
+		s.step(1.0 / 60.0)
+	check("the medic patches a wounded ally", s.hp[hurt] > 40.0, "hp 20 -> %.0f" % s.hp[hurt])
 
 
 func perf() -> void:

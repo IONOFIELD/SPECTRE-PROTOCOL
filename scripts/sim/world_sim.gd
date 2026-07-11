@@ -16,6 +16,8 @@ const WAYPOINT: float = 1.1           # corner-cutting tolerance on intermediate
 const MAX_PUSH: float = 2.4           # m/s of separation velocity, capped
 const CELL: float = 12.0              # measured knee: rebuild cost falls with cell size,
                                       # query cost is flat (call overhead dominates candidates).
+const HEAL_RANGE: float = 9.0
+const HEAL_RATE: float = 14.0         # hp/s a medic restores to nearby allies
 
 # teams. Civilians never fight (they run); everyone else is hostile across team
 # lines. Infected hunt every warm body; the Sanitation Force clears the lot.
@@ -48,6 +50,7 @@ var team: Array[int] = []
 var hp: Array[float] = []
 var alive: Array[bool] = []
 var selected: Array[bool] = []
+var element: Array[int] = []          # player element 0-3, or -1 for non-player units
 var foe: Array[int] = []              # current target index, -1 = none
 var cd: Array[float] = []             # seconds until this unit may fire/strike again
 
@@ -84,7 +87,7 @@ func count() -> int:
 	return pos.size()
 
 
-func spawn(p: Vector2, t: StringName, tm: int = 0) -> int:
+func spawn(p: Vector2, t: StringName, tm: int = 0, elem: int = -1) -> int:
 	assert(STATS.has(t), "unknown unit type: " + String(t))
 	pos.append(p)
 	vel.append(Vector2.ZERO)
@@ -98,6 +101,7 @@ func spawn(p: Vector2, t: StringName, tm: int = 0) -> int:
 	hp.append(STATS[t][1])
 	alive.append(true)
 	selected.append(false)
+	element.append(elem)
 	foe.append(-1)
 	cd.append(0.0)
 	return pos.size() - 1
@@ -159,6 +163,15 @@ func selected_ids() -> Array:
 	var out: Array = []
 	for i in count():
 		if alive[i] and selected[i]:
+			out.append(i)
+	return out
+
+
+## Living units in player element `e` (0-3).
+func element_ids(e: int) -> Array:
+	var out: Array = []
+	for i in count():
+		if alive[i] and element[i] == e:
 			out.append(i)
 	return out
 
@@ -255,6 +268,7 @@ func step(dt: float) -> void:
 			heading[i] = atan2(vel[i].x, vel[i].y)
 
 	_reap()
+	_heal(dt)
 
 
 func moving(i: int) -> bool:
@@ -453,6 +467,20 @@ func _scatter(unit_kind: StringName, team_id: int, n: int, rng: RandomNumberGene
 			continue
 		spawn(p, unit_kind, team_id)
 		placed += 1
+
+
+## Medics top up nearby allies -- same faction, within reach, up to the ally's max.
+func _heal(dt: float) -> void:
+	for i in count():
+		if not alive[i] or kind[i] != &"med":
+			continue
+		grid.query_into(pos[i], HEAL_RANGE, _near)
+		for j in _near:
+			if j == i or not alive[j] or team[j] != team[i]:
+				continue
+			var maxhp: float = STATS[kind[j]][1]
+			if hp[j] < maxhp:
+				hp[j] = minf(maxhp, hp[j] + HEAL_RATE * dt)
 
 
 ## Segment [a,b] vs an axis-aligned rect, by slab-clipping the parameter range.
