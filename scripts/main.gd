@@ -125,6 +125,7 @@ var probe_lock: bool = false   # freeze the follow cam for A/B captures
 var agc_pinned: bool = false   # A/B rig only
 var _shot_dir: String = OS.get_environment("SPECTRE_SHOT")
 const SHOT_FRAMES: Array = [60, 104, 260, 700]
+var _map_dir: String = OS.get_environment("SPECTRE_MAP")   # set to grab one whole-map PNG, then quit
 
 func _maybe_capture() -> void:
 	if not SHOT_FRAMES.has(int(frame_n)):
@@ -741,9 +742,51 @@ func _process(delta: float) -> void:
 			"FROZEN" if agc.frozen else "AUTO", agc.lo, agc.hi,
 			Engine.get_frames_per_second()]
 
+	if _map_dir != "":
+		_map_overview()
 
-## The exfil status line: the clock while inbound, "LZ OPEN" once the bird's down,
-## then a per-element tally (OUT / LIFTED / ESCAPED / LOST).
+
+## SPECTRE_MAP=<dir>: override the optic to a near-top-down frame of the WHOLE map
+## (land + water + both bridges), then grab a single PNG and quit. A dev capture
+## hook; no effect on normal play.
+func _map_overview() -> void:
+	if city == null:
+		return
+	mode = 0          # WHT HOT: bright warm land, dark cold water
+	cctv = 0.0        # no monitor snow, for a clean map
+	# flatten the detector look so fine geography survives the wide framing --
+	# bloom especially floods the whole sheet bright from this altitude.
+	sensor_mat.set_shader_parameter("bloom", 0.0)
+	sensor_mat.set_shader_parameter("noise_amt", 0.0)
+	sensor_mat.set_shader_parameter("fpn_amt", 0.0)
+	sensor_mat.set_shader_parameter("vignette", 0.0)
+	sensor_mat.set_shader_parameter("dither", false)
+	var cx: float = (city.map_lo.x + city.map_hi.x) * 0.5
+	var cz: float = (city.map_lo.y + city.map_hi.y) * 0.5
+	var span: float = maxf(city.map_hi.x - city.map_lo.x, city.map_hi.y - city.map_lo.y)
+	var h: float = span * 1.15
+	# bracket near/far TIGHTLY around the ground -- a wide range at this altitude
+	# z-fights the water plane against the dirt bed beneath it (dirt bleeds through
+	# warm). Tight planes restore depth precision so cold water reads cold.
+	cam.near = h * 0.65
+	cam.far = h * 1.6
+	cam.fov = 52.0
+	cam.position = Vector3(cx, h, cz + h * 0.14)     # a hair south of straight down, for depth
+	cam.look_at(Vector3(cx, 0.0, cz), Vector3.UP)
+	if int(frame_n) == 150:
+		_grab_map(_map_dir + "/sf_map_overview.png")
+
+
+func _grab_map(path: String) -> void:
+	await RenderingServer.frame_post_draw
+	var img: Image = get_viewport().get_texture().get_image()
+	if img != null:
+		img.save_png(path)
+		print("SPECTRE_MAP saved ", path)
+	get_tree().quit()
+
+
+## The exfil status line: the survival clock, then a per-element tally (OUT / CLEAR / LOST).
 func _mission_line() -> String:
 	if mission == null:
 		return ""
