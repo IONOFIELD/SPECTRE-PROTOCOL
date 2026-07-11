@@ -19,9 +19,11 @@ const CELL: float = 12.0              # measured knee: rebuild cost falls with c
 const HEAL_RANGE: float = 9.0
 const HEAL_RATE: float = 14.0         # hp/s a medic restores to nearby allies
 
-# teams. Civilians never fight (they run); everyone else is hostile across team
-# lines. Infected hunt every warm body; the Sanitation Force clears the lot.
-enum { SQUAD = 0, INFECTED = 1, CIVILIAN = 2, SANITATION = 3 }
+# teams. Civilians never fight (they run). Infected + Sanitation + Bandits HUNT
+# (roam for the nearest warm body); Squad + Survivors hold and engage what they
+# see. Sanitation clears the whole board -- the apex threat. Hostility is a
+# directional matrix (see HOSTILE).
+enum { SQUAD = 0, INFECTED = 1, CIVILIAN = 2, SANITATION = 3, BANDIT = 4, SURVIVOR = 5 }
 
 # [speed m/s, hp, sight m, range m, damage, interval s]. These are v0.19's EXACT
 # stat ratios (hp, damage, sight/range shape) scaled by k = 0.12 m per v0.19 unit,
@@ -35,9 +37,31 @@ const STATS: Dictionary = {
 	&"med": [7.2, 90.0, 21.6, 10.8, 6.0, 1.0],      # medic: heals in contact (see _heal)
 	&"cdr": [7.0, 120.0, 26.4, 19.2, 15.0, 0.9],    # commander: leads the element
 	&"zed": [4.8, 60.0, 35.0, 1.4, 12.0, 1.1],      # infected: FASTER than civs, melee claw
+	&"run": [7.8, 34.0, 38.0, 1.4, 9.0, 0.8],       # runner: OUTRUNS the squad, fragile, quick claw
+	&"bru": [3.4, 150.0, 28.0, 1.9, 26.0, 1.6],     # brute: slow, soaks a magazine, heavy claw
 	&"civ": [3.6, 40.0, 30.0, 0.0, 0.0, 0.0],       # civilian: unarmed, runs but gets caught
 	&"san": [7.4, 400.0, 40.8, 30.0, 25.0, 0.6],    # Sanitation elite: armoured (400 hp), fast, ranged
+	&"bnd": [6.8, 75.0, 30.0, 16.0, 14.0, 1.0],     # bandit: aggressive armed hunter, squishy
+	&"svr": [5.4, 95.0, 18.0, 20.0, 16.0, 1.1],     # survivor: dug-in holdout, short sight, hits hard
 }
+
+# Directional hostility: the teams A will shoot/claw. Civilians fight no one.
+# Infected bite everything living; Sanitation clears the whole board (apex).
+# Bandits prey on the living + brawl the horde but won't pick a fight with
+# Sanitation. Survivors are paranoid -- they fire on anyone who closes, the
+# squad included -- but they don't hunt the crowd's unarmed civilians.
+const HOSTILE: Dictionary = {
+	SQUAD:      [INFECTED, SANITATION, BANDIT, SURVIVOR],
+	INFECTED:   [SQUAD, CIVILIAN, SANITATION, BANDIT, SURVIVOR],
+	CIVILIAN:   [],
+	SANITATION: [SQUAD, INFECTED, CIVILIAN, BANDIT, SURVIVOR],
+	BANDIT:     [SQUAD, CIVILIAN, SURVIVOR, INFECTED],
+	SURVIVOR:   [INFECTED, SANITATION, BANDIT, SQUAD],
+}
+
+# Teams that ROAM the whole map for the nearest warm body (no line of sight);
+# the rest hold ground and engage only what they can see.
+const HUNTERS: Array = [INFECTED, SANITATION, BANDIT]
 
 # struct of arrays. Cache friendly, trivially serialisable, and the grid can
 # rebuild straight off `pos` and `alive` without touching anything else.
@@ -308,20 +332,14 @@ func load_buildings(rects: Array[Rect2]) -> void:
 
 # ---- combat ----------------------------------------------------------------
 
-## Does team `a` shoot/claw team `b`? Civilians fight no one. Infected hunt every
-## non-infected; the Sanitation Force clears everyone but itself; the squad
-## engages infected + sanitation.
+## Does team `a` shoot/claw team `b`? Straight matrix lookup (see HOSTILE).
 func _targets(a: int, b: int) -> bool:
-	if a == b:
-		return false
-	match a:
-		SQUAD:
-			return b == INFECTED or b == SANITATION
-		INFECTED:
-			return b != INFECTED
-		SANITATION:
-			return b != SANITATION
-	return false
+	return a != b and (HOSTILE[a] as Array).has(b)
+
+
+## Roamers sense the nearest warm body anywhere; holders wait to see one.
+func _hunts(t: int) -> bool:
+	return HUNTERS.has(t)
 
 
 ## Refresh foe[i]: keep a live target still in sight, else acquire the nearest
@@ -331,10 +349,10 @@ func _acquire(i: int) -> void:
 	if t == CIVILIAN:
 		foe[i] = -1
 		return
-	# Infected + Sanitation HUNT: they sense the nearest warm body anywhere on the
-	# map, no line of sight -- the horde closes on you rather than standing idle.
+	# HUNTERS (infected, sanitation, bandits) sense the nearest warm body anywhere
+	# on the map, no line of sight -- they close on you rather than standing idle.
 	# The scan is O(n) but staggered (see step), so it costs a fraction of a tick.
-	if t == INFECTED or t == SANITATION:
+	if _hunts(t):
 		var best: int = -1
 		var bestd: float = INF
 		for j in count():
@@ -381,14 +399,15 @@ func _combat(i: int, sp: float) -> Vector2:
 				_strike(i, f)
 			return Vector2.ZERO
 		return (pos[f] - pos[i]) / maxf(d, 1e-5) * sp
-	# shooters: squad + sanitation. Fire in range with a clear line.
+	# shooters: squad, sanitation, bandits, survivors. Fire in range, clear line.
+	# Only the squad's trigger is disciplined (weapons_free); the rest fire at will.
 	if d <= reach and _los(pos[i], pos[f]):
-		if cd[i] <= 0.0 and (t == SANITATION or weapons_free):
+		if cd[i] <= 0.0 and (t != SQUAD or weapons_free):
 			_strike(i, f)
-		return Vector2.ZERO          # in range: stand and shoot (squad also holds; orders move it)
-	if t == SANITATION:
-		return (pos[f] - pos[i]) / maxf(d, 1e-5) * sp   # out of range: close in
-	return Vector2.ZERO              # squad out of range: hold (the player orders it forward)
+		return Vector2.ZERO          # in range: stand and shoot
+	if _hunts(t):
+		return (pos[f] - pos[i]) / maxf(d, 1e-5) * sp   # sanitation + bandits close in
+	return Vector2.ZERO              # squad + survivors hold (squad = player-ordered; survivor digs in)
 
 
 ## A civilian steers directly away from the nearest thing that would kill it.

@@ -27,6 +27,7 @@ func _initialize() -> void:
 	test_navigation_beats_a_wall()
 	test_combat_resolves()
 	test_civilian_flees()
+	test_new_factions()
 	test_population_hunts_and_fights()
 	test_elements_and_medic()
 	test_mission_exfil()
@@ -289,6 +290,62 @@ func test_civilian_flees() -> void:
 	var d1: float = s.pos[civ].distance_to(s.pos[zed])
 	check("the civilian runs but the horde runs it down", d1 < d0 - 1.0, "gap %.1f -> %.1f m" % [d0, d1])
 	check("the civilian never shoots back", s.foe[civ] == -1, "foe=%d" % s.foe[civ])
+
+
+## The new ecology: bandits hunt + gun you down, survivors hold ground and fire on
+## what closes, runners outpace the squad, brutes soak a magazine to reach melee.
+func test_new_factions() -> void:
+	# 1) a bandit hunts a lone trooper and guns him down (squad holding fire)
+	var s: WorldSim = WorldSim.new()
+	s.set_bounds(Vector2(-40, -40), Vector2(160, 160))
+	s.weapons_free = false
+	var trooper: int = s.spawn(Vector2(50, 50), &"cbt", WorldSim.SQUAD)
+	var bandit: int = s.spawn(Vector2(50, 74), &"bnd", WorldSim.BANDIT)
+	for _t in 330:
+		s.step(1.0 / 60.0)
+	var bd: float = s.pos[bandit].distance_to(s.pos[trooper])
+	check("a bandit hunts and guns down a lone trooper",
+		s.hp[trooper] < 100.0 and s.alive[bandit] and bd < 18.0,
+		"trooper hp %.0f, bandit %.1f m off" % [s.hp[trooper], bd])
+
+	# 2) a survivor holds its ground and drops an approaching zombie
+	var s2: WorldSim = WorldSim.new()
+	s2.set_bounds(Vector2(-40, -40), Vector2(160, 160))
+	var svr: int = s2.spawn(Vector2(50, 50), &"svr", WorldSim.SURVIVOR)
+	var zed: int = s2.spawn(Vector2(50, 64), &"zed", WorldSim.INFECTED)
+	for _t in 420:
+		s2.step(1.0 / 60.0)
+	var drift: float = s2.pos[svr].distance_to(Vector2(50, 50))
+	check("a survivor holds ground and drops the infected",
+		not s2.alive[zed] and s2.alive[svr] and drift < 4.0,
+		"zed alive=%s, survivor drifted %.1f m" % [s2.alive[zed], drift])
+
+	# 3) a runner closes faster than a walker chasing the same mark
+	var s3: WorldSim = WorldSim.new()
+	s3.set_bounds(Vector2(-40, -40), Vector2(160, 160))
+	s3.weapons_free = false
+	var mark: int = s3.spawn(Vector2(50, 50), &"cbt", WorldSim.SQUAD)
+	var runner: int = s3.spawn(Vector2(48, 90), &"run", WorldSim.INFECTED)
+	var walker: int = s3.spawn(Vector2(52, 90), &"zed", WorldSim.INFECTED)
+	for _t in 120:
+		s3.step(1.0 / 60.0)
+	var dr: float = s3.pos[runner].distance_to(s3.pos[mark])
+	var dw: float = s3.pos[walker].distance_to(s3.pos[mark])
+	check("a runner outpaces a walker chasing the same mark", dr < dw - 3.0,
+		"runner %.1f m vs walker %.1f m from the mark" % [dr, dw])
+
+	# 4) a brute soaks the trooper's fire and still reaches melee
+	var s4: WorldSim = WorldSim.new()
+	s4.set_bounds(Vector2(-40, -40), Vector2(160, 160))
+	s4.weapons_free = true
+	var gun: int = s4.spawn(Vector2(50, 50), &"cbt", WorldSim.SQUAD)
+	var brute: int = s4.spawn(Vector2(50, 72), &"bru", WorldSim.INFECTED)
+	for _t in 400:
+		s4.step(1.0 / 60.0)
+	var brd: float = s4.pos[brute].distance_to(s4.pos[gun])
+	check("a brute soaks fire and reaches melee",
+		s4.alive[brute] and brd < 3.0 and s4.hp[gun] < 100.0,
+		"brute hp %.0f at %.1f m, trooper hp %.0f" % [s4.hp[brute], brd, s4.hp[gun]])
 
 
 ## A populated city: factions land on walkable ground, and the hunting horde
