@@ -42,9 +42,17 @@ const ZOMBIES: Array = [
 	"res://models/characters/zombie_3.glb",
 ]
 const ZOMBIE_SCALE: float = 0.32
-const POP_INFECTED: int = 80    # v0.19's horde count, now spread over the bigger city
-const POP_CIV: int = 60         # v0.19's crowd -- warm panicked bodies to read among
+const POP_INFECTED: int = 70    # ambient horde, spread over the ~806 m city
+const POP_CIV: int = 55         # the crowd -- warm panicked bodies to read among
 const POP_SAN: int = 6          # the wipe force: rare, deadly, cool signatures (v0.19 elite = 6)
+# The wider ecology -- cheap now that units are shapes. Counts span the whole city.
+const POP_RUNNERS: int = 22     # fast, fragile infected mixed through the horde
+const POP_BRUTES: int = 10      # slow, tanky infected
+const BANDIT_CREWS: int = 5     # roaming armed crews...
+const BANDIT_PER_CREW: int = 5
+const SURVIVOR_HOLDOUTS: int = 6   # dug-in armed holdouts...
+const SURVIVOR_PER_HOLDOUT: int = 3
+const GAUNTLET_PER_BRIDGE: int = 44   # infected choking each bridge deck
 const ELEMENTS: int = 4
 const ELEMENT_ROSTER: Array = [&"cdr", &"cbt", &"med", &"snp", &"rec"]   # per team; CMD leads
 
@@ -52,10 +60,7 @@ const ELEMENT_ROSTER: Array = [&"cdr", &"cbt", &"med", &"snp", &"rec"]   # per t
 # the role is carried by HEAT + SIZE, not the model. false = minimalist thermal
 # shapes (the rymdkapsel read, matches v0.19); true = the PS1 .glb + idle rigs.
 const USE_MODELS: bool = false
-# Exfil LZ: a central road intersection (open ground), a ~440 m fight from the
-# deploy plaza. The birds are on station at Mission.HELI_ARRIVE (120 s).
-const LZ_POS: Vector2 = Vector2(372.0, 372.0)
-const HELP_TEXT: String = "[LMB] pick   [drag] box-select   [RMB] move   [F] weapons free\n[TAB]/[1-4] element   [SPACE] AC-130 view   [WASD] pan   [wheel] zoom\n[T] palette   [C] snow   [H] hide"
+const HELP_TEXT: String = "[LMB] pick   [drag] box-select   [RMB] move   [F] weapons free\n[TAB]/[1-4] element   [SPACE] AC-130 view   [WASD] pan   [wheel] zoom\n[T] palette   [C] snow   [H] hide      EXFIL: cross a bridge on foot"
 
 var res_idx := 1
 var snap_res: Vector2i = RESOLUTIONS[1]
@@ -89,8 +94,6 @@ var dragging: bool = false
 
 # mission / exfil
 var mission: Mission
-var lz_node: Node3D                    # LZ pad + (once on station) the bird, freed on rebuild
-var bird_up: bool = false
 var banner: Label                      # win / lose card, hidden until the mission ends
 var help: Label
 var show_help: bool = true
@@ -396,32 +399,27 @@ func _scatter_roof_props() -> void:
 
 
 func _spawn() -> void:
-	if lz_node != null:
-		lz_node.queue_free()
-		lz_node = null
-	bird_up = false
 	sim = WorldSim.new()
-	var obstacles: Array[Rect2] = city.building_rects()
+	var walls: Array[Rect2] = city.building_rects()
 	if cars != null:
-		obstacles.append_array(cars.rects)     # semis block; the rest you walk around
-	sim.load_buildings(obstacles)
-	# four elements, staged in a 2x2 on the deploy plaza. CMD leads each; all one faction.
+		walls.append_array(cars.rects)     # semis block; the rest you walk around
+	# walls block LOS + nav; water blocks nav only; bridge decks are slowed gaps.
+	sim.load_map(walls, city.water, city.bridges, city.map_lo, city.map_hi)
+	# four elements, staged in a 2x2 on the deploy plaza (SW corner of the land).
 	for e in ELEMENTS:
 		var base: Vector2 = Vector2(64.0 + float(e % 2) * 10.0, 62.0 + float(e / 2) * 10.0)
 		for j in ELEMENT_ROSTER.size():
 			var p: Vector2 = base + Vector2(float(j % 3) * 1.4, float(j / 3) * 1.4)
 			sim.spawn(p, ELEMENT_ROSTER[j], WorldSim.SQUAD, e)
-	sim.populate(POP_INFECTED, POP_CIV, POP_SAN)   # the horde, the crowd, the hunters
-	# exfil objective: cross the city to the LZ, hold until the birds land at 120 s.
+	_populate_world()
+	# the only way off the peninsula is on foot across a bridge (city.escapes).
 	mission = Mission.new()
-	var span: float = float(city.grid_n) * (CityGen.BLOCK + CityGen.STREET)
-	mission.setup(LZ_POS, Vector2(-30, -30), Vector2(span + 30, span + 30), ELEMENTS)
-	_build_lz()
+	mission.setup(city.escapes, ELEMENTS)
 	# one visual per sim unit, index-aligned with the sim arrays.
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 	rng.randomize()
 	for i in sim.count():
-		var v: Node3D = _make_unit_view(sim.team[i], rng)
+		var v: Node3D = _make_unit_view(sim.team[i], sim.kind[i], rng)
 		if v != null:
 			v.position = Vector3(sim.pos[i].x, 0.0, sim.pos[i].y)
 			vp.add_child(v)
@@ -430,87 +428,68 @@ func _spawn() -> void:
 	_select_element(active_element)
 
 
-## The exfil pad: a warm painted square on the deck -- a thermal landmark you can
-## read from across the city. The bird itself sets down only once on station.
-func _build_lz() -> void:
-	lz_node = Node3D.new()
-	lz_node.name = "LZ"
-	vp.add_child(lz_node)
-	var pad: MeshInstance3D = MeshInstance3D.new()
-	var pm: PlaneMesh = PlaneMesh.new()
-	pm.size = Vector2(Mission.LZ_RADIUS * 2.0, Mission.LZ_RADIUS * 2.0)
-	pad.mesh = pm
-	pad.position = Vector3(LZ_POS.x, 0.06, LZ_POS.y)   # just over the road, never coplanar
-	pad.material_override = ThermalLib.get_material("road", snap_res)
-	lz_node.add_child(pad)
+## Seed the whole ecology: the ambient horde + crowd + sanitation on the land, a
+## mix of zombie variants, roaming bandit crews, dug-in survivor holdouts, and a
+## dense infected gauntlet choking each bridge deck.
+func _populate_world() -> void:
+	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
+	rng.randomize()
+	sim.populate(POP_INFECTED, POP_CIV, POP_SAN, city.land)   # ambient zed/civ/san on land
+	sim.scatter(&"run", WorldSim.INFECTED, POP_RUNNERS, city.land, rng)
+	sim.scatter(&"bru", WorldSim.INFECTED, POP_BRUTES, city.land, rng)
+	for _c in BANDIT_CREWS:
+		sim.spawn_cluster(&"bnd", WorldSim.BANDIT, _random_land_point(rng), BANDIT_PER_CREW, 6.0, rng)
+	for _h in SURVIVOR_HOLDOUTS:
+		sim.spawn_cluster(&"svr", WorldSim.SURVIVOR, _random_land_point(rng), SURVIVOR_PER_HOLDOUT, 4.0, rng)
+	for b in city.bridges:
+		sim.spawn_line(&"zed", WorldSim.INFECTED, b, GAUNTLET_PER_BRIDGE, rng)   # the choked deck
 
 
-## The bird lands: a tandem-rotor fuselage (engine-hot) with two hotter nacelles.
-## A hard, bright signature over the pad that says "board here, now."
-func _land_bird() -> void:
-	bird_up = true
-	if lz_node == null:
-		return
-	var body: MeshInstance3D = MeshInstance3D.new()
-	var bm: BoxMesh = BoxMesh.new()
-	bm.size = Vector3(3.0, 2.2, 12.0)     # nose-to-ramp fuselage
-	body.mesh = bm
-	body.position = Vector3(LZ_POS.x, 1.3, LZ_POS.y)
-	body.material_override = ThermalLib.get_material("hvac", snap_res)
-	lz_node.add_child(body)
-	for dz in [-4.2, 4.2]:                 # forward + aft engine, hottest points
-		var eng: MeshInstance3D = MeshInstance3D.new()
-		var em: BoxMesh = BoxMesh.new()
-		em.size = Vector3(3.2, 1.0, 2.4)
-		eng.mesh = em
-		eng.position = Vector3(LZ_POS.x, 2.6, LZ_POS.y + dz)
-		eng.material_override = ThermalLib.get_material("exhaust", snap_res)
-		lz_node.add_child(eng)
+func _random_land_point(rng: RandomNumberGenerator) -> Vector2:
+	return Vector2(
+		rng.randf_range(city.land.position.x, city.land.end.x),
+		rng.randf_range(city.land.position.y, city.land.end.y))
 
 
 ## Build the visual for one sim unit. Returns null for an unknown team (still kept
 ## in the array, for index alignment). Dispatches to a minimalist thermal shape
 ## (default) or the PS1 model, per USE_MODELS.
-func _make_unit_view(team: int, rng: RandomNumberGenerator) -> Node3D:
-	return _make_unit_model(team, rng) if USE_MODELS else _make_unit_shape(team)
+func _make_unit_view(team: int, kind: StringName, rng: RandomNumberGenerator) -> Node3D:
+	return _make_unit_model(team, rng) if USE_MODELS else _make_unit_shape(team, kind)
 
 
 ## Minimalist thermal body -- the mesh never betrays the role, HEAT and SIZE do.
-## Coldest/dimmest to hottest/brightest: infected 17.5 C (squat cool blob),
-## sanitation 21.5 C (tall broad cool pillar -- insulated, deliberate), squad 27 C
-## (warm upright), civilian 33.5 C (small bright panicked speck). One mesh, no rig.
-func _make_unit_shape(team: int) -> Node3D:
+## Coldest/dimmest to hottest/brightest: infected 17.5 C (cool blob; runner small,
+## brute a big mass), sanitation 21.5 C (tall broad cool pillar), squad/bandit/
+## survivor 27 C (warm upright -- told apart by the allegiance overlay, not heat),
+## civilian 33.5 C (small bright panicked speck). One mesh, no rig.
+func _make_unit_shape(team: int, kind: StringName) -> Node3D:
 	var mi: MeshInstance3D = MeshInstance3D.new()
 	var key: String = "cloth"
 	match team:
 		WorldSim.SQUAD:
-			var c: CapsuleMesh = CapsuleMesh.new()
-			c.height = 1.8
-			c.radius = 0.34
-			mi.mesh = c
-			mi.position.y = 0.9
+			_capsule(mi, 1.8, 0.34)
 			key = "cloth"
 		WorldSim.INFECTED:
-			var s: SphereMesh = SphereMesh.new()
-			s.radius = 0.5
-			s.height = 1.1
-			mi.mesh = s
-			mi.position.y = 0.55
+			if kind == &"run":
+				_sphere(mi, 0.4, 0.85)      # runner: small, quick blob
+			elif kind == &"bru":
+				_sphere(mi, 0.72, 1.5)      # brute: a big cool mass
+			else:
+				_sphere(mi, 0.5, 1.1)       # walker
 			key = "zed"
 		WorldSim.CIVILIAN:
-			var c2: CapsuleMesh = CapsuleMesh.new()
-			c2.height = 1.6
-			c2.radius = 0.24
-			mi.mesh = c2
-			mi.position.y = 0.8
+			_capsule(mi, 1.6, 0.24)
 			key = "skin"
 		WorldSim.SANITATION:
-			var c3: CapsuleMesh = CapsuleMesh.new()
-			c3.height = 2.15
-			c3.radius = 0.46
-			mi.mesh = c3
-			mi.position.y = 1.075
+			_capsule(mi, 2.15, 0.46)
 			key = "suit_elite"
+		WorldSim.BANDIT:
+			_capsule(mi, 1.75, 0.33)        # lean armed human
+			key = "cloth"
+		WorldSim.SURVIVOR:
+			_capsule(mi, 1.78, 0.35)        # dug-in armed human
+			key = "cloth"
 		_:
 			return null
 	mi.material_override = ThermalLib.get_material(key, snap_res)
@@ -518,6 +497,22 @@ func _make_unit_shape(team: int) -> Node3D:
 	var root: Node3D = Node3D.new()
 	root.add_child(mi)
 	return root
+
+
+func _capsule(mi: MeshInstance3D, h: float, r: float) -> void:
+	var c: CapsuleMesh = CapsuleMesh.new()
+	c.height = h
+	c.radius = r
+	mi.mesh = c
+	mi.position.y = h * 0.5
+
+
+func _sphere(mi: MeshInstance3D, r: float, h: float) -> void:
+	var s: SphereMesh = SphereMesh.new()
+	s.radius = r
+	s.height = h
+	mi.mesh = s
+	mi.position.y = h * 0.5
 
 
 ## The PS1 path: the right model, thermal-reskinned, scaled to human height,
@@ -675,9 +670,6 @@ func _process(delta: float) -> void:
 	if mission != null:
 		var was: int = mission.result
 		mission.update(sim, delta)
-		if mission.helo_on_station() and not bird_up:
-			_land_bird()
-			# (drop an "exfil_inbound" clip into audio/comms/ to voice this beat)
 		if was == Mission.ONGOING and mission.result != Mission.ONGOING:
 			_show_banner(mission.result == Mission.WON)
 
@@ -757,15 +749,12 @@ func _mission_line() -> String:
 		return ""
 	var head: String
 	if mission.result == Mission.WON:
-		head = "MISSION COMPLETE  //  ELEMENTS CLEAR"
+		head = "EXFIL COMPLETE  //  ELEMENTS CLEAR"
 	elif mission.result == Mission.LOST:
-		head = "MISSION FAILED  //  ELEMENTS LOST"
-	elif mission.helo_on_station():
-		head = "EXFIL  LZ OPEN -- BOARD NOW"
+		head = "OVERRUN  //  ALL ELEMENTS LOST"
 	else:
-		var trem: int = int(ceil(maxf(0.0, Mission.HELI_ARRIVE - mission.t)))
-		head = "EXFIL  BIRDS INBOUND  T-%d:%02d" % [trem / 60, trem % 60]
-	var tags: Array = ["OUT", "LIFTED", "ESCAPED", "LOST"]
+		head = "EXFIL ON FOOT -- CROSS A BRIDGE   T+%d:%02d" % [int(mission.t) / 60, int(mission.t) % 60]
+	var tags: Array = ["OUT", "CLEAR", "LOST"]
 	var tally: String = ""
 	for e in mission.n_elements:
 		tally += "  %d:%s" % [e + 1, tags[mission.status[e]]]
@@ -785,6 +774,7 @@ const SEL_COL: Color = Color(0.62, 0.88, 0.70, 0.85)
 func _draw_selection() -> void:
 	if cut_t >= 0.0:
 		return                      # the overlay generator rides the same signal
+	_draw_allegiance()
 	for i in sim.count():
 		if not sim.alive[i] or not sim.selected[i]:
 			continue
@@ -803,24 +793,50 @@ func _draw_selection() -> void:
 	if dragging:
 		var m: Vector2 = get_viewport().get_mouse_position()
 		sel_layer.draw_rect(Rect2(drag_start, m - drag_start), SEL_COL, false, 1.0)
-	_draw_lz()
+	_draw_escapes()
 
 
-## The exfil LZ, ringed on the deck: amber while the birds are inbound, green once
-## they're down. Skipped when the pad is behind the optic.
-func _draw_lz() -> void:
-	if mission == null or mission.result != Mission.ONGOING:
+## The two bridge escape zones, ringed on the deck -- the only ways out. Green,
+## labelled EXIT, wherever they fall on screen so you can steer for one.
+func _draw_escapes() -> void:
+	if mission == null or mission.result != Mission.ONGOING or city == null:
 		return
-	var centre_w: Vector3 = Vector3(LZ_POS.x, 0.1, LZ_POS.y)
-	if cam.is_position_behind(centre_w):
-		return
-	var c: Vector2 = _screen_point(centre_w)
-	var edge: Vector2 = _screen_point(Vector3(LZ_POS.x + Mission.LZ_RADIUS, 0.1, LZ_POS.y))
-	var rad: float = maxf(6.0, c.distance_to(edge))
-	var open: bool = mission.helo_on_station()
-	var col: Color = Color(0.5, 1.0, 0.6, 0.9) if open else Color(1.0, 0.78, 0.3, 0.7)
-	sel_layer.draw_arc(c, rad, 0.0, TAU, 48, col, 2.0)
-	sel_layer.draw_string(ThemeDB.fallback_font, c + Vector2(rad + 5.0, 4.0), "LZ", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, col)
+	var col: Color = Color(0.5, 1.0, 0.6, 0.85)
+	for z in city.escapes:
+		var centre: Vector3 = Vector3(z.position.x + z.size.x * 0.5, 0.6, z.position.y + z.size.y * 0.5)
+		if cam.is_position_behind(centre):
+			continue
+		var c: Vector2 = _screen_point(centre)
+		var edge: Vector2 = _screen_point(centre + Vector3(maxf(z.size.x, z.size.y) * 0.5, 0.0, 0.0))
+		var rad: float = clampf(c.distance_to(edge), 8.0, 70.0)
+		sel_layer.draw_arc(c, rad, 0.0, TAU, 40, col, 2.0)
+		sel_layer.draw_string(ThemeDB.fallback_font, c + Vector2(rad + 5.0, 4.0), "EXIT", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, col)
+
+
+## A tiny allegiance pip over every living unit -- the v0.19 coloured-unit read, so
+## warm human shapes (squad / bandit / survivor) don't all look alike on FLIR.
+func _draw_allegiance() -> void:
+	for i in sim.count():
+		if not sim.alive[i]:
+			continue
+		var col: Color = _alleg_color(sim.team[i])
+		if col.a <= 0.0:
+			continue
+		var w: Vector3 = Vector3(sim.pos[i].x, 0.9, sim.pos[i].y)
+		if cam.is_position_behind(w):
+			continue
+		sel_layer.draw_circle(_screen_point(w), 2.5, col)
+
+
+func _alleg_color(t: int) -> Color:
+	match t:
+		WorldSim.SQUAD: return Color(0.45, 0.95, 0.70, 0.90)      # friendly green
+		WorldSim.SANITATION: return Color(1.00, 0.28, 0.28, 0.95) # apex threat, hard red
+		WorldSim.BANDIT: return Color(1.00, 0.55, 0.20, 0.90)     # hostile, orange
+		WorldSim.SURVIVOR: return Color(1.00, 0.85, 0.35, 0.90)   # wary, amber
+		WorldSim.INFECTED: return Color(0.65, 0.45, 0.80, 0.70)   # horde, dim violet
+		WorldSim.CIVILIAN: return Color(0.85, 0.88, 0.95, 0.55)   # neutral, pale
+	return Color(0, 0, 0, 0)
 
 
 func _select_in_rect(r: Rect2) -> void:

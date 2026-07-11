@@ -25,12 +25,32 @@ const HALF_ST: float = 8.0
 const SIDEWALK: float = 2.4
 const SETBACK: float = 2.0     # building line, inside the sidewalk
 
+# --- SF geography (metres). The land is the grid; water rings it on three sides
+# (Pacific west, the strait north, the bay east) with two foot-bridges punched
+# through -- the ONLY ways off the peninsula. Reach a bridge's far end to escape.
+const STRAIT: float = 300.0    # depth of the Golden Gate strait the north bridge spans
+const BAY: float = 300.0       # width of the bay the east bridge spans
+const OCEAN: float = 200.0     # the Pacific shelf, west -- no crossing
+const LANE: float = 64.0       # bridge deck width
+const FAR: float = 40.0        # depth of a bridge's far-end escape zone
+const GG_X: float = 90.0       # Golden Gate lane, off the west of the north edge
+const BAY_Z: float = 360.0     # Bay Bridge lane, off the east edge
+
 @export var grid_n: int = 13     # ~806 m across (13 x 62 m); ~120 s to cross at 6.6 m/s
 @export var seed_value: int = 11
 
 var _snap_res: Vector2i = Vector2i(640, 360)
 var buildings: Array[Dictionary] = []
 var _surfaces: Dictionary = {}   # material -> Array[Rect2], all disjoint, all y = 0
+
+# geography, filled by generate() and read by main + the sim
+var water: Array[Rect2] = []     # nav + collision, NOT line of sight
+var bridges: Array[Rect2] = []   # walkable decks, movement-slowed
+var escapes: Array[Rect2] = []   # bridge far ends: step inside to get off the map
+var land: Rect2 = Rect2()        # the walkable city block, for ambient population
+var map_lo: Vector2 = Vector2.ZERO
+var map_hi: Vector2 = Vector2.ZERO
+var park: Rect2 = Rect2()        # Golden Gate Park, carved from the grid
 
 
 func building_rects() -> Array[Rect2]:
@@ -87,35 +107,93 @@ func generate(snap_res: Vector2i) -> void:
 	var pitch: float = BLOCK + STREET
 	var span: float = float(grid_n) * pitch
 
-	# dirt surround, 80 mm down. Never coplanar with anything.
+	_lay_geography(span)
+
+	# dirt bed, 80 mm down. Never coplanar with anything; covers the whole map.
 	var ground: PlaneMesh = PlaneMesh.new()
-	ground.size = Vector2(span + 300.0, span + 300.0)
-	ground.subdivide_width = 10
-	ground.subdivide_depth = 10
+	ground.size = Vector2(map_hi.x - map_lo.x + 200.0, map_hi.y - map_lo.y + 200.0)
+	ground.subdivide_width = 12
+	ground.subdivide_depth = 12
 	var gmi: MeshInstance3D = MeshInstance3D.new()
 	gmi.mesh = ground
-	gmi.position = Vector3(span * 0.5, -0.08, span * 0.5)
+	gmi.position = Vector3((map_lo.x + map_hi.x) * 0.5, -0.08, (map_lo.y + map_hi.y) * 0.5)
 	gmi.material_override = ThermalLib.get_material("ground", _snap_res)
 	add_child(gmi)
 
-	# --- roads. Horizontals run full length. Verticals stop at each kerb.
+	# --- water on three sides + the two bridge decks (disjoint from the land grid)
+	for w in water:
+		_tile(w, "water")
+	for b in bridges:
+		_tile(b, "road")
+	_bridge_towers(bridges[0], true)     # Golden Gate runs north -- towers span x
+	_bridge_towers(bridges[1], false)    # Bay Bridge runs east -- towers span z
+
+	# --- roads, clipped to the land so they meet the water cleanly at the edge.
+	var lr: Rect2 = Rect2(0.0, 0.0, span, span)
 	for j in grid_n + 1:
 		var cz: float = float(j) * pitch
-		_tile(Rect2(-HALF_ST, cz - HALF_ST, span + STREET, STREET), "road")
+		_tile(Rect2(-HALF_ST, cz - HALF_ST, span + STREET, STREET).intersection(lr), "road")
 	for i in grid_n + 1:
 		var cx: float = float(i) * pitch
 		for j in grid_n:
 			var z0: float = float(j) * pitch + HALF_ST
-			_tile(Rect2(cx - HALF_ST, z0, STREET, pitch - STREET), "road")
+			_tile(Rect2(cx - HALF_ST, z0, STREET, pitch - STREET).intersection(lr), "road")
 
-	# --- blocks
+	# --- blocks. Downtown leans toward the bay (Financial District, by the Bay
+	# Bridge); Golden Gate Park is carved out as a green swath.
 	for gx in grid_n:
 		for gz in grid_n:
 			var bx: float = float(gx) * pitch + HALF_ST
 			var bz: float = float(gz) * pitch + HALF_ST
-			_block(rng, bx, bz, Vector2(float(gx) - 2.2, float(gz) - 2.4).length())
+			if park.has_point(Vector2(bx + BLOCK * 0.5, bz + BLOCK * 0.5)):
+				_tile(Rect2(bx, bz, BLOCK, BLOCK), "park")
+				continue
+			var dc: float = Vector2(float(gx) - (float(grid_n) - 3.0), float(gz) - 5.5).length()
+			_block(rng, bx, bz, dc)
 
 	_emit_surfaces()
+
+
+## Water, bridges, escape zones and bounds around a `span`-metre land grid. Water
+## avoids the bridge lanes, so the decks are walkable gaps the nav routes onto for
+## free. Everything abuts the land at z=0 (north), x=span (east), x=0 (west).
+func _lay_geography(span: float) -> void:
+	water.clear()
+	bridges.clear()
+	escapes.clear()
+	land = Rect2(0.0, 0.0, span, span)
+	park = Rect2(70.0, 300.0, 360.0, 96.0)      # long green strip, west-centre
+
+	# north strait, flanking the Golden Gate lane
+	water.append(Rect2(0.0, -STRAIT, GG_X, STRAIT))
+	water.append(Rect2(GG_X + LANE, -STRAIT, span - GG_X - LANE, STRAIT))
+	# east bay, flanking the Bay Bridge lane
+	water.append(Rect2(span, 0.0, BAY, BAY_Z))
+	water.append(Rect2(span, BAY_Z + LANE, BAY, span - BAY_Z - LANE))
+	# west ocean, wrapping the north-west corner
+	water.append(Rect2(-OCEAN, -STRAIT, OCEAN, span + STRAIT))
+
+	bridges.append(Rect2(GG_X, -STRAIT, LANE, STRAIT))          # Golden Gate, north
+	bridges.append(Rect2(span, BAY_Z, BAY, LANE))               # Bay Bridge, east
+	escapes.append(Rect2(GG_X, -STRAIT, LANE, FAR))             # Marin end (far north)
+	escapes.append(Rect2(span + BAY - FAR, BAY_Z, FAR, LANE))   # Oakland end (far east)
+
+	map_lo = Vector2(-OCEAN - 20.0, -STRAIT - 20.0)
+	map_hi = Vector2(span + BAY + 20.0, span + 20.0)
+
+
+## Two cold steel towers on a bridge deck -- the thermal landmark that reads "bridge".
+func _bridge_towers(deck: Rect2, north_running: bool) -> void:
+	var h: float = 42.0
+	for f in [0.34, 0.66]:
+		if north_running:
+			var zc: float = deck.position.y + deck.size.y * f
+			_add_box(Vector3(deck.position.x + 1.6, 0.0, zc), Vector3(3.2, h, 3.2), "parapet")
+			_add_box(Vector3(deck.end.x - 1.6, 0.0, zc), Vector3(3.2, h, 3.2), "parapet")
+		else:
+			var xc: float = deck.position.x + deck.size.x * f
+			_add_box(Vector3(xc, 0.0, deck.position.y + 1.6), Vector3(3.2, h, 3.2), "parapet")
+			_add_box(Vector3(xc, 0.0, deck.end.y - 1.6), Vector3(3.2, h, 3.2), "parapet")
 
 
 func _block(rng: RandomNumberGenerator, bx: float, bz: float, dc: float) -> void:
