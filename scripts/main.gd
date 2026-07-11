@@ -25,8 +25,8 @@ const RESOLUTIONS: Array = [Vector2i(320, 180), Vector2i(640, 360), Vector2i(960
 const CUT_DUR: float = 0.52
 const CUT_SWAP: float = 0.30          # the new feed goes live here, under the snow
 const INTRO_HOLD: float = 7.0         # seconds holding the deploy view before the AC-130 cut
-const ZOOM_MIN: float = 22.0          # AC-130 optic floor -- never drops to a ground-level camera
-const ZOOM_MAX: float = 900.0         # high enough to frame the whole ~806 m city from the pylon turn
+const ZOOM_MIN: float = 150.0         # closest: a clustered force still fits the screen at once
+const ZOOM_MAX: float = 1650.0        # farthest: the whole peninsula frames; ocean, never void, beyond
 const MUSIC_BED: String = "res://audio/music/music1.wav"   # loops; Audio owns the level
 const AMBIENCE_BED: String = "res://audio/ambience/ghost_town.wav"   # ghost-town bed
 const HUD_FONT: String = "res://fonts/inversionz_unboxed.ttf"   # Inversionz Unboxed, Darrell Flood
@@ -100,15 +100,15 @@ var show_help: bool = true
 
 # feeds
 const FEED: Dictionary = {
-	"deploy": {"dist": 34.0, "el": 0.40, "fov": 30.0, "follow": true, "orbit": 0.0},
-	"orbit":  {"dist": 640.0, "el": 0.98, "fov": 24.0, "follow": false, "orbit": 0.035},
+	"deploy": {"dist": 240.0, "el": 0.90, "fov": 40.0, "follow": true, "orbit": 0.0},
+	"orbit":  {"dist": 1500.0, "el": 1.25, "fov": 40.0, "follow": false, "orbit": 0.015},
 }
 var feed := "deploy"
 var cam_tx := 74.0
 var cam_tz := 69.0
-var cam_dist := 22.0
+var cam_dist := 240.0
 var cam_az := -0.85
-var cam_el := 0.28
+var cam_el := 0.90
 var cam_manual := false                # manual pan/keys stop the follow until you re-pick a team
 
 var cut_t := -1.0
@@ -203,10 +203,11 @@ func _build_tree() -> void:
 
 	cam = Camera3D.new()
 	cam.fov = 24.0
-	# 0.08/6000 gave 47 mm of depth resolution at 250 m. The road slabs were
-	# 40 mm apart. Now 0.35/2200: 1.6 mm at 250 m, and nothing is coplanar anyway.
-	cam.near = 0.35
-	cam.far = 2200.0
+	# The optic never sits below ZOOM_MIN (~150 m out), so nothing is ever within
+	# ~100 m of the lens. A near of 6 m (vs 0.35) buys far better depth precision at
+	# the max-zoom altitude, so the 1.5 m coast step never z-fights the ocean.
+	cam.near = 6.0
+	cam.far = 2600.0
 	vp.add_child(cam)
 
 	# The ear rides the optic. Combat SFX play from an AudioStreamPlayer3D pool
@@ -709,6 +710,14 @@ func _process(delta: float) -> void:
 		cam_tz = lerpf(cam_tz, c.z, minf(1.0, delta * 1.6))
 	if orbit_auto and f.orbit > 0.0 and cut_t < 0.0:
 		cam_az += f.orbit * delta
+
+	# bound the optic to the map (+ its ocean margin) and to the zoom band, so the
+	# view never leaves the peninsula for the void, never zooms out past the coast,
+	# and never zooms in past a clustered force.
+	if city != null:
+		cam_tx = clampf(cam_tx, city.map_lo.x, city.map_hi.x)
+		cam_tz = clampf(cam_tz, city.map_lo.y, city.map_hi.y)
+	cam_dist = clampf(cam_dist, ZOOM_MIN, ZOOM_MAX)
 
 	cam.fov = f.fov
 	var eye: Vector3 = Vector3(

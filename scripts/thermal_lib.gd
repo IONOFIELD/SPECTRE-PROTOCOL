@@ -21,7 +21,7 @@ const RADIANCE_SCALE: float = 1.0     # requires SubViewport.use_hdr_2d = true
 const SUN_DIR: Vector3 = Vector3(0.855, 0.300, -0.425)   # where the sun set
 
 const MAT: Dictionary = {
-	"water":     {"t": 14.0, "sky": 0.5, "e": 0.96, "solar": 0.5, "d": 5, "dt": 0.5, "de": 0.0},
+	"water":     {"t": 14.0, "sky": 15.0, "e": 0.96, "solar": 0.5, "d": 5, "dt": 0.5, "de": 0.0},
 	"ground":    {"t": 19.0, "sky": 3.0, "e": 0.94, "solar": 3.2, "d": 2, "dt": 2.0, "de": 0.03},
 	"park":      {"t": 12.5, "sky": 4.0, "e": 0.97, "solar": 1.0, "d": 2, "dt": 2.6, "de": 0.02, "ms": Vector2(3.0, 3.0)},
 	"road":      {"t": 21.0, "sky": 2.5, "e": 0.93, "solar": 4.0, "d": 3, "dt": 2.0, "de": 0.05, "ms": Vector2(4.0, 2.586)},

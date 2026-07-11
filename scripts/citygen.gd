@@ -109,20 +109,21 @@ func generate(snap_res: Vector2i) -> void:
 
 	_lay_geography(span)
 
-	# dirt bed, 80 mm down. Never coplanar with anything; covers the whole map.
-	var ground: PlaneMesh = PlaneMesh.new()
-	ground.size = Vector2(map_hi.x - map_lo.x + 200.0, map_hi.y - map_lo.y + 200.0)
-	ground.subdivide_width = 12
-	ground.subdivide_depth = 12
-	var gmi: MeshInstance3D = MeshInstance3D.new()
-	gmi.mesh = ground
-	gmi.position = Vector3((map_lo.x + map_hi.x) * 0.5, -0.08, (map_lo.y + map_hi.y) * 0.5)
-	gmi.material_override = ThermalLib.get_material("ground", _snap_res)
-	add_child(gmi)
+	# The ocean: a cold thermal plane under and around the whole peninsula, extended
+	# far past the bounds so a bounded camera never sees past it into the void. It
+	# sits 1.5 m below the land, so the coast reads as a step down to the water and
+	# never z-fights the land surfaces at altitude.
+	var sea: PlaneMesh = PlaneMesh.new()
+	sea.size = Vector2(map_hi.x - map_lo.x + 4000.0, map_hi.y - map_lo.y + 4000.0)
+	sea.subdivide_width = 16
+	sea.subdivide_depth = 16
+	var smi: MeshInstance3D = MeshInstance3D.new()
+	smi.mesh = sea
+	smi.position = Vector3((map_lo.x + map_hi.x) * 0.5, -1.5, (map_lo.y + map_hi.y) * 0.5)
+	smi.material_override = ThermalLib.get_material("water", _snap_res)
+	add_child(smi)
 
-	# --- water on three sides + the two bridge decks (disjoint from the land grid)
-	for w in water:
-		_tile(w, "water")
+	# --- the two bridge decks over the water (the ocean plane is the water itself)
 	for b in bridges:
 		_tile(b, "road")
 	_bridge_towers(bridges[0], true)     # Golden Gate runs north -- towers span x
