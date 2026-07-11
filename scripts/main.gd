@@ -42,6 +42,8 @@ const ZOMBIE_SCALE: float = 0.32
 const POP_INFECTED: int = 20
 const POP_CIV: int = 12
 const POP_SAN: int = 4
+const ELEMENTS: int = 4
+const ELEMENT_ROSTER: Array = [&"cdr", &"cbt", &"med", &"snp", &"rec"]   # per team; CMD leads
 
 var res_idx := 1
 var snap_res: Vector2i = RESOLUTIONS[1]
@@ -61,6 +63,7 @@ var agc := AGC.new()
 
 var sim: WorldSim = WorldSim.new()
 var views: Array[Node3D] = []          # one visual per sim unit, index-aligned
+var active_element: int = 0            # which of the four teams the player is driving
 var _anim: Array = []                  # an Animator per view (or null), index-aligned
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 var _sfx_pool: Array[AudioStreamPlayer3D] = []
@@ -199,7 +202,8 @@ func _build_tree() -> void:
 	city.generate(snap_res)
 	cars = Vehicles.new()
 	vp.add_child(cars)
-	cars.generate(snap_res, city, 26)
+	# 16 light single-mesh cars max (memory). Was 26 greybox multi-part cars.
+	cars.generate(snap_res, city, 16)
 	_spawn_props()
 
 	var layer: CanvasLayer = CanvasLayer.new()
@@ -264,15 +268,15 @@ func _spawn_props() -> void:
 
 ## Path, thermal key, uniform scale. Scales are starting guesses — tune in feed.
 const PROP_CATALOG: Dictionary = {
-	"barrel": ["res://models/buildings and scenery/ps1_barrel.glb", "tank", 0.55],
-	"dumpster": ["res://models/buildings and scenery/low_poly_psxps2_trash_filled_metal_dumpster.glb", "body_cold", 0.85],
-	"dumpster_set": ["res://models/buildings and scenery/psx_style_dumpster_set.glb", "body_cold", 0.90],
-	"trash": ["res://models/buildings and scenery/trash_container.glb", "body_cold", 0.80],
-	"jerry": ["res://models/buildings and scenery/psx_jerry_can.glb", "tank", 0.45],
-	"ac": ["res://models/buildings and scenery/psx_air_conditioner.glb", "hvac", 0.55],
-	"tank": ["res://models/buildings and scenery/lowpoly_rusty_tank.glb", "tank", 0.35],
-	"generator": ["res://models/buildings and scenery/emergency_power_station_ps1.glb", "hvac", 0.50],
-	"stop": ["res://models/buildings and scenery/stop_sign_psx.glb", "body_cold", 1.00],
+	"barrel": ["res://models/buildings and scenery/ps1_barrel.glb", "tank", 0.85],
+	"dumpster": ["res://models/buildings and scenery/low_poly_psxps2_trash_filled_metal_dumpster.glb", "body_cold", 1.10],
+	"dumpster_set": ["res://models/buildings and scenery/psx_style_dumpster_set.glb", "body_cold", 0.70],
+	"trash": ["res://models/buildings and scenery/trash_container.glb", "body_cold", 1.00],
+	"jerry": ["res://models/buildings and scenery/psx_jerry_can.glb", "tank", 0.70],
+	"ac": ["res://models/buildings and scenery/psx_air_conditioner.glb", "hvac", 1.20],
+	"tank": ["res://models/buildings and scenery/lowpoly_rusty_tank.glb", "tank", 0.55],
+	"generator": ["res://models/buildings and scenery/emergency_power_station_ps1.glb", "hvac", 0.75],
+	"stop": ["res://models/buildings and scenery/stop_sign_psx.glb", "body_cold", 1.20],
 }
 
 
@@ -297,8 +301,9 @@ func _scatter_street_props() -> void:
 		return
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 	rng.seed = city.seed_value + 91
-	var kinds: Array = ["barrel", "dumpster", "jerry", "trash", "generator", "dumpster_set"]
-	var n: int = mini(28, city.buildings.size() * 2)
+	# Keep street clutter light: draw calls + GLB instances add up on low-end GPUs.
+	var kinds: Array = ["barrel", "dumpster", "jerry", "trash", "generator"]
+	var n: int = mini(12, city.buildings.size())
 	for i in n:
 		if city.buildings.is_empty():
 			break
@@ -329,18 +334,15 @@ func _scatter_roof_props() -> void:
 	rng.seed = city.seed_value + 17
 	for b in city.buildings:
 		var h: float = float(b["fl"]) * CityGen.FLOOR_H
-		# HVAC: warm condenser on most roofs (replaces greybox tell)
-		if rng.randf() > 0.22:
+		# Fewer roof instances: still the warm HVAC tell, lower mesh count.
+		if rng.randf() > 0.45:
 			var ac: Node3D = _make_prop("ac", rng.randf() * TAU)
 			if ac != null:
 				var ax: float = b["x"] + b["w"] * rng.randf_range(0.25, 0.75)
 				var az: float = b["z"] + b["d"] * rng.randf_range(0.25, 0.75)
 				ac.position = Vector3(ax, h + 0.9, az)
-				# ground_align put bottom at local 0; roof is world y = h+0.9 base
-				# _make_prop already aligned to y=0 of mesh; position.y is roof deck
 				props.add_child(ac)
-		# Water tank on some roofs
-		if rng.randf() < 0.28:
+		if rng.randf() < 0.18:
 			var tk: Node3D = _make_prop("tank", rng.randf() * TAU)
 			if tk != null:
 				tk.position = Vector3(
@@ -356,10 +358,12 @@ func _spawn() -> void:
 	if cars != null:
 		obstacles.append_array(cars.rects)     # semis block; the rest you walk around
 	sim.load_buildings(obstacles)
-	var classes: Array = [&"cdr", &"cbt", &"med", &"snp", &"rec", &"eod"]
-	for i in classes.size():
-		var p: Vector2 = Vector2(70.0 + float(i % 3) * 1.4, 68.0 + float(i / 3) * 1.4)
-		sim.spawn(p, classes[i], WorldSim.SQUAD)
+	# four elements, staged in a 2x2 near the LZ. CMD leads each; all one faction.
+	for e in ELEMENTS:
+		var base: Vector2 = Vector2(64.0 + float(e % 2) * 10.0, 62.0 + float(e / 2) * 10.0)
+		for j in ELEMENT_ROSTER.size():
+			var p: Vector2 = base + Vector2(float(j % 3) * 1.4, float(j / 3) * 1.4)
+			sim.spawn(p, ELEMENT_ROSTER[j], WorldSim.SQUAD, e)
 	sim.populate(POP_INFECTED, POP_CIV, POP_SAN)   # the horde, the crowd, the hunters
 	# one visual per sim unit, index-aligned with the sim arrays.
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
@@ -371,6 +375,7 @@ func _spawn() -> void:
 			vp.add_child(v)
 		views.append(v)
 		_anim.append(Animator.new(v, _rng) if v != null else null)
+	_select_element(active_element)
 
 
 ## Build the visual for one sim unit: the right model, thermal-reskinned, scaled
@@ -442,11 +447,17 @@ func _screen_of(i: int) -> Vector2:
 	return p * (win / Vector2(snap_res))
 
 
-## The camera holds on the squad -- the first living operator, else its last mark.
+## The camera holds on the ACTIVE element -- the centroid of its living units,
+## else its last mark.
 func _follow_point() -> Vector3:
+	var sum: Vector2 = Vector2.ZERO
+	var n: int = 0
 	for i in sim.count():
-		if sim.team[i] == WorldSim.SQUAD and sim.alive[i]:
-			return Vector3(sim.pos[i].x, 0.0, sim.pos[i].y)
+		if sim.element[i] == active_element and sim.alive[i]:
+			sum += sim.pos[i]
+			n += 1
+	if n > 0:
+		return Vector3(sum.x / float(n), 0.0, sum.y / float(n))
 	return Vector3(cam_tx, 0.0, cam_tz)
 
 
@@ -560,8 +571,9 @@ func _process(delta: float) -> void:
 	if p >= 0.0 and p < 0.46:
 		hud.text = "" if int(frame_n) % 16 < 8 else "SIGNAL ACQ"
 	else:
-		hud.text = "FEED  %s\nMODE  %s\nRES   %dx%d\nALT   %d M   SLANT %d M\nAGC   %s %.3f/%.3f\nFPS   %d" % [
+		hud.text = "FEED  %s\nELMT  %d/%d   WPN %s\nMODE  %s\nRES   %dx%d\nALT   %d M   SLANT %d M\nAGC   %s %.3f/%.3f\nFPS   %d" % [
 			"AC-130 / PYLON TURN" if feed == "orbit" else "ELEMENT / GROUND",
+			active_element + 1, ELEMENTS, ("FREE" if sim.weapons_free else "HOLD"),
 			names[mode], snap_res.x, snap_res.y,
 			int(cam.position.y), int(cam_dist),
 			"FROZEN" if agc.frozen else "AUTO", agc.lo, agc.hi,
@@ -609,6 +621,18 @@ func _select_nearest(g: Vector2) -> void:
 			best = i
 	for i in sim.count():
 		sim.selected[i] = (i == best)
+
+
+## Element command: pick which of the four teams you're driving -- selection and
+## the follow-cam both track it.
+func _pick_element(e: int) -> void:
+	active_element = clampi(e, 0, ELEMENTS - 1)
+	_select_element(active_element)
+
+
+func _select_element(e: int) -> void:
+	for i in sim.count():
+		sim.selected[i] = sim.alive[i] and sim.element[i] == e
 
 
 func _channel_change(to: String) -> void:
@@ -672,6 +696,11 @@ func _input(e: InputEvent) -> void:
 			KEY_F:
 				sim.weapons_free = not sim.weapons_free
 				Audio.comms("open_fire" if sim.weapons_free else "hold_fire", 0)
+			KEY_TAB: _pick_element((active_element + 1) % ELEMENTS)
+			KEY_1: _pick_element(0)
+			KEY_2: _pick_element(1)
+			KEY_3: _pick_element(2)
+			KEY_4: _pick_element(3)
 			KEY_M:
 				ThermalLib.maps_on = not ThermalLib.maps_on
 				ThermalLib.clear_cache()
@@ -709,7 +738,7 @@ func _rebuild_world() -> void:
 	city.generate(snap_res)
 	cars = Vehicles.new()
 	vp.add_child(cars)
-	cars.generate(snap_res, city, 26)
+	cars.generate(snap_res, city, 16)
 	_spawn_props()
 	_spawn()
 

@@ -25,6 +25,29 @@ static func spawn(glb_path: String, mat: String, snap_res: Vector2i,
 	return node
 
 
+## Stretch a light single-mesh GLB to a target footprint × height (metres).
+## Non-uniform scale is intentional: PSX shells fill the citygen parcel cheaply.
+static func spawn_fit(glb_path: String, mat: String, snap_res: Vector2i,
+		size_m: Vector3, yaw: float = 0.0) -> Node3D:
+	var node: Node3D = _instantiate(glb_path)
+	if node == null:
+		return null
+	node.scale = Vector3.ONE
+	node.rotation.y = 0.0
+	_reskin(node, ThermalLib.get_material(mat, snap_res))
+	var aabb: AABB = _combined_aabb(node)
+	if aabb.size.x < 1e-4 or aabb.size.y < 1e-4 or aabb.size.z < 1e-4:
+		node.queue_free()
+		return null
+	node.scale = Vector3(
+		size_m.x / aabb.size.x,
+		size_m.y / aabb.size.y,
+		size_m.z / aabb.size.z)
+	node.rotation.y = yaw
+	_align_bottom_to_y0(node)
+	return node
+
+
 ## Keyword map on mesh / surface material names → ThermalLib keys.
 ## First matching rule wins. Default covers the rest.
 static func spawn_rules(glb_path: String, snap_res: Vector2i, default_mat: String,

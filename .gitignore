@@ -28,3 +28,11 @@ Thumbs.db
 # never imports its ~1,800 files. Wired sounds get COPIED out into
 # audio/{music,ambience,comms,sfx}/ where they ARE tracked + imported.
 /audio/library/
+
+# --- Model + texture SOURCE (game ships .glb + baked maps; sources stay local) ---
+*.blend
+*.blend1
+*.fbx
+/models/characters/Zombies/
+/textures/texture_library/
+/textures/texture_library.zip

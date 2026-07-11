@@ -183,27 +183,44 @@ func _block(rng: RandomNumberGenerator, bx: float, bz: float, dc: float) -> void
 		_building(rng, px, pz + pd * 0.60, pw * 0.62, pd * 0.34, 1)
 
 
+## Single-mesh / low-mat PSX shells only. NEVER the mega-packs (tacos, laundry,
+## buildings.glb, forest, industrial, downtown) — those are hundreds of meshes.
+const LIGHT_BUILDINGS: Array = [
+	"res://models/buildings and scenery/psx_russian_soviet_housing_3d_model.glb",
+	"res://models/buildings and scenery/low-poly_building.glb",
+	"res://models/buildings and scenery/psx_old_house.glb",
+	"res://models/buildings and scenery/psx_old_abandoned_mansion.glb",
+	"res://models/buildings and scenery/psxprop_-_old_warehouse.glb",
+	"res://models/buildings and scenery/psx_prop_-_old_garage.glb",
+	"res://models/buildings and scenery/building_-_square_-_illuminated.glb",
+	"res://models/buildings and scenery/building_-_quarter_arc.glb",
+	"res://models/buildings and scenery/building_-_stretched_octagonal_-_tier.glb",
+	"res://models/buildings and scenery/psx_japanese_warehouse.glb",
+	"res://models/buildings and scenery/ps1_style_workshop.glb",
+]
+
+
 func _building(rng: RandomNumberGenerator, x: float, z: float, w: float, d: float, fl: int) -> void:
 	var h: float = float(fl) * FLOOR_H
-	# 35% of facades are brick (Bricks021) instead of cast concrete -- same wall
-	# temperature, different structure map. The asset CREDITS had as "not baked".
+	# 35% brick structure map vs cast concrete — same temperature class.
 	var wall_mat: String = "brick" if rng.randf() < 0.35 else "wall"
 	buildings.append({"x": x, "z": z, "w": w, "d": d, "fl": fl})
-	_add_box(Vector3(x + w * 0.5, 0.0, z + d * 0.5), Vector3(w, h, d), wall_mat)
 
-	var t: float = maxf(0.6, minf(w, d) * 0.03)
-	_add_box(Vector3(x + w * 0.5, h, z + t * 0.5), Vector3(w, 0.9, t), "parapet")
-	_add_box(Vector3(x + w * 0.5, h, z + d - t * 0.5), Vector3(w, 0.9, t), "parapet")
-	_add_box(Vector3(x + t * 0.5, h, z + d * 0.5), Vector3(t, 0.9, d), "parapet")
-	_add_box(Vector3(x + w - t * 0.5, h, z + d * 0.5), Vector3(t, 0.9, d), "parapet")
+	# Prefer one stretched PSX shell (1–2 meshes) over 5+ greybox draw calls.
+	var path: String = LIGHT_BUILDINGS[rng.randi() % LIGHT_BUILDINGS.size()]
+	# 0° / 90° only — keeps stretched footprints aligned to the parcel axes.
+	var yaw: float = PI * 0.5 if rng.randf() < 0.5 else 0.0
+	var shell: Node3D = ThermalModel.spawn_fit(path, wall_mat, _snap_res, Vector3(w, h, d), yaw)
+	if shell != null:
+		shell.position = Vector3(x + w * 0.5, 0.0, z + d * 0.5)
+		add_child(shell)
+	else:
+		# Fallback if a GLB fails to load
+		_add_box(Vector3(x + w * 0.5, 0.0, z + d * 0.5), Vector3(w, h, d), wall_mat)
+		var t: float = maxf(0.6, minf(w, d) * 0.03)
+		_add_box(Vector3(x + w * 0.5, h, z + t * 0.5), Vector3(w, 0.9, t), "parapet")
+		_add_box(Vector3(x + w * 0.5, h, z + d - t * 0.5), Vector3(w, 0.9, t), "parapet")
+		_add_box(Vector3(x + t * 0.5, h, z + d * 0.5), Vector3(t, 0.9, d), "parapet")
+		_add_box(Vector3(x + w - t * 0.5, h, z + d * 0.5), Vector3(t, 0.9, d), "parapet")
 
-	if rng.randf() > 0.25:
-		_add_box(Vector3(x + w * (0.25 + 0.4 * rng.randf()), h + 0.9, z + d * (0.25 + 0.4 * rng.randf())),
-				Vector3(3.4, 1.5, 2.6), "hvac")
-	if rng.randf() < 0.30:
-		var tx: float = x + w * 0.70
-		var tz: float = z + d * 0.72
-		_add_box(Vector3(tx, h + 0.9, tz), Vector3(3.0, 1.2, 3.0), "parapet")
-		_add_box(Vector3(tx, h + 2.1, tz), Vector3(2.2, 3.2, 2.2), "tank")
-	if fl >= 4 and rng.randf() > 0.55:
-		_add_box(Vector3(x + w * 0.5, h + 0.9, z + d * 0.5), Vector3(2.0, 2.6, 2.0), wall_mat)
+	# Roof HVAC / tanks: main._scatter_roof_props (small GLBs), not greyboxes.
