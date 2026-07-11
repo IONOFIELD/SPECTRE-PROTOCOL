@@ -42,9 +42,9 @@ const ZOMBIES: Array = [
 	"res://models/characters/zombie_3.glb",
 ]
 const ZOMBIE_SCALE: float = 0.32
-const POP_INFECTED: int = 20
-const POP_CIV: int = 12
-const POP_SAN: int = 4
+const POP_INFECTED: int = 80    # v0.19's horde count, now spread over the bigger city
+const POP_CIV: int = 60         # v0.19's crowd -- warm panicked bodies to read among
+const POP_SAN: int = 6          # the wipe force: rare, deadly, cool signatures (v0.19 elite = 6)
 const ELEMENTS: int = 4
 const ELEMENT_ROSTER: Array = [&"cdr", &"cbt", &"med", &"snp", &"rec"]   # per team; CMD leads
 
