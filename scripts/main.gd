@@ -24,6 +24,9 @@ extends Node
 const RESOLUTIONS: Array = [Vector2i(320, 180), Vector2i(640, 360), Vector2i(960, 540)]
 const CUT_DUR: float = 0.52
 const CUT_SWAP: float = 0.30          # the new feed goes live here, under the snow
+const INTRO_HOLD: float = 7.0         # seconds holding the deploy view before the AC-130 cut
+const ZOOM_MIN: float = 22.0          # AC-130 optic floor -- never drops to a ground-level camera
+const ZOOM_MAX: float = 900.0         # high enough to frame the whole ~806 m city from the pylon turn
 const MUSIC_BED: String = "res://audio/music/music1.wav"   # loops; Audio owns the level
 const AMBIENCE_BED: String = "res://audio/ambience/ghost_town.wav"   # ghost-town bed
 const HUD_FONT: String = "res://fonts/inversionz_unboxed.ttf"   # Inversionz Unboxed, Darrell Flood
@@ -44,6 +47,15 @@ const POP_CIV: int = 12
 const POP_SAN: int = 4
 const ELEMENTS: int = 4
 const ELEMENT_ROSTER: Array = [&"cdr", &"cbt", &"med", &"snp", &"rec"]   # per team; CMD leads
+
+# --- Read of the units. FLIR flattens PS1 mesh detail to a blob at this range, so
+# the role is carried by HEAT + SIZE, not the model. false = minimalist thermal
+# shapes (the rymdkapsel read, matches v0.19); true = the PS1 .glb + idle rigs.
+const USE_MODELS: bool = false
+# Exfil LZ: a central road intersection (open ground), a ~440 m fight from the
+# deploy plaza. The birds are on station at Mission.HELI_ARRIVE (120 s).
+const LZ_POS: Vector2 = Vector2(372.0, 372.0)
+const HELP_TEXT: String = "[LMB] pick   [drag] box-select   [RMB] move   [F] weapons free\n[TAB]/[1-4] element   [SPACE] AC-130 view   [WASD] pan   [wheel] zoom\n[T] palette   [C] snow   [H] hide"
 
 var res_idx := 1
 var snap_res: Vector2i = RESOLUTIONS[1]
@@ -75,10 +87,18 @@ var sel_layer: Control
 var drag_start: Vector2 = Vector2.ZERO
 var dragging: bool = false
 
+# mission / exfil
+var mission: Mission
+var lz_node: Node3D                    # LZ pad + (once on station) the bird, freed on rebuild
+var bird_up: bool = false
+var banner: Label                      # win / lose card, hidden until the mission ends
+var help: Label
+var show_help: bool = true
+
 # feeds
 const FEED: Dictionary = {
 	"deploy": {"dist": 34.0, "el": 0.40, "fov": 30.0, "follow": true, "orbit": 0.0},
-	"orbit":  {"dist": 250.0, "el": 0.98, "fov": 24.0, "follow": false, "orbit": 0.035},
+	"orbit":  {"dist": 640.0, "el": 0.98, "fov": 24.0, "follow": false, "orbit": 0.035},
 }
 var feed := "deploy"
 var cam_tx := 74.0
@@ -86,6 +106,7 @@ var cam_tz := 69.0
 var cam_dist := 22.0
 var cam_az := -0.85
 var cam_el := 0.28
+var cam_manual := false                # manual pan/keys stop the follow until you re-pick a team
 
 var cut_t := -1.0
 var cut_to := "orbit"
@@ -227,8 +248,30 @@ func _build_tree() -> void:
 	hud = Label.new()
 	hud.position = Vector2(24, 20)
 	hud.add_theme_font_override("font", load(HUD_FONT))
-	hud.add_theme_font_size_override("font_size", 13)
+	hud.add_theme_font_size_override("font_size", 16)
 	layer.add_child(hud)
+
+	# controls card, bottom-left (v0.19's key line). Toggle with H.
+	help = Label.new()
+	help.add_theme_font_override("font", load(HUD_FONT))
+	help.add_theme_font_size_override("font_size", 13)
+	help.add_theme_color_override("font_color", Color(0.72, 0.86, 0.78, 0.85))
+	help.text = HELP_TEXT
+	help.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	help.offset_left = 24
+	help.offset_top = -72
+	help.offset_bottom = -12
+	layer.add_child(help)
+
+	# end-of-mission card, centred, hidden until WON/LOST.
+	banner = Label.new()
+	banner.add_theme_font_override("font", load(HUD_FONT))
+	banner.add_theme_font_size_override("font_size", 40)
+	banner.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	banner.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	banner.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	banner.visible = false
+	layer.add_child(banner)
 
 	_push_res()
 	if OS.get_environment("SPECTRE_CLEAN") != "":
@@ -268,12 +311,12 @@ func _spawn_props() -> void:
 
 ## Path, thermal key, uniform scale. Scales are starting guesses — tune in feed.
 const PROP_CATALOG: Dictionary = {
-	"barrel": ["res://models/buildings and scenery/ps1_barrel.glb", "tank", 0.85],
-	"dumpster": ["res://models/buildings and scenery/low_poly_psxps2_trash_filled_metal_dumpster.glb", "body_cold", 1.10],
+	"barrel": ["res://models/buildings and scenery/ps1_barrel.glb", "tank", 0.45],
+	"dumpster": ["res://models/buildings and scenery/low_poly_psxps2_trash_filled_metal_dumpster.glb", "body_cold", 0.68],
 	"dumpster_set": ["res://models/buildings and scenery/psx_style_dumpster_set.glb", "body_cold", 0.70],
 	"trash": ["res://models/buildings and scenery/trash_container.glb", "body_cold", 1.00],
-	"jerry": ["res://models/buildings and scenery/psx_jerry_can.glb", "tank", 0.70],
-	"ac": ["res://models/buildings and scenery/psx_air_conditioner.glb", "hvac", 1.20],
+	"jerry": ["res://models/buildings and scenery/psx_jerry_can.glb", "tank", 0.29],
+	"ac": ["res://models/buildings and scenery/psx_air_conditioner.glb", "hvac", 0.45],
 	"tank": ["res://models/buildings and scenery/lowpoly_rusty_tank.glb", "tank", 0.55],
 	"generator": ["res://models/buildings and scenery/emergency_power_station_ps1.glb", "hvac", 0.75],
 	"stop": ["res://models/buildings and scenery/stop_sign_psx.glb", "body_cold", 1.20],
@@ -353,18 +396,27 @@ func _scatter_roof_props() -> void:
 
 
 func _spawn() -> void:
+	if lz_node != null:
+		lz_node.queue_free()
+		lz_node = null
+	bird_up = false
 	sim = WorldSim.new()
 	var obstacles: Array[Rect2] = city.building_rects()
 	if cars != null:
 		obstacles.append_array(cars.rects)     # semis block; the rest you walk around
 	sim.load_buildings(obstacles)
-	# four elements, staged in a 2x2 near the LZ. CMD leads each; all one faction.
+	# four elements, staged in a 2x2 on the deploy plaza. CMD leads each; all one faction.
 	for e in ELEMENTS:
 		var base: Vector2 = Vector2(64.0 + float(e % 2) * 10.0, 62.0 + float(e / 2) * 10.0)
 		for j in ELEMENT_ROSTER.size():
 			var p: Vector2 = base + Vector2(float(j % 3) * 1.4, float(j / 3) * 1.4)
 			sim.spawn(p, ELEMENT_ROSTER[j], WorldSim.SQUAD, e)
 	sim.populate(POP_INFECTED, POP_CIV, POP_SAN)   # the horde, the crowd, the hunters
+	# exfil objective: cross the city to the LZ, hold until the birds land at 120 s.
+	mission = Mission.new()
+	var span: float = float(city.grid_n) * (CityGen.BLOCK + CityGen.STREET)
+	mission.setup(LZ_POS, Vector2(-30, -30), Vector2(span + 30, span + 30), ELEMENTS)
+	_build_lz()
 	# one visual per sim unit, index-aligned with the sim arrays.
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 	rng.randomize()
@@ -378,11 +430,100 @@ func _spawn() -> void:
 	_select_element(active_element)
 
 
-## Build the visual for one sim unit: the right model, thermal-reskinned, scaled
-## to human height, ground-aligned. Rigged models get a looping idle so they read
-## as alive. Returns null for an unknown team (still kept in the array, for index
-## alignment).
+## The exfil pad: a warm painted square on the deck -- a thermal landmark you can
+## read from across the city. The bird itself sets down only once on station.
+func _build_lz() -> void:
+	lz_node = Node3D.new()
+	lz_node.name = "LZ"
+	vp.add_child(lz_node)
+	var pad: MeshInstance3D = MeshInstance3D.new()
+	var pm: PlaneMesh = PlaneMesh.new()
+	pm.size = Vector2(Mission.LZ_RADIUS * 2.0, Mission.LZ_RADIUS * 2.0)
+	pad.mesh = pm
+	pad.position = Vector3(LZ_POS.x, 0.06, LZ_POS.y)   # just over the road, never coplanar
+	pad.material_override = ThermalLib.get_material("road", snap_res)
+	lz_node.add_child(pad)
+
+
+## The bird lands: a tandem-rotor fuselage (engine-hot) with two hotter nacelles.
+## A hard, bright signature over the pad that says "board here, now."
+func _land_bird() -> void:
+	bird_up = true
+	if lz_node == null:
+		return
+	var body: MeshInstance3D = MeshInstance3D.new()
+	var bm: BoxMesh = BoxMesh.new()
+	bm.size = Vector3(3.0, 2.2, 12.0)     # nose-to-ramp fuselage
+	body.mesh = bm
+	body.position = Vector3(LZ_POS.x, 1.3, LZ_POS.y)
+	body.material_override = ThermalLib.get_material("hvac", snap_res)
+	lz_node.add_child(body)
+	for dz in [-4.2, 4.2]:                 # forward + aft engine, hottest points
+		var eng: MeshInstance3D = MeshInstance3D.new()
+		var em: BoxMesh = BoxMesh.new()
+		em.size = Vector3(3.2, 1.0, 2.4)
+		eng.mesh = em
+		eng.position = Vector3(LZ_POS.x, 2.6, LZ_POS.y + dz)
+		eng.material_override = ThermalLib.get_material("exhaust", snap_res)
+		lz_node.add_child(eng)
+
+
+## Build the visual for one sim unit. Returns null for an unknown team (still kept
+## in the array, for index alignment). Dispatches to a minimalist thermal shape
+## (default) or the PS1 model, per USE_MODELS.
 func _make_unit_view(team: int, rng: RandomNumberGenerator) -> Node3D:
+	return _make_unit_model(team, rng) if USE_MODELS else _make_unit_shape(team)
+
+
+## Minimalist thermal body -- the mesh never betrays the role, HEAT and SIZE do.
+## Coldest/dimmest to hottest/brightest: infected 17.5 C (squat cool blob),
+## sanitation 21.5 C (tall broad cool pillar -- insulated, deliberate), squad 27 C
+## (warm upright), civilian 33.5 C (small bright panicked speck). One mesh, no rig.
+func _make_unit_shape(team: int) -> Node3D:
+	var mi: MeshInstance3D = MeshInstance3D.new()
+	var key: String = "cloth"
+	match team:
+		WorldSim.SQUAD:
+			var c: CapsuleMesh = CapsuleMesh.new()
+			c.height = 1.8
+			c.radius = 0.34
+			mi.mesh = c
+			mi.position.y = 0.9
+			key = "cloth"
+		WorldSim.INFECTED:
+			var s: SphereMesh = SphereMesh.new()
+			s.radius = 0.5
+			s.height = 1.1
+			mi.mesh = s
+			mi.position.y = 0.55
+			key = "zed"
+		WorldSim.CIVILIAN:
+			var c2: CapsuleMesh = CapsuleMesh.new()
+			c2.height = 1.6
+			c2.radius = 0.24
+			mi.mesh = c2
+			mi.position.y = 0.8
+			key = "skin"
+		WorldSim.SANITATION:
+			var c3: CapsuleMesh = CapsuleMesh.new()
+			c3.height = 2.15
+			c3.radius = 0.46
+			mi.mesh = c3
+			mi.position.y = 1.075
+			key = "suit_elite"
+		_:
+			return null
+	mi.material_override = ThermalLib.get_material(key, snap_res)
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var root: Node3D = Node3D.new()
+	root.add_child(mi)
+	return root
+
+
+## The PS1 path: the right model, thermal-reskinned, scaled to human height,
+## ground-aligned. Rigged models get a looping idle (see Animator) so they read as
+## alive. Kept behind USE_MODELS; the shapes are the shipping read.
+func _make_unit_model(team: int, rng: RandomNumberGenerator) -> Node3D:
 	var path: String = ""
 	var mat: String = ""
 	var scale: float = 1.0
@@ -447,6 +588,13 @@ func _screen_of(i: int) -> Vector2:
 	return p * (win / Vector2(snap_res))
 
 
+## Any world point -> window pixels. The sel overlay lives in window space but the
+## camera sits in the 640x360 SubViewport, so rescale by win / snap_res.
+func _screen_point(world: Vector3) -> Vector2:
+	var win: Vector2 = Vector2(get_viewport().get_visible_rect().size)
+	return cam.unproject_position(world) * (win / Vector2(snap_res))
+
+
 ## The camera holds on the ACTIVE element -- the centroid of its living units,
 ## else its last mark.
 func _follow_point() -> Vector3:
@@ -490,7 +638,7 @@ func _process(delta: float) -> void:
 	frame_n += 1.0
 	if _shot_dir != "":
 		_maybe_capture()
-	if not _auto_fired and frame_n > 96.0:
+	if not _auto_fired and frame_n > INTRO_HOLD * 60.0:
 		_auto_fired = true
 		_channel_change("orbit")
 	if _shot_dir != "" and OS.get_environment("SPECTRE_PROBE") != "" and int(frame_n) == 55:
@@ -524,6 +672,15 @@ func _process(delta: float) -> void:
 	_sync_visuals(delta)
 	_drain_audio()
 
+	if mission != null:
+		var was: int = mission.result
+		mission.update(sim, delta)
+		if mission.helo_on_station() and not bird_up:
+			_land_bird()
+			# (drop an "exfil_inbound" clip into audio/comms/ to voice this beat)
+		if was == Mission.ONGOING and mission.result != Mission.ONGOING:
+			_show_banner(mission.result == Mission.WON)
+
 	var p: float = -1.0
 	if cut_t >= 0.0:
 		cut_t += delta
@@ -540,8 +697,20 @@ func _process(delta: float) -> void:
 	if not agc_pinned:
 		agc.frozen = (p >= 0.0 and p < CUT_SWAP)
 
+	# WASD / arrows pan the map and drop the follow until you re-pick a team.
+	var mv: Vector2 = Vector2(
+		float(Input.is_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT)) - float(Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT)),
+		float(Input.is_key_pressed(KEY_W) or Input.is_key_pressed(KEY_UP)) - float(Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN)))
+	if mv != Vector2.ZERO:
+		cam_manual = true
+		var s: float = cam_dist * 0.9 * delta
+		var fwd: Vector2 = Vector2(cos(cam_az), sin(cam_az))    # into the screen
+		var rgt: Vector2 = Vector2(-sin(cam_az), cos(cam_az))
+		cam_tx += (rgt.x * mv.x + fwd.x * mv.y) * s
+		cam_tz += (rgt.y * mv.x + fwd.y * mv.y) * s
+
 	var f: Dictionary = FEED[feed]
-	if f.follow:
+	if f.follow and not cam_manual:
 		var c: Vector3 = _follow_point()
 		cam_tx = lerpf(cam_tx, c.x, minf(1.0, delta * 1.6))
 		cam_tz = lerpf(cam_tz, c.z, minf(1.0, delta * 1.6))
@@ -571,13 +740,44 @@ func _process(delta: float) -> void:
 	if p >= 0.0 and p < 0.46:
 		hud.text = "" if int(frame_n) % 16 < 8 else "SIGNAL ACQ"
 	else:
-		hud.text = "FEED  %s\nELMT  %d/%d   WPN %s\nMODE  %s\nRES   %dx%d\nALT   %d M   SLANT %d M\nAGC   %s %.3f/%.3f\nFPS   %d" % [
+		hud.text = "%s\n\nFEED  %s\nELMT  %d/%d   WPN %s\nMODE  %s\nRES   %dx%d\nALT   %d M   SLANT %d M\nAGC   %s %.3f/%.3f\nFPS   %d" % [
+			_mission_line(),
 			"AC-130 / PYLON TURN" if feed == "orbit" else "ELEMENT / GROUND",
 			active_element + 1, ELEMENTS, ("FREE" if sim.weapons_free else "HOLD"),
 			names[mode], snap_res.x, snap_res.y,
 			int(cam.position.y), int(cam_dist),
 			"FROZEN" if agc.frozen else "AUTO", agc.lo, agc.hi,
 			Engine.get_frames_per_second()]
+
+
+## The exfil status line: the clock while inbound, "LZ OPEN" once the bird's down,
+## then a per-element tally (OUT / LIFTED / ESCAPED / LOST).
+func _mission_line() -> String:
+	if mission == null:
+		return ""
+	var head: String
+	if mission.result == Mission.WON:
+		head = "MISSION COMPLETE  //  ELEMENTS CLEAR"
+	elif mission.result == Mission.LOST:
+		head = "MISSION FAILED  //  ELEMENTS LOST"
+	elif mission.helo_on_station():
+		head = "EXFIL  LZ OPEN -- BOARD NOW"
+	else:
+		var trem: int = int(ceil(maxf(0.0, Mission.HELI_ARRIVE - mission.t)))
+		head = "EXFIL  BIRDS INBOUND  T-%d:%02d" % [trem / 60, trem % 60]
+	var tags: Array = ["OUT", "LIFTED", "ESCAPED", "LOST"]
+	var tally: String = ""
+	for e in mission.n_elements:
+		tally += "  %d:%s" % [e + 1, tags[mission.status[e]]]
+	return head + "\nTEAMS" + tally
+
+
+func _show_banner(won: bool) -> void:
+	if banner == null:
+		return
+	banner.text = "MISSION COMPLETE" if won else "MISSION FAILED"
+	banner.add_theme_color_override("font_color", Color(0.55, 1.0, 0.65) if won else Color(1.0, 0.5, 0.42))
+	banner.visible = true
 
 
 const SEL_COL: Color = Color(0.62, 0.88, 0.70, 0.85)
@@ -589,19 +789,38 @@ func _draw_selection() -> void:
 		if not sim.alive[i] or not sim.selected[i]:
 			continue
 		var p: Vector2 = _screen_of(i)
-		var r: float = 9.0
+		var r: float = 14.0
+		var arm: float = 8.0
 		for c in [Vector2(-1, -1), Vector2(1, -1), Vector2(-1, 1), Vector2(1, 1)]:
 			var a: Vector2 = p + c * r
-			sel_layer.draw_line(a, a - Vector2(c.x * 5.0, 0), SEL_COL, 1.0)
-			sel_layer.draw_line(a, a - Vector2(0, c.y * 5.0), SEL_COL, 1.0)
+			sel_layer.draw_line(a, a - Vector2(c.x * arm, 0), SEL_COL, 2.0)
+			sel_layer.draw_line(a, a - Vector2(0, c.y * arm), SEL_COL, 2.0)
 		if sim.has_order[i]:
 			var t: Vector2 = cam.unproject_position(Vector3(sim.target[i].x, 0.1, sim.target[i].y))
 			var win: Vector2 = Vector2(get_viewport().get_visible_rect().size)
 			t *= win / Vector2(snap_res)
-			sel_layer.draw_line(p, t, Color(SEL_COL.r, SEL_COL.g, SEL_COL.b, 0.25), 1.0)
+			sel_layer.draw_line(p, t, Color(SEL_COL.r, SEL_COL.g, SEL_COL.b, 0.35), 1.5)
 	if dragging:
 		var m: Vector2 = get_viewport().get_mouse_position()
 		sel_layer.draw_rect(Rect2(drag_start, m - drag_start), SEL_COL, false, 1.0)
+	_draw_lz()
+
+
+## The exfil LZ, ringed on the deck: amber while the birds are inbound, green once
+## they're down. Skipped when the pad is behind the optic.
+func _draw_lz() -> void:
+	if mission == null or mission.result != Mission.ONGOING:
+		return
+	var centre_w: Vector3 = Vector3(LZ_POS.x, 0.1, LZ_POS.y)
+	if cam.is_position_behind(centre_w):
+		return
+	var c: Vector2 = _screen_point(centre_w)
+	var edge: Vector2 = _screen_point(Vector3(LZ_POS.x + Mission.LZ_RADIUS, 0.1, LZ_POS.y))
+	var rad: float = maxf(6.0, c.distance_to(edge))
+	var open: bool = mission.helo_on_station()
+	var col: Color = Color(0.5, 1.0, 0.6, 0.9) if open else Color(1.0, 0.78, 0.3, 0.7)
+	sel_layer.draw_arc(c, rad, 0.0, TAU, 48, col, 2.0)
+	sel_layer.draw_string(ThemeDB.fallback_font, c + Vector2(rad + 5.0, 4.0), "LZ", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, col)
 
 
 func _select_in_rect(r: Rect2) -> void:
@@ -628,6 +847,7 @@ func _select_nearest(g: Vector2) -> void:
 func _pick_element(e: int) -> void:
 	active_element = clampi(e, 0, ELEMENTS - 1)
 	_select_element(active_element)
+	cam_manual = false                  # snap the follow-cam back onto the picked team
 
 
 func _select_element(e: int) -> void:
@@ -648,14 +868,17 @@ func _apply_feed() -> void:
 	cam_dist = f.dist
 	cam_el = f.el
 	if feed == "orbit":
-		cam_tx = 150.0
-		cam_tz = 110.0
+		# pull the pylon turn back over the middle of the whole city
+		var span: float = float(city.grid_n) * (CityGen.BLOCK + CityGen.STREET)
+		cam_tx = span * 0.5
+		cam_tz = span * 0.5
 		cam_az = -1.05
 
 
 func _input(e: InputEvent) -> void:
 	if e is InputEventMouseMotion and (e.button_mask & MOUSE_BUTTON_MASK_MIDDLE or (e.button_mask & MOUSE_BUTTON_MASK_LEFT and Input.is_key_pressed(KEY_SHIFT))):
 		if Input.is_key_pressed(KEY_CTRL):
+			cam_manual = true
 			var ca: float = cos(cam_az)
 			var sa: float = sin(cam_az)
 			var k: float = cam_dist * 0.0022
@@ -666,9 +889,9 @@ func _input(e: InputEvent) -> void:
 			cam_el = clampf(cam_el + e.relative.y * 0.005, 0.12, 1.45)
 	elif e is InputEventMouseButton:
 		if e.pressed and e.button_index == MOUSE_BUTTON_WHEEL_UP:
-			cam_dist = clampf(cam_dist * 0.9, 6.0, 520.0)
+			cam_dist = clampf(cam_dist * 0.9, ZOOM_MIN, ZOOM_MAX)
 		elif e.pressed and e.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-			cam_dist = clampf(cam_dist * 1.1, 6.0, 520.0)
+			cam_dist = clampf(cam_dist * 1.1, ZOOM_MIN, ZOOM_MAX)
 		elif e.button_index == MOUSE_BUTTON_LEFT and not Input.is_key_pressed(KEY_SHIFT):
 			if e.pressed:
 				dragging = true
@@ -693,6 +916,10 @@ func _input(e: InputEvent) -> void:
 			KEY_C: cctv = 0.0 if cctv > 0.0 else 0.85
 			KEY_G: agc.frozen = not agc.frozen
 			KEY_O: orbit_auto = not orbit_auto
+			KEY_H:
+				show_help = not show_help
+				if help != null:
+					help.visible = show_help
 			KEY_F:
 				sim.weapons_free = not sim.weapons_free
 				Audio.comms("open_fire" if sim.weapons_free else "hold_fire", 0)
