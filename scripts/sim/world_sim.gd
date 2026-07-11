@@ -23,19 +23,20 @@ const HEAL_RATE: float = 14.0         # hp/s a medic restores to nearby allies
 # lines. Infected hunt every warm body; the Sanitation Force clears the lot.
 enum { SQUAD = 0, INFECTED = 1, CIVILIAN = 2, SANITATION = 3 }
 
-# type: [speed m/s, hp, sight m, range m, damage, interval s]. Range is a rifle
-# reach for shooters and a claw reach for the infected; interval is the seconds
-# between a unit's shots or strikes.
+# [speed m/s, hp, sight m, range m, damage, interval s]. These are v0.19's EXACT
+# stat ratios (hp, damage, sight/range shape) scaled by k = 0.12 m per v0.19 unit,
+# so a rifleman crosses the ~806 m map in ~120 s. Note the v0.19 truth: zombies
+# (4.8) OUTRUN civilians (3.6) -- the crowd can't escape the horde without you.
 const STATS: Dictionary = {
-	&"cbt": [2.6, 100.0, 80.0, 67.0, 20.0, 0.5],
-	&"rec": [4.2, 70.0, 133.0, 52.0, 14.0, 0.4],
-	&"snp": [2.3, 80.0, 129.0, 138.0, 65.0, 1.8],
-	&"eod": [2.5, 130.0, 73.0, 67.0, 30.0, 0.9],
-	&"med": [2.9, 90.0, 77.0, 39.0, 12.0, 0.5],
-	&"cdr": [2.8, 120.0, 129.0, 67.0, 22.0, 0.55],
-	&"zed": [1.4, 55.0, 40.0, 1.4, 11.0, 1.1],      # infected: slow, melee, near-ambient
-	&"civ": [2.2, 20.0, 30.0, 0.0, 0.0, 0.0],       # civilian: unarmed, runs
-	&"san": [3.4, 150.0, 95.0, 60.0, 24.0, 0.6],    # Sanitation Force: fast, armoured, ranged
+	&"cbt": [6.6, 100.0, 22.2, 18.6, 12.0, 0.9],
+	&"rec": [10.6, 70.0, 37.2, 14.4, 6.0, 0.5],     # scout: fastest, sees far, hits light
+	&"snp": [5.8, 80.0, 36.0, 38.4, 43.0, 2.75],    # marksman: long reach, slow rate, hard hit
+	&"eod": [6.2, 130.0, 20.4, 16.2, 8.0, 1.9],     # breacher: tanky, weak sidearm
+	&"med": [7.2, 90.0, 21.6, 10.8, 6.0, 1.0],      # medic: heals in contact (see _heal)
+	&"cdr": [7.0, 120.0, 26.4, 19.2, 15.0, 0.9],    # commander: leads the element
+	&"zed": [4.8, 60.0, 35.0, 1.4, 12.0, 1.1],      # infected: FASTER than civs, melee claw
+	&"civ": [3.6, 40.0, 30.0, 0.0, 0.0, 0.0],       # civilian: unarmed, runs but gets caught
+	&"san": [7.4, 400.0, 40.8, 30.0, 25.0, 0.6],    # Sanitation elite: armoured (400 hp), fast, ranged
 }
 
 # struct of arrays. Cache friendly, trivially serialisable, and the grid can

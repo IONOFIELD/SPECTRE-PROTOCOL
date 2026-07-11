@@ -276,17 +276,18 @@ func test_combat_resolves() -> void:
 	check("the rifleman is still standing", s.alive[trooper], "trooper hp %.0f" % s.hp[trooper])
 
 
-## An unarmed civilian sees the infected and must gain ground, never fighting.
+## An unarmed civilian runs from the infected but can't outpace them (v0.19: zed
+## 4.8 > civ 3.6) -- the horde closes, and the civ never fights back.
 func test_civilian_flees() -> void:
 	var s: WorldSim = WorldSim.new()
 	s.set_bounds(Vector2(-60, -60), Vector2(160, 160))
 	var zed: int = s.spawn(Vector2(50, 50), &"zed", WorldSim.INFECTED)
-	var civ: int = s.spawn(Vector2(50, 55), &"civ", WorldSim.CIVILIAN)   # 5 m off, inside civ sight
+	var civ: int = s.spawn(Vector2(50, 56), &"civ", WorldSim.CIVILIAN)   # 6 m ahead of the horde
 	var d0: float = s.pos[civ].distance_to(s.pos[zed])
-	for tick in 360:
+	for tick in 180:      # 3 s
 		s.step(1.0 / 60.0)
 	var d1: float = s.pos[civ].distance_to(s.pos[zed])
-	check("a civilian outruns the infected", d1 > d0 + 2.0, "gap %.1f -> %.1f m" % [d0, d1])
+	check("the civilian runs but the horde runs it down", d1 < d0 - 1.0, "gap %.1f -> %.1f m" % [d0, d1])
 	check("the civilian never shoots back", s.foe[civ] == -1, "foe=%d" % s.foe[civ])
 
 

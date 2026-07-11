@@ -25,7 +25,7 @@ const HALF_ST: float = 8.0
 const SIDEWALK: float = 2.4
 const SETBACK: float = 2.0     # building line, inside the sidewalk
 
-@export var grid_n: int = 7
+@export var grid_n: int = 13     # ~806 m across (13 x 62 m); ~120 s to cross at 6.6 m/s
 @export var seed_value: int = 11
 
 var _snap_res: Vector2i = Vector2i(640, 360)
