@@ -51,6 +51,7 @@ var hp: Array[float] = []
 var alive: Array[bool] = []
 var selected: Array[bool] = []
 var element: Array[int] = []          # player element 0-3, or -1 for non-player units
+var extracted: Array[bool] = []       # boarded the exfil bird -- out of play, not dead
 var foe: Array[int] = []              # current target index, -1 = none
 var cd: Array[float] = []             # seconds until this unit may fire/strike again
 
@@ -102,6 +103,7 @@ func spawn(p: Vector2, t: StringName, tm: int = 0, elem: int = -1) -> int:
 	alive.append(true)
 	selected.append(false)
 	element.append(elem)
+	extracted.append(false)
 	foe.append(-1)
 	cd.append(0.0)
 	return pos.size() - 1
@@ -174,6 +176,14 @@ func element_ids(e: int) -> Array:
 		if alive[i] and element[i] == e:
 			out.append(i)
 	return out
+
+
+## Pull a unit off the board -- boarded onto the exfil bird. NOT a death: alive
+## goes false so the sim stops processing it, but `extracted` marks it as saved.
+func extract(i: int) -> void:
+	extracted[i] = true
+	alive[i] = false
+	selected[i] = false
 
 
 ## Push a point out of every building it is inside, along the shallowest axis.

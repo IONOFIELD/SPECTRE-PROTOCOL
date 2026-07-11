@@ -3,6 +3,8 @@ extends SceneTree
 ## godot --headless --path . --script res://scripts/sim/sim_test.gd
 ## Exits non-zero on any failure so this can gate a commit.
 
+const MissionScript = preload("res://scripts/sim/mission.gd")   # by path: class_name may be unscanned in a --script run
+
 var failures: int = 0
 
 
@@ -27,6 +29,8 @@ func _initialize() -> void:
 	test_civilian_flees()
 	test_population_hunts_and_fights()
 	test_elements_and_medic()
+	test_mission_exfil()
+	test_mission_edge_and_loss()
 	perf()
 	print("=== %d failure(s) ===" % failures)
 	quit(1 if failures > 0 else 0)
@@ -335,6 +339,51 @@ func test_elements_and_medic() -> void:
 	for tick in 120:      # 2 s beside the medic
 		s.step(1.0 / 60.0)
 	check("the medic patches a wounded ally", s.hp[hurt] > 40.0, "hp 20 -> %.0f" % s.hp[hurt])
+
+
+## The exfil: no lift before the birds arrive; a team on the LZ boards once they
+## do; all teams clear -> WON.
+func test_mission_exfil() -> void:
+	var s: WorldSim = WorldSim.new()
+	s.set_bounds(Vector2(0, 0), Vector2(200, 200))
+	s.spawn(Vector2(50, 50), &"cdr", WorldSim.SQUAD, 0)
+	s.spawn(Vector2(51, 50), &"cbt", WorldSim.SQUAD, 0)
+	s.spawn(Vector2(150, 150), &"cdr", WorldSim.SQUAD, 1)
+	var m := MissionScript.new()
+	m.setup(Vector2(50, 50), Vector2(0, 0), Vector2(200, 200), 2)
+	m.t = 100.0                              # before the birds are on station
+	m.update(s, 0.1)
+	check("no lift before the birds are on station", m.status[0] == 0, "status=%d" % m.status[0])
+	m.t = 125.0                              # birds have landed
+	m.update(s, 0.1)
+	check("a team on the LZ boards once the bird lands", m.status[0] == 1, "status=%d" % m.status[0])
+	check("boarded units leave play but aren't dead", s.extracted[0] and not s.alive[0],
+			"ex=%s alive=%s" % [s.extracted[0], s.alive[0]])
+	check("mission ongoing while a team is still out", m.result == MissionScript.ONGOING, "result=%d" % m.result)
+	s.pos[2] = Vector2(50, 50)               # element 1 reaches the LZ
+	m.update(s, 0.1)
+	check("all teams lifted -> WON", m.result == MissionScript.WON, "result=%d" % m.result)
+
+
+## The edge break-out, and total loss.
+func test_mission_edge_and_loss() -> void:
+	var esc: WorldSim = WorldSim.new()
+	esc.set_bounds(Vector2(0, 0), Vector2(200, 200))
+	esc.spawn(Vector2(-4, 50), &"cdr", WorldSim.SQUAD, 0)   # already past the west edge
+	var me := MissionScript.new()
+	me.setup(Vector2(150, 150), Vector2(0, 0), Vector2(200, 200), 1)
+	me.update(esc, 0.1)
+	check("a team over the map edge breaks out", me.status[0] == 2, "status=%d" % me.status[0])
+	check("a break-out is a win", me.result == MissionScript.WON, "result=%d" % me.result)
+
+	var dead: WorldSim = WorldSim.new()
+	dead.set_bounds(Vector2(0, 0), Vector2(200, 200))
+	var u: int = dead.spawn(Vector2(50, 50), &"cdr", WorldSim.SQUAD, 0)
+	dead.alive[u] = false                    # the last operator down
+	var ml := MissionScript.new()
+	ml.setup(Vector2(150, 150), Vector2(0, 0), Vector2(200, 200), 1)
+	ml.update(dead, 0.1)
+	check("every team lost -> LOST", ml.result == MissionScript.LOST, "result=%d" % ml.result)
 
 
 func perf() -> void:
