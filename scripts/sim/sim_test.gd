@@ -28,6 +28,7 @@ func _initialize() -> void:
 	test_combat_resolves()
 	test_civilian_flees()
 	test_new_factions()
+	test_terrain()
 	test_population_hunts_and_fights()
 	test_elements_and_medic()
 	test_mission_exfil()
@@ -348,6 +349,36 @@ func test_new_factions() -> void:
 		"brute hp %.0f at %.1f m, trooper hp %.0f" % [s4.hp[brute], brd, s4.hp[gun]])
 
 
+## Water shoves a unit back to shore; a bridge deck slows the crossing.
+func test_terrain() -> void:
+	# water eject: a unit driven at the bay is stopped at the shoreline
+	var s: WorldSim = WorldSim.new()
+	var walls: Array[Rect2] = []
+	var sea: Array[Rect2] = [Rect2(60, -40, 100, 240)]     # bay walls off everything east of x=60
+	var decks: Array[Rect2] = []
+	s.load_map(walls, sea, decks, Vector2(-40, -40), Vector2(200, 200))
+	var u: int = s.spawn(Vector2(50, 60), &"cbt", WorldSim.SQUAD)
+	s.order_move([u], Vector2(150, 60))    # march east, into the water
+	for _t in 300:
+		s.step(1.0 / 60.0)
+	check("water stops a unit at the shore", s.pos[u].x <= 60.6,
+		"unit x=%.1f (shore at 60)" % s.pos[u].x)
+
+	# bridge slow: crossing a deck covers less ground than open street in the same time
+	var s2: WorldSim = WorldSim.new()
+	s2.load_map([], [], [Rect2(0, 40, 220, 30)], Vector2(-40, -40), Vector2(280, 160))
+	var onb: int = s2.spawn(Vector2(10, 55), &"cbt", WorldSim.SQUAD)    # on the deck (z in 40..70)
+	var off: int = s2.spawn(Vector2(10, 100), &"cbt", WorldSim.SQUAD)   # open ground
+	s2.order_move([onb], Vector2(200, 55))
+	s2.order_move([off], Vector2(200, 100))
+	for _t in 180:
+		s2.step(1.0 / 60.0)
+	var da: float = s2.pos[onb].x - 10.0     # progress across the bridge
+	var db: float = s2.pos[off].x - 10.0     # progress on open ground
+	check("the bridge deck slows the crossing", da < db * 0.75,
+		"bridge %.1f m vs open %.1f m in 3 s" % [da, db])
+
+
 ## A populated city: factions land on walkable ground, and the hunting horde
 ## converges and fights within the window -- nothing stands idle in a field.
 func test_population_hunts_and_fights() -> void:
@@ -358,7 +389,7 @@ func test_population_hunts_and_fights() -> void:
 	var classes: Array = [&"cdr", &"cbt", &"med", &"snp", &"rec", &"eod"]
 	for i in classes.size():
 		s.spawn(Vector2(70.0 + float(i % 3) * 1.4, 68.0 + float(i / 3) * 1.4), classes[i], WorldSim.SQUAD)
-	s.populate(22, 12, 4, 7)
+	s.populate(22, 12, 4, Rect2(), 7)
 	check("population spawns in full", s.count() == 6 + 22 + 12 + 4, "count=%d" % s.count())
 
 	var rects: Array[Rect2] = city.building_rects()

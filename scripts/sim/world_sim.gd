@@ -18,6 +18,7 @@ const CELL: float = 12.0              # measured knee: rebuild cost falls with c
                                       # query cost is flat (call overhead dominates candidates).
 const HEAL_RANGE: float = 9.0
 const HEAL_RATE: float = 14.0         # hp/s a medic restores to nearby allies
+const BRIDGE_SLOW: float = 0.55       # a shove through the horde: every metre of deck is fought for
 
 # teams. Civilians never fight (they run). Infected + Sanitation + Bandits HUNT
 # (roam for the nearest warm body); Squad + Survivors hold and engage what they
@@ -88,7 +89,9 @@ var events: Array = []
 var _dmg: Dictionary = {}             # target index -> damage queued this tick
 var _tick: int = 0
 
-var buildings: Array[Rect2] = []      # ground-plane AABBs, metres
+var buildings: Array[Rect2] = []      # ground-plane AABBs, metres -- block LOS + nav + collision
+var water: Array[Rect2] = []          # the bay/strait/ocean -- block nav + collision, NOT LOS
+var bridges: Array[Rect2] = []        # walkable decks where movement is slowed to a shove
 var nav: NavGrid = NavGrid.new()
 var path: Array[PackedVector2Array] = []
 var path_i: Array[int] = []
@@ -216,31 +219,46 @@ func extract(i: int) -> void:
 ## as a tick cannot move a unit further than the thinnest building. At 4.2 m/s
 ## and a 1/60 s tick that is 7 cm.
 func _resolve_buildings(p: Vector2, r: float) -> Vector2:
-	# Two passes. Pushing out of one building can push you into its neighbour,
-	# and the second bucket lookup is a few nanoseconds.
+	# Two passes. Pushing out of one solid can push you into its neighbour, and the
+	# second bucket lookup is a few nanoseconds. Water ejects like a wall: a unit
+	# that strays into the bay is shoved back to the nearest shore.
 	for _pass in 2:
-		var moved: bool = false
+		var before: Vector2 = p
 		for bi in bgrid.at(p):
-			var e: Rect2 = buildings[bi].grow(r)
-			if not e.has_point(p):
-				continue
-			var l: float = p.x - e.position.x
-			var rr: float = e.end.x - p.x
-			var u: float = p.y - e.position.y
-			var d: float = e.end.y - p.y
-			var m: float = minf(minf(l, rr), minf(u, d))
-			if m == l:
-				p.x = e.position.x
-			elif m == rr:
-				p.x = e.end.x
-			elif m == u:
-				p.y = e.position.y
-			else:
-				p.y = e.end.y
-			moved = true
-		if not moved:
+			p = _eject(p, buildings[bi].grow(r))
+		for w in water:
+			p = _eject(p, w.grow(r))
+		if p.is_equal_approx(before):
 			break
 	return p
+
+
+## If p is inside axis-aligned rect e, push it out along the shallowest axis.
+func _eject(p: Vector2, e: Rect2) -> Vector2:
+	if not e.has_point(p):
+		return p
+	var l: float = p.x - e.position.x
+	var rr: float = e.end.x - p.x
+	var u: float = p.y - e.position.y
+	var d: float = e.end.y - p.y
+	var m: float = minf(minf(l, rr), minf(u, d))
+	if m == l:
+		p.x = e.position.x
+	elif m == rr:
+		p.x = e.end.x
+	elif m == u:
+		p.y = e.position.y
+	else:
+		p.y = e.end.y
+	return p
+
+
+## Is p on a bridge deck? Bridges are a couple of rects, so a direct scan.
+func _on_bridge(p: Vector2) -> bool:
+	for b in bridges:
+		if b.has_point(p):
+			return true
+	return false
 
 
 func step(dt: float) -> void:
@@ -253,6 +271,8 @@ func step(dt: float) -> void:
 		if not alive[i]:
 			continue
 		var sp: float = speed_of(i)
+		if not bridges.is_empty() and _on_bridge(pos[i]):
+			sp *= BRIDGE_SLOW          # wading through the gauntlet
 		cd[i] = maxf(0.0, cd[i] - dt)
 		# Perception scans the SIGHT radius -- the sim's most expensive query -- so
 		# each unit re-acquires only every 20th tick (~0.33 s to notice a NEW foe),
@@ -310,9 +330,12 @@ func moving(i: int) -> bool:
 	return vel[i].length_squared() > 0.04
 
 
-## Anything the sim needs to know about the map. Called once, after CityGen.
+## Walls-only shortcut: bounds auto-fit the buildings + a 40 m margin. Used by the
+## tests and any map with no water. For the SF map with water + bridges, load_map.
 func load_buildings(rects: Array[Rect2]) -> void:
 	buildings = rects
+	water = []
+	bridges = []
 	bgrid.build(rects, 24.0, RADIUS + 0.05)
 	var lo: Vector2 = Vector2(-80, -80)
 	var hi: Vector2 = Vector2(560, 560)
@@ -328,6 +351,21 @@ func load_buildings(rects: Array[Rect2]) -> void:
 	# clearance is the operator radius plus half a nav cell, so a path down the
 	# middle of a free cell always clears the wall.
 	nav.build(rects, lo, hi, RADIUS + NavGrid.CELL * 0.5)
+
+
+## Full map: walls (block LOS + nav + collision), water (block nav + collision but
+## NOT sight -- you can see across the bay), bridges (walkable, movement-slowed),
+## and explicit bounds that must span the bridges + water, not just the land. The
+## bridge lanes are gaps in the water, so nav routes onto them for free.
+func load_map(walls: Array[Rect2], water_rects: Array[Rect2], bridge_rects: Array[Rect2], lo: Vector2, hi: Vector2) -> void:
+	buildings = walls
+	water = water_rects
+	bridges = bridge_rects
+	bgrid.build(walls, 24.0, RADIUS + 0.05)
+	set_bounds(lo, hi)
+	var obstacles: Array[Rect2] = walls.duplicate()
+	obstacles.append_array(water_rects)
+	nav.build(obstacles, lo, hi, RADIUS + NavGrid.CELL * 0.5)
 
 
 # ---- combat ----------------------------------------------------------------
@@ -469,34 +507,68 @@ func _los(a: Vector2, b: Vector2) -> bool:
 ## Seed the map with the ambient population + the hostile elements, scattered on
 ## walkable ground (rejected out of buildings). Call after load_buildings and the
 ## squad spawn. seed_value < 0 => randomize (different scatter every play).
-func populate(n_infected: int, n_civ: int, n_san: int, seed_value: int = -1) -> void:
+func populate(n_infected: int, n_civ: int, n_san: int, region: Rect2 = Rect2(), seed_value: int = -1) -> void:
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 	if seed_value < 0:
 		rng.randomize()
 	else:
 		rng.seed = seed_value
-	_scatter(&"zed", INFECTED, n_infected, rng)
-	_scatter(&"civ", CIVILIAN, n_civ, rng)
-	_scatter(&"san", SANITATION, n_san, rng)
+	var reg: Rect2 = region if region.has_area() else Rect2(_bounds_lo, _bounds_hi - _bounds_lo)
+	_scatter(&"zed", INFECTED, n_infected, rng, reg)
+	_scatter(&"civ", CIVILIAN, n_civ, rng, reg)
+	_scatter(&"san", SANITATION, n_san, rng, reg)
 
 
-func _scatter(unit_kind: StringName, team_id: int, n: int, rng: RandomNumberGenerator) -> void:
+## n of a kind dropped on clear ground (no building, no water) inside `region`.
+func scatter(unit_kind: StringName, team_id: int, n: int, region: Rect2, rng: RandomNumberGenerator) -> void:
+	_scatter(unit_kind, team_id, n, rng, region)
+
+
+## A knot of units around a centre -- bandit crews, survivor holdouts.
+func spawn_cluster(unit_kind: StringName, team_id: int, centre: Vector2, n: int, spread: float, rng: RandomNumberGenerator) -> void:
+	var placed: int = 0
+	var tries: int = 0
+	while placed < n and tries < n * 40:
+		tries += 1
+		var p: Vector2 = centre + Vector2(rng.randf_range(-spread, spread), rng.randf_range(-spread, spread))
+		if _blocked(p):
+			continue
+		spawn(p, unit_kind, team_id)
+		placed += 1
+
+
+## Fill a rect densely -- a bridge deck packed with the horde (the gauntlet).
+func spawn_line(unit_kind: StringName, team_id: int, rect: Rect2, n: int, rng: RandomNumberGenerator) -> void:
+	for _i in n:
+		var p: Vector2 = Vector2(
+			rng.randf_range(rect.position.x, rect.end.x),
+			rng.randf_range(rect.position.y, rect.end.y))
+		spawn(p, unit_kind, team_id)
+
+
+func _scatter(unit_kind: StringName, team_id: int, n: int, rng: RandomNumberGenerator, region: Rect2) -> void:
 	var placed: int = 0
 	var tries: int = 0
 	while placed < n and tries < n * 40:
 		tries += 1
 		var p: Vector2 = Vector2(
-			rng.randf_range(_bounds_lo.x, _bounds_hi.x),
-			rng.randf_range(_bounds_lo.y, _bounds_hi.y))
-		var blocked: bool = false
-		for bi in bgrid.at(p):
-			if buildings[bi].has_point(p):
-				blocked = true
-				break
-		if blocked:
+			rng.randf_range(region.position.x, region.end.x),
+			rng.randf_range(region.position.y, region.end.y))
+		if _blocked(p):
 			continue
 		spawn(p, unit_kind, team_id)
 		placed += 1
+
+
+## Ground a unit can't stand on: inside a building or in the water.
+func _blocked(p: Vector2) -> bool:
+	for bi in bgrid.at(p):
+		if buildings[bi].has_point(p):
+			return true
+	for w in water:
+		if w.has_point(p):
+			return true
+	return false
 
 
 ## Medics top up nearby allies -- same faction, within reach, up to the ally's max.
