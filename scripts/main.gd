@@ -127,6 +127,11 @@ var _strike_t: float = 999.0           # seconds since impact, for the blast FX
 var _flashes: Array = []               # muzzle flashes: [{pos: Vector2, t: float}], newest last
 const FLASH_LIFE: float = 0.12         # seconds a muzzle flash stays lit
 const FLASH_MAX: int = 80              # cap, so a big firefight can't flood the overlay
+# 3D thermal blasts: hot emissive blobs in the feed that bloom + fade -- reused
+# for the AC-130 strike, EOD grenades, the sanitation flamethrower + flash-nades.
+const FLASH3D_POOL: int = 16
+var _flash3d: Array[MeshInstance3D] = []   # free pool
+var _flash3d_busy: Array = []              # active: [{node, t, life, peak}]
 
 # feeds
 const FEED: Dictionary = {
@@ -264,6 +269,7 @@ func _build_tree() -> void:
 	# 16 light single-mesh cars max (memory). Was 26 greybox multi-part cars.
 	cars.generate(snap_res, city, 16)
 	_spawn_props()
+	_build_flash_pool()
 
 	var layer: CanvasLayer = CanvasLayer.new()
 	layer.layer = 1
@@ -785,10 +791,12 @@ func _process(delta: float) -> void:
 			_strike_pos = _strike_target
 			_strike_t = 0.0
 			sim.air_strike(_strike_target, STRIKE_R, STRIKE_DMG)   # impact: kills + "strike" event
+			_spawn_flash3d(_strike_target, STRIKE_R * 0.7, 0.55, 3.0)   # hot blast on the feed
 	_sync_visuals(delta)
 	_drain_audio()
 	_strike_t += delta
 	_age_flashes(delta)
+	_age_flash3d(delta)
 
 	if mission != null:
 		var was: int = mission.result
@@ -1127,6 +1135,50 @@ func _age_flashes(delta: float) -> void:
 		_flashes[i]["t"] += delta
 		if _flashes[i]["t"] > FLASH_LIFE:
 			_flashes.remove_at(i)
+		i -= 1
+
+
+func _build_flash_pool() -> void:
+	var mat: ShaderMaterial = ThermalLib.get_material("fire", snap_res)
+	for _i in FLASH3D_POOL:
+		var mi: MeshInstance3D = MeshInstance3D.new()
+		var s: SphereMesh = SphereMesh.new()
+		s.radius = 1.0
+		s.height = 2.0
+		s.radial_segments = 12
+		s.rings = 6
+		mi.mesh = s
+		mi.material_override = mat
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		mi.visible = false
+		vp.add_child(mi)
+		_flash3d.append(mi)
+
+
+## Spawn a hot thermal blast at a world point: a fire-hot blob that blooms to
+## `peak` metres and fades over `life` s. Pooled -- no-ops if all are busy.
+func _spawn_flash3d(pos: Vector2, peak: float, life: float, h: float = 2.0) -> void:
+	if _flash3d.is_empty():
+		return
+	var mi: MeshInstance3D = _flash3d.pop_back()
+	mi.position = Vector3(pos.x, h, pos.y)
+	mi.scale = Vector3.ONE * 0.02
+	mi.visible = true
+	_flash3d_busy.append({"node": mi, "t": 0.0, "life": life, "peak": peak})
+
+
+func _age_flash3d(delta: float) -> void:
+	var i: int = _flash3d_busy.size() - 1
+	while i >= 0:
+		var f: Dictionary = _flash3d_busy[i]
+		f["t"] += delta
+		var k: float = f["t"] / float(f["life"])
+		if k >= 1.0:
+			f["node"].visible = false
+			_flash3d.append(f["node"])
+			_flash3d_busy.remove_at(i)
+		else:
+			f["node"].scale = Vector3.ONE * maxf(0.02, float(f["peak"]) * sin(k * PI))   # 0 -> peak -> 0
 		i -= 1
 
 
