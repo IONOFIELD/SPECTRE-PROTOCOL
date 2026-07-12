@@ -615,7 +615,15 @@ func air_strike(center: Vector2, radius: float, dmg: float) -> void:
 			has_order[i] = false
 			selected[i] = false
 			foe[i] = -1
-			var kd: String = "man_down" if team[i] == SQUAD else ("zed_death" if team[i] == INFECTED else "kill")
+			# A civilian caught in YOUR ring is collateral (scored against you); the same
+			# civilian eaten by the horde is just the apocalypse (a plain 'kill' in _reap).
+			var kd: String = "man_down"
+			if team[i] == INFECTED:
+				kd = "zed_death"
+			elif team[i] == CIVILIAN:
+				kd = "collateral"
+			elif team[i] != SQUAD:
+				kd = "kill"
 			events.append({"kind": kd, "pos": pos[i], "team": team[i], "unit": kind[i]})
 
 

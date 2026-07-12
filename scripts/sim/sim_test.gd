@@ -34,6 +34,7 @@ func _initialize() -> void:
 	test_eod_grenade()
 	test_sanitation_flame()
 	test_sanitation_flash_evade()
+	test_strike_collateral()
 	test_population_hunts_and_fights()
 	test_elements_and_medic()
 	test_mission_exfil()
@@ -500,6 +501,24 @@ func test_sanitation_flash_evade() -> void:
 			break
 	check("a pinned sanitation elite pops a flash", flashed, "flashed=%s" % flashed)
 	check("it breaks contact after the flash", moved > 3.0, "moved=%.1f m" % moved)
+
+
+## An AC-130 strike tags its dead by faction so the score can tell a clean kill
+## (bandit/infected) from civilian collateral you'll answer for.
+func test_strike_collateral() -> void:
+	var s: WorldSim = WorldSim.new()
+	s.set_bounds(Vector2(-40, -40), Vector2(160, 160))
+	var civ: int = s.spawn(Vector2(80, 80), &"civ", WorldSim.CIVILIAN)
+	s.spawn(Vector2(82, 80), &"bnd", WorldSim.BANDIT)
+	s.spawn(Vector2(80, 82), &"zed", WorldSim.INFECTED)
+	s.air_strike(Vector2(81, 81), 12.0, 999.0)   # flatten the whole cluster
+	var seen: Dictionary = {}
+	for e in s.events:
+		seen[e["kind"]] = true
+	check("a strike on a civilian logs collateral", seen.has("collateral"), "events=" + str(seen.keys()))
+	check("a strike on a bandit logs a kill", seen.has("kill"), "events=" + str(seen.keys()))
+	check("a strike on infected logs a zed death", seen.has("zed_death"), "events=" + str(seen.keys()))
+	check("the civilian died in the ring", not s.alive[civ], "civ alive=%s" % s.alive[civ])
 
 
 ## A populated city: factions land on walkable ground, and the hunting horde

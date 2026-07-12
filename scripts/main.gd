@@ -109,6 +109,19 @@ var show_help: bool = true
 # AC-130 HUD + touch
 var _touch_bar: Control                # on-screen control bar (mobile); null until built
 var _kills: int = 0                    # confirmed hostile kills, for the threat readout
+var _san_kills: int = 0                # Sanitation elites down -- debrief highlight
+var _collateral: int = 0               # civilians dropped by your fire missions
+var _score: int = 0                    # running mission score (kills by type, collateral)
+# Score weights. Infected are cheap and countless; the armed factions are worth more;
+# a Sanitation elite is the prize. Civilians dropped by YOUR strike cost you.
+const KILL_PTS: Dictionary = {
+	&"zed": 10, &"run": 12, &"bru": 25,   # infected: shambler / runner / brute
+	&"bnd": 30, &"svr": 35,               # bandits, dug-in survivors
+	&"san": 120,                          # Sanitation elite -- the apex kill
+}
+const COLLATERAL_PTS: int = -75        # a civilian killed in your fire mission
+const EXTRACT_PTS: int = 250           # per element that walks off the peninsula
+const FULLSQUAD_PTS: int = 750         # bonus if every element gets clear
 var _touches: Dictionary = {}          # active touch index -> position
 var _touch_moved: float = 0.0          # primary-touch travel, to tell a tap from a drag
 var _pinch_prev: float = 0.0           # last two-finger spread, for pinch-zoom
@@ -706,10 +719,14 @@ func _drain_audio() -> void:
 				_sfx_at(at, _sfx_claw)
 			"zed_death":
 				_sfx_at(at, _sfx_death)
-				_score_kill()
+				_score_kill(e["unit"])
 			"kill":
 				if e["team"] != WorldSim.CIVILIAN:
-					_score_kill()
+					_score_kill(e["unit"])   # a bandit eaten by the horde still counts for you
+			"collateral":
+				_sfx_at(at, _sfx_death)
+				_collateral += 1
+				_score += COLLATERAL_PTS      # you dropped a civilian with the fire mission
 			"strike":
 				_sfx_at(at, _sfx_strike)   # AC-130 cannon report at the impact
 			"blast":
@@ -734,9 +751,12 @@ func _sfx_at(at: Vector3, stream: AudioStream) -> void:
 	p.play()
 
 
-func _score_kill() -> void:
+func _score_kill(unit: StringName) -> void:
 	_kills += 1
+	if unit == &"san":
+		_san_kills += 1
 	_ac_charge = mini(AC_COST, _ac_charge + 1)
+	_score += int(KILL_PTS.get(unit, 10))
 
 
 ## STRK / V: arm (or cancel) target designation, if a fire mission is charged.
@@ -956,11 +976,42 @@ func _mission_line() -> String:
 	return head + "\nTEAMS" + tally
 
 
+## Post-mission debrief: finalise the score (extractions + full-squad bonus + a
+## point per second held out), then print the tally as a sensor-feed readout.
 func _show_banner(won: bool) -> void:
 	if banner == null:
 		return
-	banner.text = "MISSION COMPLETE" if won else "MISSION FAILED"
+	var clear: int = 0
+	for s in mission.status:
+		if s == 1:                       # 1 = element walked off the peninsula
+			clear += 1
+	var n: int = mission.n_elements
+	_score += clear * EXTRACT_PTS
+	if clear == n:
+		_score += FULLSQUAD_PTS
+	_score += int(mission.t)             # survival: a point for every second you lasted
+	_score = maxi(0, _score)             # a bloodbath never posts a negative board
+
+	var mm: int = int(mission.t) / 60
+	var ss: int = int(mission.t) % 60
+	var rows: PackedStringArray = [
+		"EXFIL COMPLETE" if won else "OVERRUN",
+		"",
+		"ELEMENTS EXTRACTED   %d / %d" % [clear, n],
+		"HOSTILES DOWN        %d" % _kills,
+		"SANITATION ELITES    %d" % _san_kills,
+		"CIVILIAN COLLATERAL  %d" % _collateral,
+		"SURVIVAL             T+%d:%02d" % [mm, ss],
+		"",
+		"SCORE   %d" % _score,
+	]
+	banner.text = "\n".join(rows)
+	banner.add_theme_font_size_override("font_size", 26)
 	banner.add_theme_color_override("font_color", Color(0.55, 1.0, 0.65) if won else Color(1.0, 0.5, 0.42))
+	# dim the frozen battlefield behind the printout so the readout reads cleanly
+	var bg: StyleBoxFlat = StyleBoxFlat.new()
+	bg.bg_color = Color(0.0, 0.02, 0.0, 0.72)
+	banner.add_theme_stylebox_override("normal", bg)
 	banner.visible = true
 
 
@@ -969,6 +1020,8 @@ const SEL_COL: Color = Color(0.62, 0.88, 0.70, 0.85)
 func _draw_selection() -> void:
 	if cut_t >= 0.0:
 		return                      # the overlay generator rides the same signal
+	if mission != null and mission.result != Mission.ONGOING:
+		return                      # mission over: clear the sensor clutter for the debrief
 	_draw_hud()
 	_draw_allegiance()
 	_draw_flashes()
@@ -1259,11 +1312,12 @@ func _draw_threat(font: Font, win: Vector2) -> void:
 		if sim.alive[i] and sim.team[i] != WorldSim.SQUAD and sim.team[i] != WorldSim.CIVILIAN:
 			hostiles += 1
 	var w: float = 190.0
-	var box: Rect2 = Rect2(win.x - w - 20.0, 18.0, w, 44.0)
+	var box: Rect2 = Rect2(win.x - w - 20.0, 18.0, w, 62.0)
 	sel_layer.draw_rect(box, Color(HUD_RED.r, HUD_RED.g, HUD_RED.b, 0.12), true)
 	sel_layer.draw_rect(box, HUD_RED, false, 1.5)
 	sel_layer.draw_string(font, box.position + Vector2(9.0, 17.0), "INFESTATION", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, HUD_RED)
 	sel_layer.draw_string(font, box.position + Vector2(9.0, 36.0), "HOSTILES %d   KILLS %d" % [hostiles, _kills], HORIZONTAL_ALIGNMENT_LEFT, -1, 12, HUD_COL)
+	sel_layer.draw_string(font, box.position + Vector2(9.0, 54.0), "SCORE %d" % _score, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, HUD_COL)
 
 
 func _select_in_rect(r: Rect2) -> void:
