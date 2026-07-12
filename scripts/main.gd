@@ -81,6 +81,7 @@ const SCAN_REVEAL: float = 15.0
 const SCAN_COOLDOWN: float = 25.0
 const SCAN_PULSE: float = 1.3            # seconds the green sweep ring takes to cross the feed
 const FOG_SIGHT: float = 100.0           # a unit passively sees enemies this close (fog of war)
+const FOG_SIGHT_SNP: float = 150.0       # the sniper's optic reaches further -- a scout's eyes
 const SCAN_RANGE: float = 175.0          # a commander scan IDs enemies out to here for SCAN_REVEAL s
 
 
@@ -101,10 +102,10 @@ func _commander() -> int:
 ## within FOG_SIGHT of it, OR a live commander scan reaches it (SCAN_RANGE for SCAN_REVEAL s).
 func _identified(i: int) -> bool:
 	var p: Vector2 = sim.pos[i]
-	var fog2: float = FOG_SIGHT * FOG_SIGHT
 	for j in sim.count():
 		if sim.alive[j] and sim.team[j] == WorldSim.SQUAD and sim.element[j] == 0:
-			if p.distance_squared_to(sim.pos[j]) <= fog2:
+			var s: float = FOG_SIGHT_SNP if sim.kind[j] == &"snp" else FOG_SIGHT   # the sniper sees further
+			if p.distance_squared_to(sim.pos[j]) <= s * s:
 				return true
 	if _scan_t < SCAN_REVEAL:
 		var cmd: int = _commander()
