@@ -42,12 +42,14 @@ const ZOMBIES: Array = [
 	"res://models/characters/zombie_3.glb",
 ]
 const ZOMBIE_SCALE: float = 0.32
-const POP_INFECTED: int = 70    # ambient horde, spread over the ~806 m city
+const POP_INFECTED: int = 90    # ambient horde, spread over the ~806 m city
 const POP_CIV: int = 55         # the crowd -- warm panicked bodies to read among
 const POP_SAN: int = 6          # the wipe force: rare, deadly, cool signatures (v0.19 elite = 6)
 # The wider ecology -- cheap now that units are shapes. Counts span the whole city.
-const POP_RUNNERS: int = 22     # fast, fragile infected mixed through the horde
-const POP_BRUTES: int = 10      # slow, tanky infected
+const POP_RUNNERS: int = 30     # fast, fragile infected mixed through the horde
+const POP_BRUTES: int = 13      # slow, tanky infected
+const ZED_HORDES: int = 3       # dense zombie clusters -- overwhelming if you wander in
+const ZED_PER_HORDE: int = 32   # a wall of bodies packed into a tight radius
 const BANDIT_CREWS: int = 5     # roaming armed crews...
 const BANDIT_PER_CREW: int = 5
 const SURVIVOR_HOLDOUTS: int = 6   # dug-in armed holdouts...
@@ -549,6 +551,8 @@ func _populate_world() -> void:
 	sim.populate(POP_INFECTED, POP_CIV, POP_SAN, city.land)   # ambient zed/civ/san on land
 	sim.scatter(&"run", WorldSim.INFECTED, POP_RUNNERS, city.land, rng)
 	sim.scatter(&"bru", WorldSim.INFECTED, POP_BRUTES, city.land, rng)
+	for _z in ZED_HORDES:
+		sim.spawn_cluster(&"zed", WorldSim.INFECTED, _random_land_point(rng), ZED_PER_HORDE, 15.0, rng)
 	for _c in BANDIT_CREWS:
 		sim.spawn_cluster(&"bnd", WorldSim.BANDIT, _random_land_point(rng), BANDIT_PER_CREW, 6.0, rng)
 	for _h in SURVIVOR_HOLDOUTS:

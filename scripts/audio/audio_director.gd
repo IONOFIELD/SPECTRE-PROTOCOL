@@ -119,7 +119,7 @@ func _install_ducking(target_bus: String, sidechain_bus: String) -> void:
 	_clear_effects(idx)
 	var comp := AudioEffectCompressor.new()
 	comp.threshold = -22.0
-	comp.ratio = 6.0
+	comp.ratio = 4.5          # 25% gentler than before -- the radio/SFX ducks the bed less
 	comp.attack_us = 100.0
 	comp.release_ms = 380.0
 	comp.gain = 0.0

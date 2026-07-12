@@ -433,8 +433,8 @@ func _block(rng: RandomNumberGenerator, bx: float, bz: float, dc: float) -> void
 		zone = 1
 
 	var r0: float = rng.randf()
-	var park_p: float = 0.22 if zone == 2 else 0.07
-	var lot_p: float = 0.16 if zone == 2 else 0.10
+	var park_p: float = 0.12 if zone == 2 else 0.04    # denser city -- fewer empty greens
+	var lot_p: float = 0.10 if zone == 2 else 0.06     # ...and fewer surface lots -> more houses
 
 	if r0 < park_p:
 		# a path bisects the green. Subtract it; do not lay it on top.

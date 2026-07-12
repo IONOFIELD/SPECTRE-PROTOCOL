@@ -21,6 +21,7 @@ const HEAL_RATE: float = 14.0         # hp/s a medic restores to nearby allies
 const BRIDGE_SLOW: float = 0.55       # a shove through the horde: every metre of deck is fought for
 const EOD_BLAST_R: float = 4.5        # EOD grenade / RPG area radius
 const EOD_BLAST_DMG: float = 30.0     # damage per hostile in the ring
+const SAN_FLAME_CHANCE: float = 0.14  # a Sanitation attack projects fire this often; else a round
 
 # Sanitation flash-grenade evasion: when pinned (recently hit), a Sanitation elite
 # will RARELY pop a flash -- a bright thermal bloom -- break contact, and slide to a
@@ -601,8 +602,8 @@ func _strike(i: int, f: int) -> void:
 	var what: String = "gunfire"
 	if team[i] == INFECTED:
 		what = "claw"
-	elif kind[i] == &"san":
-		what = "flame"
+	elif kind[i] == &"san" and _rng.randf() < SAN_FLAME_CHANCE:
+		what = "flame"   # mostly it fires rounds (tracers); fire is an occasional burst
 	events.append({"kind": what, "pos": pos[i], "to": pos[f], "team": team[i], "unit": kind[i]})
 
 

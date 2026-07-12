@@ -466,15 +466,15 @@ func test_sanitation_flame() -> void:
 	s.spawn(Vector2(50, 56), &"cbt", WorldSim.SQUAD)   # a target in throw/burn range
 	var flame: bool = false
 	var san_gun: bool = false
-	for _t in 180:
+	for _t in 900:
 		s.step(1.0 / 60.0)
 		for e in s.events:
 			if e["kind"] == "flame":
 				flame = true
 			if e["kind"] == "gunfire" and e["unit"] == &"san":
 				san_gun = true
-	check("sanitation emits a flame plume event", flame, "flame=%s" % flame)
-	check("sanitation never fires a gun round", not san_gun, "san_gun=%s" % san_gun)
+	check("sanitation still projects fire sometimes", flame, "flame=%s" % flame)
+	check("sanitation mostly fires tracer rounds now", san_gun, "san_gun=%s" % san_gun)
 
 
 ## A pinned Sanitation elite rarely pops a flash-bang and breaks contact to a flank.
