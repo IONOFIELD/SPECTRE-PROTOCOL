@@ -44,13 +44,16 @@ var buildings: Array[Dictionary] = []
 var _surfaces: Dictionary = {}   # material -> Array[Rect2], all disjoint, all y = 0
 
 # geography, filled by generate() and read by main + the sim
-var water: Array[Rect2] = []     # nav + collision, NOT line of sight
+var land_poly: PackedVector2Array = PackedVector2Array()   # the SF coastline (irregular)
+var water: Array[Rect2] = []     # (unused with a polygon; the ocean plane is the sea now)
 var bridges: Array[Rect2] = []   # walkable decks, movement-slowed
 var escapes: Array[Rect2] = []   # bridge far ends: step inside to get off the map
-var land: Rect2 = Rect2()        # the walkable city block, for ambient population
+var parks: Array[Rect2] = []     # Golden Gate Park, the Presidio, the Panhandle
+var land: Rect2 = Rect2()        # polygon bounding box, for ambient population scatter
+var poly_lo: Vector2 = Vector2.ZERO
+var poly_hi: Vector2 = Vector2.ZERO
 var map_lo: Vector2 = Vector2.ZERO
 var map_hi: Vector2 = Vector2.ZERO
-var park: Rect2 = Rect2()        # Golden Gate Park, carved from the grid
 
 
 func building_rects() -> Array[Rect2]:
@@ -104,15 +107,13 @@ func generate(snap_res: Vector2i) -> void:
 	_surfaces.clear()
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 	rng.seed = seed_value
-	var pitch: float = BLOCK + STREET
-	var span: float = float(grid_n) * pitch
 
-	_lay_geography(span)
+	land_poly = _sf_polygon()
+	_lay_geography()
 
-	# The ocean: a cold thermal plane under and around the whole peninsula, extended
-	# far past the bounds so a bounded camera never sees past it into the void. It
-	# sits 1.5 m below the land, so the coast reads as a step down to the water and
-	# never z-fights the land surfaces at altitude.
+	# The ocean: a cold thermal plane under and around the peninsula, extended far
+	# past the bounds so a bounded camera never sees the void; 1.5 m below the land
+	# so the coast reads as a clean step down to the water.
 	var sea: PlaneMesh = PlaneMesh.new()
 	sea.size = Vector2(map_hi.x - map_lo.x + 4000.0, map_hi.y - map_lo.y + 4000.0)
 	sea.subdivide_width = 16
@@ -123,64 +124,117 @@ func generate(snap_res: Vector2i) -> void:
 	smi.material_override = ThermalLib.get_material("water", _snap_res)
 	add_child(smi)
 
-	# --- the two bridge decks over the water (the ocean plane is the water itself)
+	# --- bridge decks over the water
 	for b in bridges:
 		_tile(b, "road")
 	_bridge_towers(bridges[0], true)     # Golden Gate runs north -- towers span x
 	_bridge_towers(bridges[1], false)    # Bay Bridge runs east -- towers span z
 
-	# --- roads, clipped to the land so they meet the water cleanly at the edge.
-	var lr: Rect2 = Rect2(0.0, 0.0, span, span)
-	for j in grid_n + 1:
-		var cz: float = float(j) * pitch
-		_tile(Rect2(-HALF_ST, cz - HALF_ST, span + STREET, STREET).intersection(lr), "road")
-	for i in grid_n + 1:
-		var cx: float = float(i) * pitch
-		for j in grid_n:
-			var z0: float = float(j) * pitch + HALF_ST
-			_tile(Rect2(cx - HALF_ST, z0, STREET, pitch - STREET).intersection(lr), "road")
-
-	# --- blocks. Downtown leans toward the bay (Financial District, by the Bay
-	# Bridge); Golden Gate Park is carved out as a green swath.
-	for gx in grid_n:
-		for gz in grid_n:
-			var bx: float = float(gx) * pitch + HALF_ST
-			var bz: float = float(gz) * pitch + HALF_ST
-			if park.has_point(Vector2(bx + BLOCK * 0.5, bz + BLOCK * 0.5)):
+	# --- the street grid, laid ONLY where a block centre falls on land, so the city
+	# takes the shape of the coastline. Interior streets connect land to land;
+	# coastal blocks have no seaward street. Downtown leans toward the bay.
+	var pitch: float = BLOCK + STREET
+	var nx: int = int(ceil((poly_hi.x - poly_lo.x) / pitch)) + 1
+	var nz: int = int(ceil((poly_hi.y - poly_lo.y) / pitch)) + 1
+	var downtown: Vector2 = Vector2(880.0, 430.0)     # Financial District, by the Bay Bridge
+	for gx in nx:
+		for gz in nz:
+			var bx: float = poly_lo.x + float(gx) * pitch + HALF_ST
+			var bz: float = poly_lo.y + float(gz) * pitch + HALF_ST
+			var c: Vector2 = Vector2(bx + BLOCK * 0.5, bz + BLOCK * 0.5)
+			if not _in_land(c):
+				continue
+			var east_land: bool = _in_land(c + Vector2(pitch, 0.0))
+			var south_land: bool = _in_land(c + Vector2(0.0, pitch))
+			if east_land:
+				_tile(Rect2(bx + BLOCK, bz, STREET, BLOCK), "road")
+			if south_land:
+				_tile(Rect2(bx, bz + BLOCK, BLOCK, STREET), "road")
+			if east_land and south_land:
+				_tile(Rect2(bx + BLOCK, bz + BLOCK, STREET, STREET), "road")
+			if _in_park(c):
 				_tile(Rect2(bx, bz, BLOCK, BLOCK), "park")
 				continue
-			var dc: float = Vector2(float(gx) - (float(grid_n) - 3.0), float(gz) - 5.5).length()
-			_block(rng, bx, bz, dc)
+			_block(rng, bx, bz, c.distance_to(downtown) / pitch)
 
 	_emit_surfaces()
 
 
-## Water, bridges, escape zones and bounds around a `span`-metre land grid. Water
-## avoids the bridge lanes, so the decks are walkable gaps the nav routes onto for
-## free. Everything abuts the land at z=0 (north), x=span (east), x=0 (west).
-func _lay_geography(span: float) -> void:
-	water.clear()
-	bridges.clear()
-	escapes.clear()
-	land = Rect2(0.0, 0.0, span, span)
-	park = Rect2(70.0, 300.0, 360.0, 96.0)      # long green strip, west-centre
+## The San Francisco coastline, ~1,150 m across, clockwise from the Lands End tip.
+## Chunky at block resolution but unmistakably the peninsula: the north waterfront
+## and Financial District jut into the bay (NE), Hunters Point points east (SE),
+## and Ocean Beach is the straight Pacific edge (W).
+func _sf_polygon() -> PackedVector2Array:
+	return PackedVector2Array([
+		Vector2(205, 185),   # NW -- Lands End / Presidio tip
+		Vector2(360, 130),   # N  -- Presidio to Marina
+		Vector2(560, 150),   # N  -- Marina waterfront
+		Vector2(720, 140),   # N  -- Fort Mason
+		Vector2(850, 205),   # NE -- Fisherman's Wharf
+		Vector2(930, 320),   # NE -- Financial District jut
+		Vector2(965, 470),   # E  -- Embarcadero (Bay Bridge)
+		Vector2(935, 610),   # E  -- SoMa / South Beach
+		Vector2(958, 760),   # E  -- Mission Bay
+		Vector2(905, 875),   # SE -- Dogpatch
+		Vector2(1005, 950),  # SE -- Hunters Point / India Basin point
+		Vector2(865, 1015),  # SE -- Bayview
+		Vector2(700, 1085),  # S  -- southern border
+		Vector2(500, 1105),  # S  -- Visitacion Valley
+		Vector2(330, 1070),  # S  -- Lake Merced approach
+		Vector2(210, 990),   # SW -- Lake Merced
+		Vector2(150, 830),   # W  -- Sunset / Ocean Beach south
+		Vector2(130, 640),   # W  -- Ocean Beach mid
+		Vector2(142, 450),   # W  -- Richmond / Ocean Beach north
+		Vector2(165, 300),   # NW -- Lands End approach
+	])
 
-	# north strait, flanking the Golden Gate lane
-	water.append(Rect2(0.0, -STRAIT, GG_X, STRAIT))
-	water.append(Rect2(GG_X + LANE, -STRAIT, span - GG_X - LANE, STRAIT))
-	# east bay, flanking the Bay Bridge lane
-	water.append(Rect2(span, 0.0, BAY, BAY_Z))
-	water.append(Rect2(span, BAY_Z + LANE, BAY, span - BAY_Z - LANE))
-	# west ocean, wrapping the north-west corner
-	water.append(Rect2(-OCEAN, -STRAIT, OCEAN, span + STRAIT))
 
-	bridges.append(Rect2(GG_X, -STRAIT, LANE, STRAIT))          # Golden Gate, north
-	bridges.append(Rect2(span, BAY_Z, BAY, LANE))               # Bay Bridge, east
-	escapes.append(Rect2(GG_X, -STRAIT, LANE, FAR))             # Marin end (far north)
-	escapes.append(Rect2(span + BAY - FAR, BAY_Z, FAR, LANE))   # Oakland end (far east)
+## Bridges (Golden Gate off the north tip, Bay Bridge off the east), their escape
+## zones, the named parks, and map bounds -- all derived from the polygon bbox.
+func _lay_geography() -> void:
+	water = []
+	poly_lo = land_poly[0]
+	poly_hi = land_poly[0]
+	for v in land_poly:
+		poly_lo = poly_lo.min(v)
+		poly_hi = poly_hi.max(v)
+	land = Rect2(poly_lo, poly_hi - poly_lo)
 
-	map_lo = Vector2(-OCEAN - 20.0, -STRAIT - 20.0)
-	map_hi = Vector2(span + BAY + 20.0, span + 20.0)
+	parks = [
+		Rect2(175, 600, 380, 95),    # Golden Gate Park -- long E-W green, west-centre
+		Rect2(205, 210, 165, 130),   # the Presidio -- NW
+		Rect2(555, 628, 120, 40),    # the Panhandle -- E of GG Park
+	]
+	bridges = [
+		Rect2(235, -120, 66, 300),   # Golden Gate, north (meets the N coast ~z 150)
+		Rect2(950, 435, 340, 72),    # Bay Bridge, east (meets the E coast ~x 940)
+	]
+	escapes = [
+		Rect2(235, -120, 66, 46),    # Marin end (far north)
+		Rect2(1246, 435, 44, 72),    # Oakland end (far east)
+	]
+
+	map_lo = poly_lo
+	map_hi = poly_hi
+	for b in bridges:
+		map_lo = map_lo.min(b.position)
+		map_hi = map_hi.max(b.end)
+	for e in escapes:
+		map_lo = map_lo.min(e.position)
+		map_hi = map_hi.max(e.end)
+	map_lo -= Vector2(240, 170)
+	map_hi += Vector2(240, 170)
+
+
+func _in_land(p: Vector2) -> bool:
+	return Geometry2D.is_point_in_polygon(p, land_poly)
+
+
+func _in_park(p: Vector2) -> bool:
+	for pk in parks:
+		if pk.has_point(p):
+			return true
+	return false
 
 
 ## Two cold steel towers on a bridge deck -- the thermal landmark that reads "bridge".

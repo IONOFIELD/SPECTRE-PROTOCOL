@@ -34,7 +34,7 @@ var _heap_n: int = 0
 var expanded: int = 0
 
 
-func build(rects: Array[Rect2], lo: Vector2, hi: Vector2, clearance: float, cell_size: float = CELL) -> void:
+func build(rects: Array[Rect2], lo: Vector2, hi: Vector2, clearance: float, cell_size: float = CELL, land_poly: PackedVector2Array = PackedVector2Array(), bridges: Array[Rect2] = []) -> void:
 	cell = cell_size
 	_ox = lo.x
 	_oy = lo.y
@@ -42,12 +42,19 @@ func build(rects: Array[Rect2], lo: Vector2, hi: Vector2, clearance: float, cell
 	_ny = maxi(1, int(ceil((hi.y - lo.y) / cell)))
 	var n: int = _nx * _ny
 	blocked.resize(n)
-	blocked.fill(0)
 	_g.resize(n)
 	_came.resize(n)
 	_closed.resize(n)
 	_heap_i.resize(n)
 	_heap_f.resize(n)
+
+	if land_poly.is_empty():
+		blocked.fill(0)                       # open everywhere; only buildings block
+	else:
+		blocked.fill(1)                       # ocean everywhere...
+		_fill_polygon(land_poly)              # ...then carve the land open
+		for b in bridges:
+			_carve(b)                         # bridge decks: walkable gaps over the water
 
 	for r in rects:
 		var e: Rect2 = r.grow(clearance)
@@ -58,6 +65,41 @@ func build(rects: Array[Rect2], lo: Vector2, hi: Vector2, clearance: float, cell
 		for cy in range(y0, y1 + 1):
 			for cx in range(x0, x1 + 1):
 				blocked[cy * _nx + cx] = 1
+
+
+## Scanline flood: open every cell whose row-centre lies inside the polygon.
+## O(rows x edges), so a jagged coastline costs almost nothing at build time.
+func _fill_polygon(poly: PackedVector2Array) -> void:
+	var m: int = poly.size()
+	if m < 3:
+		return
+	for cy in _ny:
+		var wz: float = _oy + (float(cy) + 0.5) * cell
+		var xs: Array = []
+		for e in m:
+			var a: Vector2 = poly[e]
+			var b: Vector2 = poly[(e + 1) % m]
+			if (a.y <= wz and b.y > wz) or (b.y <= wz and a.y > wz):
+				xs.append(a.x + (wz - a.y) / (b.y - a.y) * (b.x - a.x))
+		xs.sort()
+		var k: int = 0
+		while k + 1 < xs.size():
+			var cx0: int = clampi(int(floor((xs[k] - _ox) / cell)), 0, _nx - 1)
+			var cx1: int = clampi(int(ceil((xs[k + 1] - _ox) / cell)) - 1, 0, _nx - 1)
+			for cx in range(cx0, cx1 + 1):
+				blocked[cy * _nx + cx] = 0
+			k += 2
+
+
+## Open a rect's cells (a bridge deck carved back through the ocean).
+func _carve(r: Rect2) -> void:
+	var x0: int = clampi(int(floor((r.position.x - _ox) / cell)), 0, _nx - 1)
+	var x1: int = clampi(int(ceil((r.end.x - _ox) / cell)) - 1, 0, _nx - 1)
+	var y0: int = clampi(int(floor((r.position.y - _oy) / cell)), 0, _ny - 1)
+	var y1: int = clampi(int(ceil((r.end.y - _oy) / cell)) - 1, 0, _ny - 1)
+	for cy in range(y0, y1 + 1):
+		for cx in range(x0, x1 + 1):
+			blocked[cy * _nx + cx] = 0
 
 
 func _idx(p: Vector2) -> int:

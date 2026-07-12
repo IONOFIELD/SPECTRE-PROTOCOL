@@ -104,8 +104,8 @@ const FEED: Dictionary = {
 	"orbit":  {"dist": 1500.0, "el": 1.25, "fov": 40.0, "follow": false, "orbit": 0.015},
 }
 var feed := "deploy"
-var cam_tx := 74.0
-var cam_tz := 69.0
+var cam_tx := 300.0
+var cam_tz := 470.0
 var cam_dist := 240.0
 var cam_az := -0.85
 var cam_el := 0.90
@@ -405,11 +405,13 @@ func _spawn() -> void:
 	var walls: Array[Rect2] = city.building_rects()
 	if cars != null:
 		walls.append_array(cars.rects)     # semis block; the rest you walk around
-	# walls block LOS + nav; water blocks nav only; bridge decks are slowed gaps.
-	sim.load_map(walls, city.water, city.bridges, city.map_lo, city.map_hi)
-	# four elements, staged in a 2x2 on the deploy plaza (SW corner of the land).
+	# walls block LOS + nav; the land polygon is the coastline (ocean outside);
+	# bridge decks are slowed gaps the nav carves through the water.
+	sim.load_map(walls, city.water, city.bridges, city.map_lo, city.map_hi, city.land_poly)
+	# four elements, staged in a 2x2 in the west-central city (Ocean Beach side);
+	# the exfil bridges are north (Golden Gate) and east (Bay) -- a real traverse.
 	for e in ELEMENTS:
-		var base: Vector2 = Vector2(64.0 + float(e % 2) * 10.0, 62.0 + float(e / 2) * 10.0)
+		var base: Vector2 = Vector2(300.0 + float(e % 2) * 16.0, 470.0 + float(e / 2) * 16.0)
 		for j in ELEMENT_ROSTER.size():
 			var p: Vector2 = base + Vector2(float(j % 3) * 1.4, float(j / 3) * 1.4)
 			sim.spawn(p, ELEMENT_ROSTER[j], WorldSim.SQUAD, e)
@@ -448,9 +450,13 @@ func _populate_world() -> void:
 
 
 func _random_land_point(rng: RandomNumberGenerator) -> Vector2:
-	return Vector2(
-		rng.randf_range(city.land.position.x, city.land.end.x),
-		rng.randf_range(city.land.position.y, city.land.end.y))
+	for _try in 48:
+		var p: Vector2 = Vector2(
+			rng.randf_range(city.land.position.x, city.land.end.x),
+			rng.randf_range(city.land.position.y, city.land.end.y))
+		if Geometry2D.is_point_in_polygon(p, city.land_poly):
+			return p
+	return Vector2(400.0, 500.0)   # central-land fallback
 
 
 ## Build the visual for one sim unit. Returns null for an unknown team (still kept
@@ -770,10 +776,10 @@ func _map_overview() -> void:
 	sensor_mat.set_shader_parameter("fpn_amt", 0.0)
 	sensor_mat.set_shader_parameter("vignette", 0.0)
 	sensor_mat.set_shader_parameter("dither", false)
-	var cx: float = (city.map_lo.x + city.map_hi.x) * 0.5
-	var cz: float = (city.map_lo.y + city.map_hi.y) * 0.5
+	var cx: float = city.land.get_center().x        # centre on the peninsula, not the bbox
+	var cz: float = city.land.get_center().y
 	var span: float = maxf(city.map_hi.x - city.map_lo.x, city.map_hi.y - city.map_lo.y)
-	var h: float = span * 1.15
+	var h: float = span * 1.1
 	# bracket near/far TIGHTLY around the ground -- a wide range at this altitude
 	# z-fights the water plane against the dirt bed beneath it (dirt bleeds through
 	# warm). Tight planes restore depth precision so cold water reads cold.
@@ -936,10 +942,9 @@ func _apply_feed() -> void:
 	cam_dist = f.dist
 	cam_el = f.el
 	if feed == "orbit":
-		# pull the pylon turn back over the middle of the whole city
-		var span: float = float(city.grid_n) * (CityGen.BLOCK + CityGen.STREET)
-		cam_tx = span * 0.5
-		cam_tz = span * 0.5
+		# pull the pylon turn back over the middle of the peninsula itself
+		cam_tx = city.land.get_center().x
+		cam_tz = city.land.get_center().y
 		cam_az = -1.05
 
 

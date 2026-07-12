@@ -92,6 +92,8 @@ var _tick: int = 0
 var buildings: Array[Rect2] = []      # ground-plane AABBs, metres -- block LOS + nav + collision
 var water: Array[Rect2] = []          # the bay/strait/ocean -- block nav + collision, NOT LOS
 var bridges: Array[Rect2] = []        # walkable decks where movement is slowed to a shove
+var land_poly: PackedVector2Array = PackedVector2Array()   # coastline; empty = rectangular map
+var _poly_centroid: Vector2 = Vector2.ZERO
 var nav: NavGrid = NavGrid.new()
 var path: Array[PackedVector2Array] = []
 var path_i: Array[int] = []
@@ -228,9 +230,30 @@ func _resolve_buildings(p: Vector2, r: float) -> Vector2:
 			p = _eject(p, buildings[bi].grow(r))
 		for w in water:
 			p = _eject(p, w.grow(r))
+		# off the coast (and not on a bridge)? shove back onto the nearest shore.
+		if not land_poly.is_empty() and not _on_bridge(p) and not Geometry2D.is_point_in_polygon(p, land_poly):
+			p = _to_shore(p, r)
 		if p.is_equal_approx(before):
 			break
 	return p
+
+
+## Nearest point on the coastline, nudged inland by r so the footprint clears the
+## water. Shoves a unit that strayed off the coast back onto land.
+func _to_shore(p: Vector2, r: float) -> Vector2:
+	var m: int = land_poly.size()
+	var best: Vector2 = p
+	var bestd: float = INF
+	for e in m:
+		var cp: Vector2 = Geometry2D.get_closest_point_to_segment(p, land_poly[e], land_poly[(e + 1) % m])
+		var d: float = p.distance_squared_to(cp)
+		if d < bestd:
+			bestd = d
+			best = cp
+	var inward: Vector2 = _poly_centroid - best
+	if inward.length_squared() > 1e-6:
+		best += inward.normalized() * r
+	return best
 
 
 ## If p is inside axis-aligned rect e, push it out along the shallowest axis.
@@ -357,15 +380,28 @@ func load_buildings(rects: Array[Rect2]) -> void:
 ## NOT sight -- you can see across the bay), bridges (walkable, movement-slowed),
 ## and explicit bounds that must span the bridges + water, not just the land. The
 ## bridge lanes are gaps in the water, so nav routes onto them for free.
-func load_map(walls: Array[Rect2], water_rects: Array[Rect2], bridge_rects: Array[Rect2], lo: Vector2, hi: Vector2) -> void:
+func load_map(walls: Array[Rect2], water_rects: Array[Rect2], bridge_rects: Array[Rect2], lo: Vector2, hi: Vector2, poly: PackedVector2Array = PackedVector2Array()) -> void:
 	buildings = walls
 	water = water_rects
 	bridges = bridge_rects
+	land_poly = poly
+	_poly_centroid = _centroid_of(poly)
 	bgrid.build(walls, 24.0, RADIUS + 0.05)
 	set_bounds(lo, hi)
 	var obstacles: Array[Rect2] = walls.duplicate()
 	obstacles.append_array(water_rects)
-	nav.build(obstacles, lo, hi, RADIUS + NavGrid.CELL * 0.5)
+	# with a coastline the nav floods the polygon open + carves the bridges through
+	# the ocean; without one it is the old rect-only navmesh.
+	nav.build(obstacles, lo, hi, RADIUS + NavGrid.CELL * 0.5, NavGrid.CELL, poly, bridge_rects)
+
+
+func _centroid_of(poly: PackedVector2Array) -> Vector2:
+	if poly.is_empty():
+		return Vector2.ZERO
+	var c: Vector2 = Vector2.ZERO
+	for v in poly:
+		c += v
+	return c / float(poly.size())
 
 
 # ---- combat ----------------------------------------------------------------
@@ -560,7 +596,7 @@ func _scatter(unit_kind: StringName, team_id: int, n: int, rng: RandomNumberGene
 		placed += 1
 
 
-## Ground a unit can't stand on: inside a building or in the water.
+## Ground a unit can't stand on: inside a building, in the water, or off the coast.
 func _blocked(p: Vector2) -> bool:
 	for bi in bgrid.at(p):
 		if buildings[bi].has_point(p):
@@ -568,6 +604,8 @@ func _blocked(p: Vector2) -> bool:
 	for w in water:
 		if w.has_point(p):
 			return true
+	if not land_poly.is_empty() and not _on_bridge(p) and not Geometry2D.is_point_in_polygon(p, land_poly):
+		return true
 	return false
 
 

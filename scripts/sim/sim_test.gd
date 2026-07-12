@@ -29,6 +29,7 @@ func _initialize() -> void:
 	test_civilian_flees()
 	test_new_factions()
 	test_terrain()
+	test_land_polygon()
 	test_population_hunts_and_fights()
 	test_elements_and_medic()
 	test_mission_exfil()
@@ -377,6 +378,40 @@ func test_terrain() -> void:
 	var db: float = s2.pos[off].x - 10.0     # progress on open ground
 	check("the bridge deck slows the crossing", da < db * 0.75,
 		"bridge %.1f m vs open %.1f m in 3 s" % [da, db])
+
+
+## A land polygon: units spawn only inside it, get shoved back off the coast, and
+## a carved bridge still lets them off the land. Here a 200 m diamond + a south stub.
+func test_land_polygon() -> void:
+	var s: WorldSim = WorldSim.new()
+	var poly: PackedVector2Array = PackedVector2Array([
+		Vector2(100, 10), Vector2(190, 100), Vector2(130, 190), Vector2(70, 190), Vector2(10, 100)])
+	var walls: Array[Rect2] = []
+	var water: Array[Rect2] = []
+	var decks: Array[Rect2] = [Rect2(90, 190, 20, 60)]     # off the flat south coast, into the water
+	s.load_map(walls, water, decks, Vector2(-40, -40), Vector2(300, 300), poly)
+	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
+	rng.seed = 3
+	s.scatter(&"cbt", WorldSim.SQUAD, 40, Rect2(30, 30, 140, 140), rng)   # inside, clear of the bridge
+	var all_in: bool = s.count() > 0
+	for i in s.count():
+		if not Geometry2D.is_point_in_polygon(s.pos[i], poly):
+			all_in = false
+	check("units only spawn on the land", all_in, "spawned=%d, all inside=%s" % [s.count(), all_in])
+
+	var u: int = s.spawn(Vector2(100, 100), &"cbt", WorldSim.SQUAD)
+	s.order_move([u], Vector2(400, 100))     # drive hard east, into the ocean
+	for _t in 300:
+		s.step(1.0 / 60.0)
+	check("the coast keeps a unit on land", Geometry2D.is_point_in_polygon(s.pos[u], poly),
+		"unit at (%.0f, %.0f)" % [s.pos[u].x, s.pos[u].y])
+
+	var b2: int = s.spawn(Vector2(100, 150), &"cbt", WorldSim.SQUAD)
+	s.order_move([b2], Vector2(100, 240))    # down the bridge stub, off the land
+	for _t in 540:                           # 9 s -- 40 m to the coast + the slowed deck
+		s.step(1.0 / 60.0)
+	check("a carved bridge lets a unit off the land", s.pos[b2].y > 196.0,
+		"unit y=%.1f (south coast at 190)" % s.pos[b2].y)
 
 
 ## A populated city: factions land on walkable ground, and the hunting horde
