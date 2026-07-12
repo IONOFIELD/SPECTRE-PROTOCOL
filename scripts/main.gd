@@ -1670,6 +1670,12 @@ func _menu_reset_cycle() -> void:
 func _draw_menu_scan() -> void:
 	if sim == null or _menu_title == null:
 		return
+	# ALWAYS mark the Sanitation force in red so you can watch them roam + sanitize the map.
+	for i in sim.count():
+		if sim.alive[i] and sim.team[i] == WorldSim.SANITATION:
+			var sw: Vector3 = Vector3(sim.pos[i].x, 0.9, sim.pos[i].y)
+			if not cam.is_position_behind(sw):
+				_corner_box(_screen_point(sw), 6.0, TAG_ENEMY)
 	var t: float = _menu_ping_age
 	if t >= MENU_PING_SHOW:
 		return
@@ -2989,11 +2995,16 @@ func _build_menu() -> void:
 	_menu_fade.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_menu_fade.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_menu_layer.add_child(_menu_fade)
+	# a CenterContainer keeps the menu box centred no matter its height -- so the taller
+	# loadout screen (and its DEPLOY button) never grows off the bottom of the screen.
+	var center: CenterContainer = CenterContainer.new()
+	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_menu_layer.add_child(center)
 	var box: VBoxContainer = VBoxContainer.new()
-	box.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
 	box.add_theme_constant_override("separation", 9)
 	box.alignment = BoxContainer.ALIGNMENT_CENTER
-	_menu_layer.add_child(box)
+	center.add_child(box)
 	_menu_title = _menu_label("SPECTRE PROTOCOL", 40, HUD_COL)
 	box.add_child(_menu_title)
 	box.add_child(_menu_label("SELECT DEPLOYMENT", 15, HUD_DIM))
