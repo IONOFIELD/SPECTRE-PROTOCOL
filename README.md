@@ -82,7 +82,7 @@ sniper, recon, EOD, and the Sanitation trefoil.
 LMB pick    RMB move    double-click send to reticle    hold-on-building loot
 TAB / 1-4 element    Q / TYP cycle unit type    F weapons free    V AC-130 strike
 E scan    P parley    SPACE AC-130 / ground view    WASD pan    wheel zoom
-T palette    C monitor snow    G freeze AGC    O auto-orbit    H toggle help
+T palette    C monitor snow    G freeze AGC    H toggle help
 ```
 
 Touch is supported (tap select, double-tap move, drag pan, pinch zoom, and an

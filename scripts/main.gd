@@ -335,7 +335,6 @@ var frame_n := 0.0
 var mode := 0
 var snap_on := true
 var cctv := 0.85
-var orbit_auto := true
 var _auto_fired := false
 var probe_lock: bool = false   # freeze the follow cam for A/B captures
 var agc_pinned: bool = false   # A/B rig only
@@ -1462,8 +1461,8 @@ func _process(delta: float) -> void:
 		var c: Vector3 = _follow_point()
 		cam_tx = lerpf(cam_tx, c.x, minf(1.0, delta * 1.6))
 		cam_tz = lerpf(cam_tz, c.z, minf(1.0, delta * 1.6))
-	if orbit_auto and f.orbit > 0.0 and cut_t < 0.0:
-		cam_az += f.orbit * delta
+	if f.orbit > 0.0 and cut_t < 0.0:
+		cam_az += f.orbit * delta            # the gunship always pylon-turns -- no static view
 
 	# bound the optic to the map (+ its ocean margin) and to the zoom band, so the
 	# view never leaves the peninsula for the void, never zooms out past the coast,
@@ -1625,7 +1624,7 @@ const SEL_COL: Color = Color(0.62, 0.88, 0.70, 0.85)
 func _update_menu(delta: float) -> void:
 	if sim == null:
 		return
-	# top-down look over the whole map for the menu backdrop (slowly turning with orbit_auto)
+	# top-down look over the whole map for the menu backdrop (always slowly turning)
 	cam_el = 1.45
 	cam_dist = 1600.0
 	if city != null:
@@ -2412,7 +2411,6 @@ func _apply_feed() -> void:
 		cam_tz = city.land.get_center().y
 		cam_az = -1.05
 		cam_manual = false     # re-take the view
-		orbit_auto = true      # the wide/ISR view always keeps its pylon turn going
 
 
 func _input(e: InputEvent) -> void:
@@ -2471,7 +2469,6 @@ func _input(e: InputEvent) -> void:
 			KEY_T: mode = (mode + 1) % 3
 			KEY_C: cctv = 0.0 if cctv > 0.0 else 0.85
 			KEY_G: agc.frozen = not agc.frozen
-			KEY_O: orbit_auto = not orbit_auto
 			KEY_H:
 				show_help = not show_help
 				if help != null:
