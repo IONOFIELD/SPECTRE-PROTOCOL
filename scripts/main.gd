@@ -80,18 +80,44 @@ var _sfx_scan: AudioStream
 const SCAN_REVEAL: float = 15.0
 const SCAN_COOLDOWN: float = 25.0
 const SCAN_PULSE: float = 1.3            # seconds the green sweep ring takes to cross the feed
+const FOG_SIGHT: float = 100.0           # a unit passively sees enemies this close (fog of war)
+const SCAN_RANGE: float = 175.0          # a commander scan IDs enemies out to here for SCAN_REVEAL s
 
 
-## Is enemy unit i currently painted by a scan? (Sanitation / rival teams hide otherwise.)
-func _identified(_i: int) -> bool:
-	return _scan_t < SCAN_REVEAL
+## The player's commander (element 0's cdr), or any element-0 unit if the cdr is down; -1
+## if the player has no one left. Scans originate from here.
+func _commander() -> int:
+	var fallback: int = -1
+	for i in sim.count():
+		if sim.alive[i] and sim.team[i] == WorldSim.SQUAD and sim.element[i] == 0:
+			if sim.kind[i] == &"cdr":
+				return i
+			if fallback < 0:
+				fallback = i
+	return fallback
+
+
+## Is enemy unit i currently visible to you? Fog of war: revealed if any of your units is
+## within FOG_SIGHT of it, OR a live commander scan reaches it (SCAN_RANGE for SCAN_REVEAL s).
+func _identified(i: int) -> bool:
+	var p: Vector2 = sim.pos[i]
+	var fog2: float = FOG_SIGHT * FOG_SIGHT
+	for j in sim.count():
+		if sim.alive[j] and sim.team[j] == WorldSim.SQUAD and sim.element[j] == 0:
+			if p.distance_squared_to(sim.pos[j]) <= fog2:
+				return true
+	if _scan_t < SCAN_REVEAL:
+		var cmd: int = _commander()
+		if cmd >= 0 and p.distance_squared_to(sim.pos[cmd]) <= SCAN_RANGE * SCAN_RANGE:
+			return true
+	return false
 
 
 ## Fire an ISR scan if off cooldown: a green sweep + robotic beeps that paints the enemy
 ## teams for SCAN_REVEAL s. SCAN_COOLDOWN s between scans.
 func _request_scan() -> void:
-	if _scan_t < SCAN_COOLDOWN:
-		return
+	if _scan_t < SCAN_COOLDOWN or _commander() < 0:
+		return                                 # off cooldown + a live commander to scan from
 	_scan_t = 0.0
 	_scan_pulse_t = 0.0
 	if _sfx_scan != null:
@@ -175,6 +201,7 @@ const PANIC_BURN: float = 7.0          # seconds the wreck burns before it's cle
 var sel_layer: Control
 var drag_start: Vector2 = Vector2.ZERO
 var dragging: bool = false
+var _ui_press: bool = false             # the current mouse press landed on a control-bar button
 
 # mission / exfil
 var mission: Mission
@@ -194,7 +221,10 @@ var help: Label
 var show_help: bool = true
 
 # AC-130 HUD + touch
-var _touch_bar: Control                # on-screen control bar (mobile); null until built
+var _bar_l: Control                    # lower-LEFT cluster: REGROUP / unit-type / ALL
+var _bar_r: Control                    # lower-RIGHT cluster: command + camera + AC-130 arm/fire
+var _arm_btn: Button                   # AC-130 ARM (lit only when unlocked + disarmed)
+var _fire_btn: Button                  # AC-130 FIRE (lit only when armed)
 var _kills: int = 0                    # confirmed hostile kills, for the threat readout
 var _san_kills: int = 0                # Sanitation elites down -- debrief highlight
 var _collateral: int = 0               # civilians dropped by your fire missions
@@ -214,7 +244,8 @@ var _touch_moved: float = 0.0          # primary-touch travel, to tell a tap fro
 var _pinch_prev: float = 0.0           # last two-finger spread, for pinch-zoom
 var _last_tap_ms: int = 0              # for double-tap detection (move order)
 var _last_tap_pos: Vector2 = Vector2.ZERO
-var _move_blip: Dictionary = {}        # {pos, t}: a fading ring at the last move destination
+var _move_marker: Dictionary = {}      # {pos, ids}: a spinning triangle at the move destination, up until the commanded units arrive
+const MOVE_ARRIVE_M: float = 9.0       # commanded units within this of the mark = arrived, mark vanishes
 const DOUBLE_TAP_MS: int = 320         # a second tap within this window = a move order
 const DOUBLE_TAP_PX: float = 46.0      # ...and within this distance of the first
 
@@ -231,6 +262,7 @@ var _loot_toast: String = ""           # transient readout: what the last buildi
 var _loot_toast_t: float = 0.0         # seconds of toast left
 const LOOT_TIME: float = 1.5           # hold seconds to clear a building
 const LOOT_PTS: int = 60               # score per building cleared (before its payout)
+const LOOT_NEAR_M: float = 22.0        # a unit within this of a building's edge can breach it
 const LOOT_CANCEL_PX: float = 42.0     # drag past this and it's a pan, not a loot
 const LOOT_TOAST_TIME: float = 3.2     # how long a loot result stays on the HUD
 const LOOT_AMBUSH_CHANCE: float = 0.16 # odds a cleared building was a nest that bites back
@@ -456,8 +488,8 @@ func _build_tree() -> void:
 	help.text = HELP_TEXT
 	help.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
 	help.offset_left = 24
-	help.offset_top = -72
-	help.offset_bottom = -12
+	help.offset_top = -150      # lifted to sit ABOVE the lower-corner control clusters
+	help.offset_bottom = -86
 	layer.add_child(help)
 
 	# end-of-mission card, centred, hidden until WON/LOST.
@@ -1324,10 +1356,11 @@ func _process(delta: float) -> void:
 	_sanitation_vox(delta)
 	_scan_t += delta
 	_scan_pulse_t += delta
-	if _move_blip.has("pos"):
-		_move_blip["t"] += delta
-		if _move_blip["t"] > 1.2:
-			_move_blip.clear()
+	_update_move_marker()
+	_update_ac_buttons()
+	if _bar_l != null:
+		_bar_l.visible = not _menu_active   # control bars: hidden at the menu, up in a run
+		_bar_r.visible = not _menu_active
 
 	if _menu_active:
 		_update_menu(delta)
@@ -1623,7 +1656,7 @@ func _draw_selection() -> void:
 	_draw_coast()
 	_draw_loot()
 	_draw_hdd_pickups()
-	_draw_move_blip()
+	_draw_move_marker()
 	_draw_hud()
 	_draw_scan_pulse()
 	_draw_allegiance()
@@ -1693,32 +1726,60 @@ func _draw_coast() -> void:
 ## The ISR scan sweep: a green ring expanding from the reticle out past the corners,
 ## fading as it goes -- the pulse that paints the enemy teams for the reveal window.
 func _draw_scan_pulse() -> void:
-	if _scan_pulse_t >= SCAN_PULSE:
+	if _scan_pulse_t >= SCAN_PULSE or sim == null:
 		return
-	var win: Vector2 = Vector2(get_viewport().get_visible_rect().size)
-	var c: Vector2 = win * 0.5
+	var cmd: int = _commander()
+	if cmd < 0:
+		return
+	var w: Vector3 = Vector3(sim.pos[cmd].x, 0.9, sim.pos[cmd].y)
+	if cam.is_position_behind(w):
+		return
+	var c: Vector2 = _screen_point(w)                        # the pulse rolls out from the commander
+	var edge: Vector2 = _screen_point(Vector3(sim.pos[cmd].x + SCAN_RANGE, 0.9, sim.pos[cmd].y))
+	var maxr: float = maxf(20.0, c.distance_to(edge))        # SCAN_RANGE in screen pixels
 	var k: float = _scan_pulse_t / SCAN_PULSE
-	var rad: float = k * win.length() * 0.6
-	var a: float = (1.0 - k) * 0.8
+	var rad: float = k * maxr
+	var a: float = (1.0 - k) * 0.85
 	sel_layer.draw_arc(c, rad, 0.0, TAU, 64, Color(0.40, 1.0, 0.55, a), 2.5)
 	sel_layer.draw_arc(c, rad * 0.7, 0.0, TAU, 48, Color(0.40, 1.0, 0.55, a * 0.5), 1.5)
 
 
-## A move-order blip: an expanding green ring + cross at the last commanded destination,
-## fading over ~1.2 s so you can see where you just sent the squad.
-func _draw_move_blip() -> void:
-	if not _move_blip.has("pos"):
+## The move-order marker: a spinning equilateral triangle at the destination. It stays up
+## the whole way there and vanishes the instant the commanded units arrive (see
+## _update_move_marker) -- so you always know where you last sent them.
+func _draw_move_marker() -> void:
+	if not _move_marker.has("pos"):
 		return
-	var g: Vector2 = _move_blip["pos"]
+	var g: Vector2 = _move_marker["pos"]
 	var w: Vector3 = Vector3(g.x, 0.3, g.y)
 	if cam.is_position_behind(w):
 		return
-	var k: float = clampf(float(_move_blip["t"]) / 1.2, 0.0, 1.0)
 	var p: Vector2 = _screen_point(w)
-	var col: Color = Color(0.50, 1.0, 0.65, (1.0 - k) * 0.9)
-	sel_layer.draw_arc(p, 4.0 + k * 16.0, 0.0, TAU, 24, col, 2.0)
-	sel_layer.draw_line(p - Vector2(6, 0), p + Vector2(6, 0), col, 1.5)
-	sel_layer.draw_line(p - Vector2(0, 6), p + Vector2(0, 6), col, 1.5)
+	var col: Color = Color(0.50, 1.0, 0.65, 0.95)
+	var r: float = 11.0
+	var spin: float = frame_n * 0.06
+	var pts: PackedVector2Array = PackedVector2Array()
+	for k in 3:
+		var ang: float = spin + float(k) * TAU / 3.0 - PI * 0.5
+		pts.append(p + Vector2(cos(ang), sin(ang)) * r)
+	pts.append(pts[0])
+	sel_layer.draw_polyline(pts, col, 2.0)
+
+
+## Drop the move marker the instant the commanded units reach it (their centroid within
+## MOVE_ARRIVE_M), or if they're all gone.
+func _update_move_marker() -> void:
+	if not _move_marker.has("pos"):
+		return
+	var g: Vector2 = _move_marker["pos"]
+	var sum: Vector2 = Vector2.ZERO
+	var n: int = 0
+	for i in _move_marker["ids"]:
+		if i < sim.count() and sim.alive[i]:
+			sum += sim.pos[i]
+			n += 1
+	if n == 0 or (sum / float(n)).distance_to(g) <= MOVE_ARRIVE_M:
+		_move_marker.clear()
 
 
 ## Loot: a filling ring on the building you're holding, and a small dim ring on each
@@ -1862,6 +1923,8 @@ func _draw_unit_boxes() -> void:
 	for i in sim.count():
 		if not sim.alive[i] or sim.team[i] != WorldSim.SQUAD:
 			continue
+		if sim.element[i] != 0 and not _identified(i):
+			continue                                  # fog of war: a rival team you can't see yet
 		var w: Vector3 = Vector3(sim.pos[i].x, 0.9, sim.pos[i].y)
 		if cam.is_position_behind(w):
 			continue
@@ -1917,6 +1980,8 @@ func _draw_tags(font: Font) -> void:
 			continue
 		var t: int = sim.team[i]
 		if t == WorldSim.SQUAD:
+			if sim.element[i] != 0 and not _identified(i):
+				continue                             # fog of war: a rival team you can't see yet
 			_corner_box(p, 7.0, _squad_col(i))
 		elif t == WorldSim.INFECTED:
 			_caret(p - Vector2(0.0, 9.0), 5.0, TAG_ZED, true)
@@ -2342,35 +2407,35 @@ func _input(e: InputEvent) -> void:
 			cam_dist = clampf(cam_dist * 1.1, ZOOM_MIN, ZOOM_MAX)
 		elif e.button_index == MOUSE_BUTTON_LEFT and not Input.is_key_pressed(KEY_SHIFT):
 			if e.pressed:
+				if _over_ui(e.position):
+					_ui_press = true          # let the control-bar button handle it
+					return
+				_ui_press = false
 				dragging = true
 				drag_start = e.position
 				_begin_loot(e.position)       # hold-to-loot starts here
+			elif _ui_press:
+				_ui_press = false             # release of a button press -- no gameplay action
 			else:
 				dragging = false
 				_end_loot()
-				if _strike_arming:
-					_fire_ac130_at(_ground_pick(e.position))   # armed: click calls the strike
-				elif e.position.distance_to(drag_start) < 6.0:
-					# a click: double-click commands to the reticle, single-click selects
-					var now: int = Time.get_ticks_msec()
-					if now - _last_tap_ms < DOUBLE_TAP_MS and e.position.distance_to(_last_tap_pos) < DOUBLE_TAP_PX:
-						_last_tap_ms = 0
-						_double_tap(e.position)
-					else:
-						_last_tap_ms = now
-						_last_tap_pos = e.position
-						_select_nearest(_ground_pick(e.position))
-						if not sim.selected_ids().is_empty():
-							Audio.comms("ack_affirmative", 2500)   # "affirmative" on select
+				if e.position.distance_to(drag_start) < 6.0:
+					_command_move()          # a click sends the squad to the reticle centre
 				else:
-					_select_in_rect(Rect2(drag_start, e.position - drag_start))
+					_select_in_rect(Rect2(drag_start, e.position - drag_start))   # drag = box-select
 					if not sim.selected_ids().is_empty():
 						Audio.comms("ack_affirmative", 2500)
 		elif e.button_index == MOUSE_BUTTON_RIGHT and e.pressed:
+			# right-click: a precise move to the clicked ground (desktop convenience)
 			var ids: Array = sim.selected_ids()
+			if ids.is_empty():
+				_select_element(0)
+				ids = sim.selected_ids()
 			if not ids.is_empty():
-				sim.order_move(ids, _ground_pick(e.position))
+				var g: Vector2 = _ground_pick(e.position)
+				sim.order_move(ids, g)
 				Audio.comms_order()   # squad acks the move over the net
+				_move_marker = {"pos": g, "ids": ids.duplicate()}
 	elif e is InputEventKey and e.pressed and not e.echo:
 		match e.keycode:
 			KEY_SPACE: _channel_change("orbit" if feed == "deploy" else "deploy")
@@ -2383,15 +2448,13 @@ func _input(e: InputEvent) -> void:
 				if help != null:
 					help.visible = show_help
 			KEY_F: _toggle_fire()
-			KEY_V: _request_strike()
+			KEY_V: _request_strike()          # arm the AC-130
+			KEY_B: _fire_reticle()            # fire it on the reticle
 			KEY_E: _request_scan()
 			KEY_P: _parley()
-			KEY_TAB: _pick_element((active_element + 1) % ELEMENTS)
+			KEY_TAB: _cycle_unit_type()       # cycle which of your unit types is selected
 			KEY_Q: _cycle_unit_type()
-			KEY_1: _pick_element(0)
-			KEY_2: _pick_element(1)
-			KEY_3: _pick_element(2)
-			KEY_4: _pick_element(3)
+			KEY_1: _select_all_squad()        # select the whole squad
 			KEY_M:
 				ThermalLib.maps_on = not ThermalLib.maps_on
 				ThermalLib.clear_cache()
@@ -2456,44 +2519,41 @@ func _two_touch_dist() -> float:
 
 
 func _over_ui(pos: Vector2) -> bool:
-	return _touch_bar != null and _touch_bar.get_global_rect().has_point(pos)
+	if _bar_l != null and _bar_l.visible and _bar_l.get_global_rect().has_point(pos):
+		return true
+	if _bar_r != null and _bar_r.visible and _bar_r.get_global_rect().has_point(pos):
+		return true
+	return false
 
 
-## Route a tap: a quick second tap near the first is a MOVE order; otherwise a single
-## tap that selects. Keeps a stray tap from walking your squad into the horde.
-func _handle_tap(pos: Vector2) -> void:
-	var now: int = Time.get_ticks_msec()
-	if now - _last_tap_ms < DOUBLE_TAP_MS and pos.distance_to(_last_tap_pos) < DOUBLE_TAP_PX:
-		_last_tap_ms = 0
-		_double_tap(pos)
-	else:
-		_last_tap_ms = now
-		_last_tap_pos = pos
-		_tap(pos)
+## A single tap on the field: command the squad to the reticle centre.
+func _handle_tap(_pos: Vector2) -> void:
+	_command_move()
 
 
-## Single tap: designate the strike if armed, else drive the squad element you tapped.
-func _tap(pos: Vector2) -> void:
-	var g: Vector2 = _ground_pick(pos)
-	if _strike_arming:
-		_fire_ac130_at(g)      # armed: the tap calls the strike here
-		return
-	var best: int = _squad_at(g)
-	if best >= 0:
-		_pick_element(sim.element[best])
-		Audio.comms("ack_affirmative", 2500)
-
-
-## Double tap / double click: order the selected units to the ground under the RETICLE
-## CENTRE (where the optic is looking), not the tap point, and drop a blip there.
-func _double_tap(_pos: Vector2) -> void:
-	if sim.selected_ids().is_empty():
-		return
+## Single click / tap: order the current selection -- or your whole squad if nothing is
+## picked -- to the ground under the RETICLE CENTRE, and drop the spinning move marker.
+func _command_move() -> void:
+	var ids: Array = sim.selected_ids()
+	if ids.is_empty():
+		_select_element(0)                 # nothing picked -> command the whole squad
+		ids = sim.selected_ids()
+	if ids.is_empty():
+		return                             # no one left to command
 	var win: Vector2 = Vector2(get_viewport().get_visible_rect().size)
 	var g: Vector2 = _ground_pick(win * 0.5)
-	sim.order_move(sim.selected_ids(), g)
+	sim.order_move(ids, g)
 	Audio.comms_order()
-	_move_blip = {"pos": g, "t": 0.0}
+	_move_marker = {"pos": g, "ids": ids.duplicate()}
+
+
+## Call the AC-130 down on the reticle centre (the FIRE button / key). No-op unless armed
+## and unlocked.
+func _fire_reticle() -> void:
+	if not _strike_arming:
+		return
+	var win: Vector2 = Vector2(get_viewport().get_visible_rect().size)
+	_fire_ac130_at(_ground_pick(win * 0.5))
 
 
 ## Nearest living squad member to a ground point, within a finger-sized radius, or -1.
@@ -2538,8 +2598,9 @@ func _building_at(g: Vector2) -> int:
 	return -1
 
 
-## Begin a loot hold if the press landed on an un-looted building (and we're not
-## designating a strike). _process fills it while the finger stays put; release cancels.
+## Begin a loot hold if the press landed on an un-looted building AND your units are near
+## it (they have to be there to breach + clear it). _process fills the hold while the
+## finger stays put; release cancels.
 func _begin_loot(pos: Vector2) -> void:
 	_press_pos = pos
 	_loot_t = 0.0
@@ -2548,7 +2609,11 @@ func _begin_loot(pos: Vector2) -> void:
 		return
 	var b: int = _building_at(_ground_pick(pos))
 	if b >= 0 and not _looted.has(b):
-		_loot_idx = b
+		var bd: Dictionary = city.buildings[b]
+		var c: Vector2 = Vector2(bd["x"] + bd["w"] * 0.5, bd["z"] + bd["d"] * 0.5)
+		var near: float = maxf(bd["w"], bd["d"]) * 0.5 + LOOT_NEAR_M     # edge of the building + a margin
+		if _nearest_player_unit(c, near) >= 0:                           # a unit is close enough to enter
+			_loot_idx = b
 
 
 func _end_loot() -> void:
@@ -2679,45 +2744,55 @@ func _cycle_palette() -> void:
 	mode = (mode + 1) % 3
 
 
-## Bottom control bar for touch: element picks, weapons-free, ISR view, palette.
-## Styled like the gunship HUD; works with mouse too.
+## The two thumb-reach control clusters. LOWER-LEFT is unit selection: REGROUP, a big
+## tap-to-cycle unit-TYPE box, and ALL. LOWER-RIGHT is command + camera + the AC-130's
+## ARM/FIRE pair. Styled like the gunship HUD; works with mouse too.
 func _build_touch_bar(host: CanvasLayer) -> void:
-	_touch_bar = HBoxContainer.new()
-	_touch_bar.add_theme_constant_override("separation", 7)
-	for n in ELEMENTS:
-		var b: Button = _hud_button(str(n + 1))
-		b.pressed.connect(_pick_element.bind(n))
-		_touch_bar.add_child(b)
-	var bc: Button = _hud_button("TYP")
-	bc.pressed.connect(_cycle_unit_type)
-	_touch_bar.add_child(bc)
-	_cyc_btn = bc
-	var bf: Button = _hud_button("WPN")
-	bf.pressed.connect(_toggle_fire)
-	_touch_bar.add_child(bf)
-	var bs: Button = _hud_button("STRK")
-	bs.pressed.connect(_request_strike)
-	_touch_bar.add_child(bs)
-	var bscan: Button = _hud_button("SCAN")
-	bscan.pressed.connect(_request_scan)
-	_touch_bar.add_child(bscan)
-	var bpar: Button = _hud_button("PRLY")
-	bpar.pressed.connect(_parley)
-	_touch_bar.add_child(bpar)
-	var bi: Button = _hud_button("ISR")
-	bi.pressed.connect(_toggle_feed)
-	_touch_bar.add_child(bi)
-	var bp: Button = _hud_button("PAL")
-	bp.pressed.connect(_cycle_palette)
-	_touch_bar.add_child(bp)
-	host.add_child(_touch_bar)
+	# --- lower-left: unit selection ---
+	var lbar: HBoxContainer = HBoxContainer.new()
+	lbar.add_theme_constant_override("separation", 6)
+	var breg: Button = _hud_button("REGROUP", 78)
+	breg.pressed.connect(_regroup)
+	lbar.add_child(breg)
+	_cyc_btn = _hud_button("TYPE", 118)                 # the big tap-to-cycle unit-type box
+	_cyc_btn.pressed.connect(_cycle_unit_type)
+	lbar.add_child(_cyc_btn)
+	var ball: Button = _hud_button("ALL", 62)
+	ball.pressed.connect(_select_all_squad)
+	lbar.add_child(ball)
+	host.add_child(lbar)
+	_bar_l = lbar
+
+	# --- lower-right: command + camera + AC-130 ---
+	var rbar: HBoxContainer = HBoxContainer.new()
+	rbar.add_theme_constant_override("separation", 6)
+	for spec in [["WPN", _toggle_fire], ["SCAN", _request_scan], ["PRLY", _parley], ["ISR", _toggle_feed], ["PAL", _cycle_palette]]:
+		var b: Button = _hud_button(String(spec[0]))
+		b.pressed.connect(spec[1])
+		rbar.add_child(b)
+	# the AC-130 arm/fire stack: ARM over FIRE, both red, mutually exclusive (see _update_ac_buttons)
+	var ac: VBoxContainer = VBoxContainer.new()
+	ac.add_theme_constant_override("separation", 3)
+	_arm_btn = _ac_button("ARM")
+	_arm_btn.pressed.connect(_request_strike)
+	ac.add_child(_arm_btn)
+	_fire_btn = _ac_button("FIRE")
+	_fire_btn.pressed.connect(_fire_reticle)
+	ac.add_child(_fire_btn)
+	rbar.add_child(ac)
+	host.add_child(rbar)
+	_bar_r = rbar
+
+	_bar_l.visible = not _menu_active
+	_bar_r.visible = not _menu_active
+	_update_ac_buttons()
 	_place_touch_bar()
 
 
-func _hud_button(text: String) -> Button:
+func _hud_button(text: String, w: float = 58.0) -> Button:
 	var b: Button = Button.new()
 	b.text = text
-	b.custom_minimum_size = Vector2(58, 46)
+	b.custom_minimum_size = Vector2(w, 46)
 	b.focus_mode = Control.FOCUS_NONE
 	b.add_theme_font_override("font", load(HUD_FONT))
 	b.add_theme_font_size_override("font_size", 15)
@@ -2737,20 +2812,87 @@ func _hud_button(text: String) -> Button:
 	return b
 
 
-func _place_touch_bar() -> void:
-	if _touch_bar == null:
+## A red AC-130 button (ARM / FIRE). Narrow + short so the pair stacks in a corner box.
+func _ac_button(text: String) -> Button:
+	var b: Button = Button.new()
+	b.text = text
+	b.custom_minimum_size = Vector2(74, 21)
+	b.focus_mode = Control.FOCUS_NONE
+	b.add_theme_font_override("font", load(HUD_FONT))
+	b.add_theme_font_size_override("font_size", 13)
+	b.add_theme_color_override("font_color", HUD_RED)
+	b.add_theme_color_override("font_hover_color", HUD_RED)
+	b.add_theme_color_override("font_pressed_color", Color(0.1, 0.02, 0.02))
+	var sb: StyleBoxFlat = StyleBoxFlat.new()
+	sb.bg_color = Color(0.16, 0.03, 0.03, 0.6)
+	sb.border_color = Color(HUD_RED.r, HUD_RED.g, HUD_RED.b, 0.85)
+	sb.set_border_width_all(1)
+	sb.set_corner_radius_all(2)
+	b.add_theme_stylebox_override("normal", sb)
+	var sbp: StyleBoxFlat = sb.duplicate()
+	sbp.bg_color = Color(HUD_RED.r, HUD_RED.g, HUD_RED.b, 0.5)
+	b.add_theme_stylebox_override("hover", sbp)
+	b.add_theme_stylebox_override("pressed", sbp)
+	b.add_theme_stylebox_override("disabled", sb)
+	return b
+
+
+## ARM lights only when the fire mission is unlocked (enough kills) and NOT yet armed;
+## FIRE lights only once armed. They cycle -- lighting one darkens + disables the other.
+func _update_ac_buttons() -> void:
+	if _arm_btn == null or _fire_btn == null:
 		return
+	var unlocked: bool = _zombie_kills >= AC_UNLOCK
+	var arm_on: bool = unlocked and not _strike_arming
+	var fire_on: bool = unlocked and _strike_arming
+	_arm_btn.disabled = not arm_on
+	_fire_btn.disabled = not fire_on
+	_arm_btn.modulate = Color(1, 1, 1, 1.0) if arm_on else Color(1, 1, 1, 0.32)
+	_fire_btn.modulate = Color(1, 1, 1, 1.0) if fire_on else Color(1, 1, 1, 0.32)
+
+
+## REGROUP: select the whole squad and pull it in to its own centroid (form up).
+func _regroup() -> void:
+	_select_element(0)
+	var ids: Array = sim.selected_ids()
+	if ids.is_empty():
+		return
+	var sum: Vector2 = Vector2.ZERO
+	for i in ids:
+		sum += sim.pos[i]
+	var g: Vector2 = sum / float(ids.size())
+	sim.order_move(ids, g)
+	Audio.comms_order()
+	_move_marker = {"pos": g, "ids": ids.duplicate()}
+
+
+## ALL: select every living unit in your squad.
+func _select_all_squad() -> void:
+	_select_element(0)
+	if not sim.selected_ids().is_empty():
+		Audio.comms("ack_affirmative", 2500)
+
+
+func _place_touch_bar() -> void:
 	# canvas space, not raw window pixels -- the CanvasLayer lives in the stretched
 	# logical viewport (same space the drawn HUD uses).
 	var win: Vector2 = Vector2(get_viewport().get_visible_rect().size)
-	_touch_bar.reset_size()
-	var sz: Vector2 = _touch_bar.get_combined_minimum_size()
-	_touch_bar.size = sz
-	# bottom-right (thumb reach), clear of the bottom-left keyboard card
-	_touch_bar.position = Vector2(win.x - sz.x - 16.0, win.y - sz.y - 16.0)
+	var hmax: float = 0.0
+	if _bar_l != null:
+		_bar_l.reset_size()
+		var szl: Vector2 = _bar_l.get_combined_minimum_size()
+		_bar_l.size = szl
+		_bar_l.position = Vector2(16.0, win.y - szl.y - 16.0)                  # lower-LEFT
+		hmax = maxf(hmax, szl.y)
+	if _bar_r != null:
+		_bar_r.reset_size()
+		var szr: Vector2 = _bar_r.get_combined_minimum_size()
+		_bar_r.size = szr
+		_bar_r.position = Vector2(win.x - szr.x - 16.0, win.y - szr.y - 16.0)  # lower-RIGHT
+		hmax = maxf(hmax, szr.y)
 	# the keyboard controls card is desktop-only; drop it on a portrait phone
 	if help != null:
-		help.visible = show_help and win.x >= win.y
+		help.visible = show_help and win.x >= win.y and not _menu_active
 
 
 ## The startup menu: TUTORIAL (default-highlighted) / SOLO / 2-4 TEAMS, over the slowly
@@ -2850,6 +2992,7 @@ func _start_game(count: int) -> void:
 		_menu_layer.queue_free()
 		_menu_layer = null
 	_menu_active = false
+	_layout_controls()                 # (bars auto-show in _process once _menu_active is false)
 	await _rebuild_world()          # respawn with the chosen team count at the edges
 	feed = "deploy"
 	_apply_feed()

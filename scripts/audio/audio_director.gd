@@ -123,10 +123,13 @@ func _install_ducking(target_bus: String, sidechain_bus: String) -> void:
 		return
 	_clear_effects(idx)
 	var comp := AudioEffectCompressor.new()
-	comp.threshold = -22.0
-	comp.ratio = 4.5          # 25% gentler than before -- the radio/SFX ducks the bed less
-	comp.attack_us = 100.0
-	comp.release_ms = 380.0
+	# A very mild, tasteful duck -- the bed dips only a few dB under loud SFX/comms, not a
+	# hard pump. High threshold so quiet sounds don't trigger it; gentle 2:1 ratio; a soft
+	# knee attack so it eases in. (Was -22 / 4.5:1 / 0.1 ms -- a heavy, obvious pump.)
+	comp.threshold = -12.0
+	comp.ratio = 2.0
+	comp.attack_us = 800.0
+	comp.release_ms = 320.0
 	comp.gain = 0.0
 	comp.sidechain = StringName(sidechain_bus)
 	AudioServer.add_bus_effect(idx, comp)
