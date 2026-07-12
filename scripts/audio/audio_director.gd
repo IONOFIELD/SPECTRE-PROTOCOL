@@ -126,10 +126,10 @@ func _install_ducking(target_bus: String, sidechain_bus: String) -> void:
 	# A very mild, tasteful duck -- the bed dips only a few dB under loud SFX/comms, not a
 	# hard pump. High threshold so quiet sounds don't trigger it; gentle 2:1 ratio; a soft
 	# knee attack so it eases in. (Was -22 / 4.5:1 / 0.1 ms -- a heavy, obvious pump.)
-	comp.threshold = -12.0
-	comp.ratio = 2.0
-	comp.attack_us = 800.0
-	comp.release_ms = 320.0
+	comp.threshold = -10.0
+	comp.ratio = 1.85
+	comp.attack_us = 900.0
+	comp.release_ms = 300.0
 	comp.gain = 0.0
 	comp.sidechain = StringName(sidechain_bus)
 	AudioServer.add_bus_effect(idx, comp)

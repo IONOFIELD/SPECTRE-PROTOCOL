@@ -101,7 +101,12 @@ func _commander() -> int:
 ## Is enemy unit i currently visible to you? Fog of war: revealed if any of your units is
 ## within FOG_SIGHT of it, OR a live commander scan reaches it (SCAN_RANGE for SCAN_REVEAL s).
 func _identified(i: int) -> bool:
-	var p: Vector2 = sim.pos[i]
+	return _in_los(sim.pos[i])
+
+
+## Is a ground point currently inside your fog-of-war reveal -- within any of your units'
+## sight (the sniper's reaches further), or a live commander scan's SCAN_RANGE bubble?
+func _in_los(p: Vector2) -> bool:
 	for j in sim.count():
 		if sim.alive[j] and sim.team[j] == WorldSim.SQUAD and sim.element[j] == 0:
 			var s: float = FOG_SIGHT_SNP if sim.kind[j] == &"snp" else FOG_SIGHT   # the sniper sees further
@@ -226,6 +231,8 @@ var _bar_l: Control                    # lower-LEFT cluster: REGROUP / unit-type
 var _bar_r: Control                    # lower-RIGHT cluster: command + camera + AC-130 arm/fire
 var _arm_btn: Button                   # AC-130 ARM (lit only when unlocked + disarmed)
 var _fire_btn: Button                  # AC-130 FIRE (lit only when armed)
+var _locked_btn: Button                # big LOCKED cover over ARM/FIRE until the kill threshold
+var _status_panel: Label               # squad status readout, toggled by the STATUS button
 var _kills: int = 0                    # confirmed hostile kills, for the threat readout
 var _san_kills: int = 0                # Sanitation elites down -- debrief highlight
 var _collateral: int = 0               # civilians dropped by your fire missions
@@ -275,7 +282,7 @@ const LC_BIO: int = 3
 const AC_UNLOCK: int = 100             # INFECTED kills to unlock a fire mission (killstreak; resets on use)
 const STRIKE_R: float = 16.0           # kill radius, metres
 const STRIKE_DMG: float = 460.0        # one burst flattens even the Sanitation elite
-const STRIKE_TOF: float = 1.8          # round time-of-flight, seconds (tuned for feel)
+const STRIKE_TOF: float = 3.5          # round time-of-flight, seconds -- a long flight sells the distance
 const STRIKE_BOW: float = 0.26         # arc height of the inbound round, as a fraction of its screen run
 var _zombie_kills: int = 0             # infected killed toward the next AC-130 unlock
 var _strike_arming: bool = false       # armed: the next tap designates the strike point
@@ -297,7 +304,7 @@ const FLAME_H: float = 1.3                 # nozzle height, m
 
 # feeds
 const FEED: Dictionary = {
-	"deploy": {"dist": 240.0, "el": 0.90, "fov": 40.0, "follow": true, "orbit": 0.012},
+	"deploy": {"dist": 240.0, "el": 0.90, "fov": 40.0, "follow": true, "orbit": 0.015},
 	"orbit":  {"dist": 1350.0, "el": 1.25, "fov": 40.0, "follow": false, "orbit": 0.015},
 }
 var feed := "deploy"
@@ -857,7 +864,6 @@ func _deploy_sanitation() -> void:
 			vp.add_child(v)
 		views.append(v)
 		_anim.append(Animator.new(v, _rng) if v != null else null)
-	Audio.comms("need_backup", 0)   # the deploy callout on the net
 	# Fire up the wipe-force theme layer (rides in by proximity below). Silent no-op
 	# until the asset is provided; tries .ogg then .wav.
 	_sani_music_on = false
@@ -1110,8 +1116,8 @@ func _drain_audio() -> void:
 		var at: Vector3 = Vector3(e["pos"].x, 1.0, e["pos"].y)
 		match e["kind"]:
 			"gunfire":
-				# your squad's fire cuts loudest; other teams / NPCs are quieter but audible
-				_sfx_at(at, _sfx_gun, 3.0 if e["team"] == WorldSim.SQUAD else -2.5)
+				# your squad's fire cuts loudest; the firefights around the map are louder now too
+				_sfx_at(at, _sfx_gun, 5.0 if e["team"] == WorldSim.SQUAD else 1.5)
 				if _flashes.size() < FLASH_MAX:
 					_flashes.append({"pos": e["pos"], "to": e["to"], "t": 0.0})
 			"panic":
@@ -1129,9 +1135,9 @@ func _drain_audio() -> void:
 				_collateral += 1
 				_score += COLLATERAL_PTS      # you dropped a civilian with the fire mission
 			"strike":
-				_sfx_at(at, _sfx_strike)   # AC-130 cannon report at the impact
+				_sfx_at(at, _sfx_strike, 5.0)   # AC-130 cannon report at the impact -- loud
 			"blast":
-				_sfx_at(at, _sfx_blast)    # EOD grenade / RPG
+				_sfx_at(at, _sfx_blast, 4.0)    # EOD grenade / RPG
 				_spawn_flash3d(e["pos"], 4.0, 0.35, 1.6)
 			"flame":
 				_spawn_flame(e["pos"], e["to"])   # sanitation fire jet
@@ -1142,7 +1148,7 @@ func _drain_audio() -> void:
 				_sfx_at(at, _sfx_flash)            # sanitation flash-bang: bright bloom + ring-out
 				_spawn_flash3d(e["pos"], 6.0, 0.40, 2.0)
 			"man_down":
-				Audio.comms("need_backup", 2500)
+				pass   # (no callout -- the squad's together, no backup to call)
 
 
 ## Ambient war: every few seconds, a distant blast or a burst of gunfire somewhere on
@@ -1159,9 +1165,9 @@ func _ambient_combat(delta: float) -> void:
 	var g: Vector2 = _random_land_point(_rng)
 	var at: Vector3 = Vector3(g.x, 1.0, g.y)
 	if _rng.randf() < 0.4:
-		_sfx_at(at, _sfx_expl, -5.0)     # a distant blast
+		_sfx_at(at, _sfx_expl, -1.0)     # a distant blast -- louder, the war is all around you
 	else:
-		_sfx_at(at, _sfx_gun, -8.0)      # a distant burst of fire
+		_sfx_at(at, _sfx_gun, -3.5)      # a distant burst of fire
 
 
 ## A panic driver: a warm car careens down a street, then crashes into a building/edge
@@ -1355,9 +1361,12 @@ func _process(delta: float) -> void:
 	_scan_pulse_t += delta
 	_update_move_marker()
 	_update_ac_buttons()
+	_update_status_panel()
 	if _bar_l != null:
-		_bar_l.visible = not _menu_active   # control bars: hidden at the menu, up in a run
-		_bar_r.visible = not _menu_active
+		# control bars: hidden at the menu and once the game is over (debrief needs no controls)
+		var show_bars: bool = not _menu_active and (mission == null or mission.result == Mission.ONGOING)
+		_bar_l.visible = show_bars
+		_bar_r.visible = show_bars
 
 	if _menu_active:
 		_update_menu(delta)
@@ -1650,7 +1659,6 @@ func _draw_selection() -> void:
 	if mission != null and mission.result != Mission.ONGOING:
 		return                      # mission over: clear the sensor clutter for the debrief
 	_draw_streets()
-	_draw_coast()
 	_draw_loot()
 	_draw_hdd_pickups()
 	_draw_move_marker()
@@ -1671,11 +1679,7 @@ func _draw_selection() -> void:
 			var a: Vector2 = p + c * r
 			sel_layer.draw_line(a, a - Vector2(c.x * arm, 0), SEL_COL, 2.0)
 			sel_layer.draw_line(a, a - Vector2(0, c.y * arm), SEL_COL, 2.0)
-		if sim.has_order[i]:
-			var t: Vector2 = cam.unproject_position(Vector3(sim.target[i].x, 0.1, sim.target[i].y))
-			var win: Vector2 = Vector2(get_viewport().get_visible_rect().size)
-			t *= win / Vector2(snap_res)
-			sel_layer.draw_line(p, t, Color(SEL_COL.r, SEL_COL.g, SEL_COL.b, 0.35), 1.5)
+		# (no order ray -- the move marker alone shows where they're headed)
 	if dragging:
 		var m: Vector2 = get_viewport().get_mouse_position()
 		sel_layer.draw_rect(Rect2(drag_start, m - drag_start), SEL_COL, false, 1.0)
@@ -1700,24 +1704,6 @@ func _draw_streets() -> void:
 		if cam.is_position_behind(a3) or cam.is_position_behind(b3):
 			continue
 		sel_layer.draw_line(_screen_point(a3), _screen_point(b3), col, 1.0)
-
-
-## The shoreline: the land polygon stroked in cool cyan so the coast -- the boundary
-## between the warm city and the cold bay -- reads at a glance at any zoom.
-func _draw_coast() -> void:
-	if city == null or city.land_poly.is_empty() or cam_dist > 1250.0:
-		return   # hidden at the full pull-back for a clean overview
-	var col: Color = Color(0.36, 0.76, 0.96, 0.75)
-	var poly: PackedVector2Array = city.land_poly
-	var n: int = poly.size()
-	for i in n:
-		var a2: Vector2 = poly[i]
-		var b2: Vector2 = poly[(i + 1) % n]
-		var a3: Vector3 = Vector3(a2.x, 0.3, a2.y)
-		var b3: Vector3 = Vector3(b2.x, 0.3, b2.y)
-		if cam.is_position_behind(a3) or cam.is_position_behind(b3):
-			continue
-		sel_layer.draw_line(_screen_point(a3), _screen_point(b3), col, 2.0)
 
 
 ## The ISR scan sweep: a green ring expanding from the reticle out past the corners,
@@ -1748,17 +1734,18 @@ func _draw_move_marker() -> void:
 	if not _move_marker.has("pos"):
 		return
 	var g: Vector2 = _move_marker["pos"]
-	var w: Vector3 = Vector3(g.x, 0.3, g.y)
-	if cam.is_position_behind(w):
-		return
-	var p: Vector2 = _screen_point(w)
 	var col: Color = Color(0.50, 1.0, 0.65, 0.95)
-	var r: float = 11.0
-	var spin: float = frame_n * 0.06
+	var r: float = 6.0                          # metres on the ground plane
+	var spin: float = frame_n * 0.05
+	# build the triangle in WORLD space on the ground, then project -- so it lies flat on
+	# the ground in perspective (a spinning decal), not a flat billboard facing the camera.
 	var pts: PackedVector2Array = PackedVector2Array()
 	for k in 3:
 		var ang: float = spin + float(k) * TAU / 3.0 - PI * 0.5
-		pts.append(p + Vector2(cos(ang), sin(ang)) * r)
+		var w: Vector3 = Vector3(g.x + cos(ang) * r, 0.3, g.y + sin(ang) * r)
+		if cam.is_position_behind(w):
+			return
+		pts.append(_screen_point(w))
 	pts.append(pts[0])
 	sel_layer.draw_polyline(pts, col, 2.0)
 
@@ -1869,23 +1856,23 @@ func _draw_evac() -> void:
 		sel_layer.draw_string(ThemeDB.fallback_font, c + Vector2(rad + 5.0, 4.0), "EVAC", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, col)
 
 
-## A tiny allegiance pip over every living unit -- the v0.19 coloured-unit read, so
-## warm human shapes (squad / bandit / survivor) don't all look alike on FLIR.
-## Contacts as coloured pips: purple horde, red loose combatants, white civilians --
-## all always visible. The squad gets green-bracket boxes (below). Sanitation is the
-## apex: a black signature with red brackets, revealed only when identified by a scan.
+## A tiny allegiance pip over each contact you can SEE -- the v0.19 coloured-unit read, so
+## warm human shapes (squad / bandit / survivor) don't all look alike on FLIR. Fog of war:
+## a contact is pipped only within your units' line of sight or a live commander scan;
+## purple horde, red loose combatants, white civilians. Sanitation shows a black signature
+## with red brackets + the radiation trefoil once identified.
 func _draw_allegiance() -> void:
 	for i in sim.count():
 		if not sim.alive[i] or sim.team[i] == WorldSim.SQUAD:
 			continue
+		if not _identified(i):
+			continue                                                        # fog of war: only what you can see
 		var w: Vector3 = Vector3(sim.pos[i].x, 0.9, sim.pos[i].y)
 		if cam.is_position_behind(w):
 			continue
 		var p: Vector2 = _screen_point(w)
 		var t: int = sim.team[i]
 		if t == WorldSim.SANITATION:
-			if not _identified(i):
-				continue                                                    # hidden until a scan finds them
 			sel_layer.draw_circle(p, 2.7, Color(0.05, 0.05, 0.06, 0.95))   # black hull
 			_corner_box(p, 5.5, TAG_ENEMY)                                 # red brackets
 			_unit_glyph(&"san", p - Vector2(0.0, 13.0), 5.0, TAG_ENEMY)    # radiation trefoil
@@ -1959,7 +1946,7 @@ func _draw_tags(font: Font) -> void:
 			if cam.is_position_behind(wv):
 				continue
 			var pv: Vector2 = _screen_point(wv)
-			if box.has_point(pv):
+			if box.has_point(pv) and _in_los(cc):     # yellow tag only within line of sight
 				_corner_box(pv, 8.0, TAG_VEHICLE)
 				drawn += 1
 	for i in sim.count():
@@ -1976,18 +1963,16 @@ func _draw_tags(font: Font) -> void:
 		if not box.has_point(p):
 			continue
 		var t: int = sim.team[i]
+		var mine: bool = t == WorldSim.SQUAD and sim.element[i] == 0
+		if not mine and not _identified(i):
+			continue                             # fog of war: tag only what you can see
 		if t == WorldSim.SQUAD:
-			if sim.element[i] != 0 and not _identified(i):
-				continue                             # fog of war: a rival team you can't see yet
 			_corner_box(p, 7.0, _squad_col(i))
 		elif t == WorldSim.INFECTED:
 			_caret(p - Vector2(0.0, 9.0), 5.0, TAG_ZED, true)
 			sel_layer.draw_string(font, p + Vector2(7.0, -3.0), "%dm" % int(sim.pos[i].distance_to(me)), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, TAG_ZED)
-		elif t == WorldSim.SANITATION:
-			if _identified(i):
-				_corner_box(p, 7.0, TAG_ENEMY)   # apex -- only once scanned
 		else:
-			_corner_box(p, 7.0, TAG_ENEMY)       # bandit / survivor, loose combatants
+			_corner_box(p, 7.0, TAG_ENEMY)       # sanitation / bandit / survivor
 		drawn += 1
 
 
@@ -2160,11 +2145,10 @@ func _draw_strike() -> void:
 	sel_layer.draw_arc(cc, rad * (0.5 + k * 0.6), 0.0, TAU, 44, Color(1.0, 0.78, 0.45, fade), 3.0)
 
 
-## The inbound round: a hot dot descending from altitude onto the boresight over
-## the TOF, a trail behind it, and a danger-close ring where it will land.
-## The inbound AC-130 round: it flies IN from off the bottom-right of the screen
-## (the orbiting gunship's quarter) and arcs over to the designated point, arriving
-## as the strike lands. A danger-close ring marks the impact the whole way in.
+## The inbound AC-130 round. The gun flashes big + bright on the RIGHT edge of screen
+## (the orbiting gunship's quarter), then the round arcs across over the whole TOF --
+## large near the muzzle, tapering as it recedes into the distance -- and lands on the
+## designated point. A danger-close ring marks the impact the whole way in.
 func _draw_incoming() -> void:
 	if not _strike_pending:
 		return
@@ -2176,14 +2160,23 @@ func _draw_incoming() -> void:
 	var end: Vector2 = _screen_point(g3)
 	var edge: Vector2 = _screen_point(Vector3(_strike_target.x + STRIKE_R, 0.3, _strike_target.y))
 	sel_layer.draw_arc(end, maxf(6.0, end.distance_to(edge)), 0.0, TAU, 36, Color(1.0, 0.42, 0.30, 0.55), 1.5)
-	var start: Vector2 = Vector2(win.x + 60.0, win.y + 60.0)   # off the bottom-right corner
+	var start: Vector2 = Vector2(win.x - 40.0, win.y * 0.24)   # the muzzle, high on the right edge
+	# muzzle flash: big + bright the instant it fires, fading over the first ~0.5 s
+	var lf: float = clampf(1.0 - _strike_tof / 0.5, 0.0, 1.0)
+	if lf > 0.0:
+		sel_layer.draw_circle(start, 8.0 + lf * 30.0, Color(1.0, 0.95, 0.82, lf * 0.9))
+		sel_layer.draw_arc(start, 14.0 + (1.0 - lf) * 46.0, 0.0, TAU, 32, Color(1.0, 0.80, 0.48, lf * 0.7), 3.0)
 	# a curved contrail trailing the round along the arc
-	var prev: Vector2 = _arc_point(start, end, maxf(0.0, k - 0.22))
-	for s in range(1, 6):
-		var q: Vector2 = _arc_point(start, end, maxf(0.0, k - 0.22 + 0.22 * float(s) / 5.0))
-		sel_layer.draw_line(prev, q, Color(1.0, 0.9, 0.62, 0.22 + 0.6 * float(s) / 5.0), 2.0)
+	var prev: Vector2 = _arc_point(start, end, maxf(0.0, k - 0.18))
+	for s in range(1, 7):
+		var q: Vector2 = _arc_point(start, end, maxf(0.0, k - 0.18 + 0.18 * float(s) / 6.0))
+		sel_layer.draw_line(prev, q, Color(1.0, 0.9, 0.62, 0.18 + 0.55 * float(s) / 6.0), 2.0)
 		prev = q
-	sel_layer.draw_circle(_arc_point(start, end, k), 3.6, Color(1.0, 0.97, 0.86, 1.0))
+	# the round: large as it leaves the muzzle, shrinking as it flies off into the distance
+	var rp: Vector2 = _arc_point(start, end, k)
+	var rr: float = lerpf(8.0, 3.0, k)
+	sel_layer.draw_circle(rp, rr + 1.5, Color(1.0, 0.68, 0.30, 0.85))
+	sel_layer.draw_circle(rp, rr * 0.5, Color(1.0, 0.97, 0.86, 1.0))
 
 
 ## A ballistic screen-space arc from a to b: a straight run bowed upward by
@@ -2681,7 +2674,6 @@ func _loot_ambush(c: Vector2, unit: int) -> void:
 			vp.add_child(v)
 		views.append(v)
 		_anim.append(Animator.new(v, _rng) if v != null else null)
-	Audio.comms("need_backup", 0)           # distress on the net (the zeds' claws cue themselves)
 	if unit >= 0 and sim.injure(unit, _loot_rng.randf_range(18.0, 58.0)):
 		_loot_say(_loot_toast + "   [!] MAN DOWN")
 	else:
@@ -2710,9 +2702,12 @@ func _cycle_palette() -> void:
 ## tap-to-cycle unit-TYPE box, and ALL. LOWER-RIGHT is command + camera + the AC-130's
 ## ARM/FIRE pair. Styled like the gunship HUD; works with mouse too.
 func _build_touch_bar(host: CanvasLayer) -> void:
-	# --- lower-left: unit selection ---
+	# --- lower-left: STATUS + unit selection ---
 	var lbar: HBoxContainer = HBoxContainer.new()
 	lbar.add_theme_constant_override("separation", 6)
+	var bstat: Button = _hud_button("STATUS", 72)
+	bstat.pressed.connect(_toggle_status)
+	lbar.add_child(bstat)
 	var breg: Button = _hud_button("REGROUP", 78)
 	breg.pressed.connect(_regroup)
 	lbar.add_child(breg)
@@ -2728,22 +2723,49 @@ func _build_touch_bar(host: CanvasLayer) -> void:
 	# --- lower-right: command + camera + AC-130 ---
 	var rbar: HBoxContainer = HBoxContainer.new()
 	rbar.add_theme_constant_override("separation", 6)
-	for spec in [["WPN", _toggle_fire], ["SCAN", _request_scan], ["PRLY", _parley], ["ISR", _toggle_feed], ["PAL", _cycle_palette]]:
+	for spec in [["WPN", _toggle_fire], ["SCAN", _request_scan], ["PRLY", _parley], ["ISR", _toggle_feed], ["PAL", _cycle_palette], ["CTRL", _toggle_controls]]:
 		var b: Button = _hud_button(String(spec[0]))
 		b.pressed.connect(spec[1])
 		rbar.add_child(b)
-	# the AC-130 arm/fire stack: ARM over FIRE, both red, mutually exclusive (see _update_ac_buttons)
+	# the AC-130 slot: a LOCKED cover until the kill threshold, then it vanishes to reveal
+	# the ARM-over-FIRE stack (mutually exclusive -- see _update_ac_buttons).
+	var ac_slot: Control = Control.new()
+	ac_slot.custom_minimum_size = Vector2(76, 45)
 	var ac: VBoxContainer = VBoxContainer.new()
 	ac.add_theme_constant_override("separation", 3)
+	ac.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_arm_btn = _ac_button("ARM")
 	_arm_btn.pressed.connect(_request_strike)
 	ac.add_child(_arm_btn)
 	_fire_btn = _ac_button("FIRE")
 	_fire_btn.pressed.connect(_fire_reticle)
 	ac.add_child(_fire_btn)
-	rbar.add_child(ac)
+	ac_slot.add_child(ac)
+	_locked_btn = _ac_button("LOCKED")
+	_locked_btn.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_locked_btn.disabled = true         # a cover, not a control -- clicks pass to nothing
+	ac_slot.add_child(_locked_btn)
+	rbar.add_child(ac_slot)
 	host.add_child(rbar)
 	_bar_r = rbar
+
+	# squad-status panel (left side, toggled by STATUS) -- hidden until asked for
+	_status_panel = Label.new()
+	_status_panel.add_theme_font_override("font", load(HUD_FONT))
+	_status_panel.add_theme_font_size_override("font_size", 14)
+	_status_panel.add_theme_color_override("font_color", HUD_COL)
+	var sbx: StyleBoxFlat = StyleBoxFlat.new()
+	sbx.bg_color = Color(0.0, 0.03, 0.0, 0.74)
+	sbx.border_color = Color(HUD_COL.r, HUD_COL.g, HUD_COL.b, 0.6)
+	sbx.set_border_width_all(1)
+	sbx.set_corner_radius_all(2)
+	sbx.content_margin_left = 12
+	sbx.content_margin_right = 12
+	sbx.content_margin_top = 8
+	sbx.content_margin_bottom = 8
+	_status_panel.add_theme_stylebox_override("normal", sbx)
+	_status_panel.visible = false
+	host.add_child(_status_panel)
 
 	_bar_l.visible = not _menu_active
 	_bar_r.visible = not _menu_active
@@ -2802,15 +2824,53 @@ func _ac_button(text: String) -> Button:
 ## ARM lights only when the fire mission is unlocked (enough kills) and NOT yet armed;
 ## FIRE lights only once armed. They cycle -- lighting one darkens + disables the other.
 func _update_ac_buttons() -> void:
-	if _arm_btn == null or _fire_btn == null:
+	if _arm_btn == null or _fire_btn == null or _locked_btn == null:
 		return
 	var unlocked: bool = _zombie_kills >= AC_UNLOCK
+	# LOCKED cover hides the pair until the threshold is met, then it vanishes.
+	_locked_btn.visible = not unlocked
+	_arm_btn.visible = unlocked
+	_fire_btn.visible = unlocked
 	var arm_on: bool = unlocked and not _strike_arming
 	var fire_on: bool = unlocked and _strike_arming
 	_arm_btn.disabled = not arm_on
 	_fire_btn.disabled = not fire_on
 	_arm_btn.modulate = Color(1, 1, 1, 1.0) if arm_on else Color(1, 1, 1, 0.32)
 	_fire_btn.modulate = Color(1, 1, 1, 1.0) if fire_on else Color(1, 1, 1, 0.32)
+
+
+## STATUS button: toggle the squad readout (each trooper's role + HP).
+func _toggle_status() -> void:
+	if _status_panel == null:
+		return
+	_status_panel.visible = not _status_panel.visible
+	_update_status_panel()
+
+
+## CONTROLS button: toggle the keyboard/controls reference card.
+func _toggle_controls() -> void:
+	show_help = not show_help
+	if help != null:
+		help.visible = show_help and not _menu_active
+
+
+const _ROLE_ABBR: Dictionary = {&"cdr": "CMD", &"cbt": "CBT", &"med": "MED", &"snp": "SNP", &"rec": "REC", &"eod": "EOD"}
+
+func _update_status_panel() -> void:
+	if _status_panel == null or not _status_panel.visible or sim == null:
+		return
+	var rows: PackedStringArray = ["SQUAD STATUS", ""]
+	for i in sim.count():
+		if sim.alive[i] and sim.team[i] == WorldSim.SQUAD and sim.element[i] == 0:
+			var nm: String = _ROLE_ABBR.get(sim.kind[i], String(sim.kind[i]).to_upper())
+			var maxhp: float = WorldSim.STATS[sim.kind[i]][1]
+			var hp_pct: int = int(round(100.0 * sim.hp[i] / maxf(1.0, maxhp)))
+			rows.append("%-4s %3d%%" % [nm, hp_pct])
+	if rows.size() == 2:
+		rows.append("-- NO SURVIVORS --")
+	rows.append("")
+	rows.append("HDD %d   HOSTILES DOWN %d" % [_hdd, _kills])
+	_status_panel.text = "\n".join(rows)
 
 
 ## REGROUP: select the whole squad and pull it in to its own centroid (form up).
@@ -2852,6 +2912,9 @@ func _place_touch_bar() -> void:
 		_bar_r.size = szr
 		_bar_r.position = Vector2(win.x - szr.x - 16.0, win.y - szr.y - 16.0)  # lower-RIGHT
 		hmax = maxf(hmax, szr.y)
+	if _status_panel != null:
+		_status_panel.reset_size()
+		_status_panel.position = Vector2(16.0, win.y * 0.30)                   # left side, mid
 	# the keyboard controls card is desktop-only; drop it on a portrait phone
 	if help != null:
 		help.visible = show_help and win.x >= win.y and not _menu_active

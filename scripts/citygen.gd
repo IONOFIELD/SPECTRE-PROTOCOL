@@ -196,7 +196,9 @@ func generate(snap_res: Vector2i) -> void:
 
 	_lay_soma(rng)                               # rotated Market grid in the SoMa hole
 	_emit_surfaces()
-	_diag_road(mkt_a, mkt_b, mkt_half * 2.0)     # the avenue deck, over the cleared blocks
+	# NO rotated avenue deck: a diagonal road QUAD gets blown out to a bright band by the
+	# PSX vertex-snap shader (same bug as the SoMa shells). Market reads from the 2D overlay
+	# line + the seam between the Financial grid and the turned SoMa grid instead.
 	road_lines.append([mkt_a, mkt_b])            # Market St, for the map overlay
 
 
@@ -205,26 +207,6 @@ func _dist_to_seg(p: Vector2, a: Vector2, b: Vector2) -> float:
 	var ab: Vector2 = b - a
 	var t: float = clampf((p - a).dot(ab) / maxf(1e-4, ab.length_squared()), 0.0, 1.0)
 	return p.distance_to(a + ab * t)
-
-
-## A rotated road quad from a to b (width w), for the diagonal avenue. Emitted
-## double-sided so winding never culls it from the top-down optic.
-func _diag_road(a: Vector2, b: Vector2, w: float) -> void:
-	var perp: Vector2 = (b - a).orthogonal().normalized() * (w * 0.5)
-	var y: float = 0.03
-	var c0: Vector3 = Vector3(a.x + perp.x, y, a.y + perp.y)
-	var c1: Vector3 = Vector3(b.x + perp.x, y, b.y + perp.y)
-	var c2: Vector3 = Vector3(b.x - perp.x, y, b.y - perp.y)
-	var c3: Vector3 = Vector3(a.x - perp.x, y, a.y - perp.y)
-	var st: SurfaceTool = SurfaceTool.new()
-	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	for v in [c0, c1, c2, c0, c2, c3, c0, c2, c1, c0, c3, c2]:   # both windings
-		st.set_normal(Vector3.UP)
-		st.add_vertex(v)
-	var mi: MeshInstance3D = MeshInstance3D.new()
-	mi.mesh = st.commit()
-	mi.material_override = ThermalLib.get_material("road", _snap_res)
-	add_child(mi)
 
 
 ## Is p inside the SoMa wedge? SE of Market (v>0), a band toward the bay over the
