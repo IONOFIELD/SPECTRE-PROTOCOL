@@ -27,7 +27,8 @@ const CUT_SWAP: float = 0.30          # the new feed goes live here, under the s
 const INTRO_HOLD: float = 7.0         # seconds holding the deploy view before the AC-130 cut
 const ZOOM_MIN: float = 150.0         # closest: a clustered force still fits the screen at once
 const ZOOM_MAX: float = 1650.0        # farthest: the whole peninsula frames; ocean, never void, beyond
-const MUSIC_BED: String = "res://audio/music/music1.wav"   # loops; Audio owns the level
+const MUSIC_MENU: String = "res://audio/music/music 1.wav"     # the menu / startup theme (loops)
+const MUSIC_DEPLOY: String = "res://audio/music/music 2.wav"   # kicks in the moment you deploy (loops)
 const AMBIENCE_BED: String = "res://audio/ambience/ghost_town.wav"   # ghost-town bed
 const HUD_FONT: String = "res://fonts/inversionz_unboxed.ttf"   # Inversionz Unboxed, Darrell Flood
 
@@ -364,7 +365,7 @@ func _ready() -> void:
 	_spawn()
 	get_window().size_changed.connect(_reframe)   # ...and re-frame if it changes / rotates
 	set_process_input(true)
-	Audio.play_music(MUSIC_BED, 0.0)   # abrupt cut-in; the track has its own hard start
+	Audio.play_music(MUSIC_MENU, 0.0)   # menu theme; abrupt cut-in
 	Audio.play_ambience(AMBIENCE_BED, 3.0)   # ghost-town ambience swells under the mix
 	_sfx_gun = load("res://audio/sfx/gun_rifle.wav")
 	_sfx_claw = load("res://audio/sfx/zed_attack.wav")
@@ -3166,6 +3167,7 @@ func _start_game(count: int) -> void:
 		_menu_layer.queue_free()
 		_menu_layer = null
 	_menu_active = false
+	Audio.crossfade_music(MUSIC_DEPLOY, 1.2)   # the deploy track kicks in the moment you drop
 	_layout_controls()                 # (bars auto-show in _process once _menu_active is false)
 	await _rebuild_world()          # respawn with the chosen team count at the edges
 	feed = "deploy"
