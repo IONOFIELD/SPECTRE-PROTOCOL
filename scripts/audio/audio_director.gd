@@ -52,13 +52,14 @@ const AMBIENCE_BED_DB := -12.0
 const BUS_ISR := "ISR"   # gunship-downlink filter; diegetic buses route through it, music bypasses
 const COMMS_DIR := "res://audio/comms/"   # radio callouts, one file per phrase
 
-## The radio voice gets its own bus so it can be pitched + levelled apart from the
-## rest of the SFX. It still routes THROUGH SFX (so it ducks the music and picks up
-## the ISR headset filter) -- the Comms bus only adds the pitch shift + this trim.
-## Two numbers to tune the operator's voice; this is the only place they live.
+## The radio voice gets its own bus so it can be levelled + weighted apart from the
+## rest of the SFX. It routes THROUGH SFX (so it still ducks the music and picks up
+## the ISR headset filter). The CYBORG character itself is baked into the clips
+## offline (ring-mod + comb + clip -- see tools/robotize_comms.gd); this bus only
+## trims the level and adds a little downward weight on top. Two tunables, here only.
 const BUS_COMMS := "Comms"
 const COMMS_DB := -0.75             # voice sits 0.75 dB under the rest of the net
-const COMMS_PITCH_CENTS := -400.0   # drop the voice ~4 semitones, tempo preserved
+const COMMS_PITCH_CENTS := -120.0   # a touch of weight; the robot timbre is baked in
 
 var _music_a: AudioStreamPlayer
 var _music_b: AudioStreamPlayer
