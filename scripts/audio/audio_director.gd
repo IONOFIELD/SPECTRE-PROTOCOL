@@ -273,6 +273,40 @@ func stop_ambience(fade_out := 2.0) -> void:
 		_fade(_ambience, FADE_FLOOR_DB, maxf(0.01, fade_out), true)
 
 
+# ---- Sanitation theme: a dedicated music layer ridden by proximity -----------
+
+## The Sanitation wipe-force theme: its own looping layer on the Music bus, started
+## SILENT so main can ride the level by how close the force is (set_sani_db). Safe to
+## call before the asset exists -- returns false and no-ops if the file isn't there yet.
+var _sani: AudioStreamPlayer
+
+func sani_theme(source) -> bool:
+	if source is String and not ResourceLoader.exists(source):
+		return false                       # asset not dropped in yet -- quietly skip
+	var stream: AudioStream = _as_stream(source)
+	if stream == null:
+		return false
+	_apply_loop(stream)
+	if _sani == null:
+		_sani = _new_player(BUS_MUSIC)
+	_sani.stream = stream
+	_sani.volume_db = FADE_FLOOR_DB
+	_sani.play()
+	return true
+
+
+## Ride the Sanitation theme's level in dB (clamped to the silence floor..0). Ignored
+## when the layer isn't running.
+func set_sani_db(db: float) -> void:
+	if _sani != null and _sani.playing:
+		_sani.volume_db = clampf(db, FADE_FLOOR_DB, 0.0)
+
+
+func stop_sani(fade_out := 1.5) -> void:
+	if _sani != null and _sani.playing:
+		_fade(_sani, FADE_FLOOR_DB, maxf(0.01, fade_out), true)
+
+
 ## A radio callout by file stem under audio/comms/ (e.g. "order_go"). Cooldown-
 ## gated so rapid orders don't stack voice lines. Plays on the Comms bus (pitched +
 ## trimmed), which feeds SFX, so it still ducks the music + ambience -- the radio

@@ -172,7 +172,12 @@ var mission: Mission
 # The Sanitation force isn't on the board at deploy -- it's called in once you draw enough
 # heat (kills). Once deployed, the only way out is a bridge or wiping the whole force.
 var _sani_deployed: bool = false
+var _sani_music_on: bool = false       # the wipe-force theme layer is live (asset present)
 const SANI_DEPLOY_KILLS: int = 45      # your kill count that summons the wipe force
+# The Sanitation theme layer -- drop one of these in and it rides in by proximity on deploy.
+const MUSIC_SANI: Array = ["res://audio/music/musicSANI.ogg", "res://audio/music/musicSANI.wav"]
+const SANI_MUS_NEAR: float = 30.0      # within this many metres the theme is at full presence
+const SANI_MUS_FAR: float = 240.0      # past this the theme fades toward the floor
 var banner: Label                      # win / lose card, hidden until the mission ends
 var help: Label
 var show_help: bool = true
@@ -811,7 +816,30 @@ func _deploy_sanitation() -> void:
 			vp.add_child(v)
 		views.append(v)
 		_anim.append(Animator.new(v, _rng) if v != null else null)
-	Audio.comms("need_backup", 0)   # a callout on deploy (placeholder for musicSANI)
+	Audio.comms("need_backup", 0)   # the deploy callout on the net
+	# Fire up the wipe-force theme layer (rides in by proximity below). Silent no-op
+	# until the asset is provided; tries .ogg then .wav.
+	_sani_music_on = false
+	for path in MUSIC_SANI:
+		if Audio.sani_theme(path):
+			_sani_music_on = true
+			break
+
+
+## Ride the Sanitation theme's level by how close the nearest elite is to your team:
+## full presence within SANI_MUS_NEAR, fading toward the floor past SANI_MUS_FAR.
+func _ride_sani_music() -> void:
+	var here: Vector3 = _follow_point()
+	var me: Vector2 = Vector2(here.x, here.z)
+	var best: float = INF
+	for i in sim.count():
+		if sim.alive[i] and sim.team[i] == WorldSim.SANITATION:
+			best = minf(best, me.distance_to(sim.pos[i]))
+	if best == INF:
+		Audio.set_sani_db(-80.0)             # none left (or wiped) -- silent
+		return
+	var t: float = clampf(1.0 - (best - SANI_MUS_NEAR) / (SANI_MUS_FAR - SANI_MUS_NEAR), 0.0, 1.0)
+	Audio.set_sani_db(lerpf(-40.0, -5.0, t))
 
 
 func _random_land_point(rng: RandomNumberGenerator) -> Vector2:
@@ -1248,6 +1276,8 @@ func _process(delta: float) -> void:
 	_age_flash3d(delta)
 	_advance_loot(delta)
 	_collect_hdd_pickups()
+	if _sani_music_on:
+		_ride_sani_music()
 	if _loot_toast_t > 0.0:
 		_loot_toast_t = maxf(0.0, _loot_toast_t - delta)
 	_ambient_combat(delta)
@@ -2628,6 +2658,8 @@ func _start_game(count: int) -> void:
 	_hdd_pickups.clear()
 	_loot_toast = ""
 	_loot_toast_t = 0.0
+	_sani_music_on = false
+	Audio.stop_sani(0.3)
 	if _menu_layer != null:
 		_menu_layer.queue_free()
 		_menu_layer = null
