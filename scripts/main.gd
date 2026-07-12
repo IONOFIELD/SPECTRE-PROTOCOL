@@ -896,6 +896,7 @@ func _deploy_sanitation() -> void:
 	if _sani_deployed or sim == null:
 		return
 	_sani_deployed = true
+	sim.san_speed = WorldSim.STATS[&"cbt"][0] * 1.05   # in-game: only 5% faster than your troopers
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 	rng.randomize()
 	var pack: Vector2 = _random_land_point(rng)     # one drop point -- they arrive as a tight pack

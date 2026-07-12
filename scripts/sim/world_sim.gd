@@ -111,6 +111,7 @@ var buff_res: Array[float] = []       # extra incoming cut 0..1 while buff_t > 0
 ## [{kind, pos, team, unit}]. Both cleared at the top of every step().
 var weapons_free: bool = true
 var player_element: int = 0            # the element the human commands; the rest are AI rivals
+var san_speed: float = 0.0            # >0 overrides the Sanitation pack's speed (gameplay sets 5% over the squad; menu leaves the fast STATS roam)
 var allied: Dictionary = {}           # element -> true if that rival is allied (passive) with you
 var events: Array = []
 var _dmg: Dictionary = {}             # target index -> damage queued this tick
@@ -179,6 +180,8 @@ func spawn(p: Vector2, t: StringName, tm: int = 0, elem: int = -1) -> int:
 
 
 func speed_of(i: int) -> float:
+	if team[i] == SANITATION and san_speed > 0.0:
+		return san_speed          # gameplay overrides the pack speed (menu keeps the fast STATS roam)
 	return STATS[kind[i]][0]
 
 
