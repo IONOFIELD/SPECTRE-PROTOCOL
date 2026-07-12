@@ -52,6 +52,7 @@ const MAT: Dictionary = {
 	"suit_elite":{"t": 21.5, "sky": 1.0, "e": 0.93, "solar": 0.0, "d": 0, "dt": 0.0, "de": 0.0},
 	"zed":       {"t": 17.5, "sky": 1.0, "e": 0.96, "solar": 0.0, "d": 0, "dt": 0.0, "de": 0.0},
 	"fire":      {"t": 340.0, "sky": 0.0, "e": 1.00, "solar": 0.0, "d": 0, "dt": 0.0, "de": 0.0},
+	"burning":   {"t": 190.0, "sky": 0.0, "e": 0.97, "solar": 0.0, "d": 4, "dt": 22.0, "de": 0.05},  # a wreck on fire
 }
 
 static var _shader: Shader

@@ -111,6 +111,17 @@ var _sfx_expl: AudioStream             # distant explosion, for ambient war
 var _sfx_yell: AudioStream             # civilian panic (drop audio/sfx/civ_panic.wav to enable)
 var _ambient_t: float = 0.0            # ambient-combat timer: war rumbling around the map
 var _ambient_next: float = 3.0
+# panic driver: a warm car bolts down a street, crashes, and burns -- environmental
+var _panic: MeshInstance3D = null
+var _panic_fire: MeshInstance3D = null
+var _panic_pos: Vector2 = Vector2.ZERO
+var _panic_dir: Vector2 = Vector2.ZERO
+var _panic_t: float = 0.0
+var _panic_phase: int = 0              # 0 = fleeing, 1 = wreck ablaze
+var _panic_next: float = 14.0
+const PANIC_SPEED: float = 15.0
+const PANIC_DRIVE: float = 5.0         # seconds it careens before the crash
+const PANIC_BURN: float = 7.0          # seconds the wreck burns before it's cleared
 var sel_layer: Control
 var drag_start: Vector2 = Vector2.ZERO
 var dragging: bool = false
@@ -796,6 +807,66 @@ func _ambient_combat(delta: float) -> void:
 		_sfx_at(at, _sfx_gun, -8.0)      # a distant burst of fire
 
 
+## A panic driver: a warm car careens down a street, then crashes into a building/edge
+## and bursts into flame -- an occasional environmental beat. Axis-aligned travel so the
+## thermal shader doesn't over-draw it (the rotated-mesh bright bug).
+func _advance_panic(delta: float) -> void:
+	if city == null or (mission != null and mission.result != Mission.ONGOING):
+		return
+	if _panic == null:
+		_panic_next -= delta
+		if _panic_next > 0.0:
+			return
+		_spawn_panic()
+		return
+	_panic_t += delta
+	if _panic_phase == 0:
+		_panic_pos += _panic_dir * PANIC_SPEED * delta
+		_panic.position = Vector3(_panic_pos.x, 0.7, _panic_pos.y)
+		var crashed: bool = _panic_t > PANIC_DRIVE or _building_at(_panic_pos) >= 0 \
+			or not Geometry2D.is_point_in_polygon(_panic_pos, city.land_poly)
+		if crashed:
+			_panic_phase = 1
+			_panic_t = 0.0
+			_panic.material_override = ThermalLib.get_material("burning", snap_res)
+			var fm: BoxMesh = BoxMesh.new()
+			fm.size = Vector3(2.4, 3.2, 2.8)
+			_panic_fire = MeshInstance3D.new()
+			_panic_fire.mesh = fm
+			_panic_fire.position = Vector3(_panic_pos.x, 2.4, _panic_pos.y)
+			_panic_fire.material_override = ThermalLib.get_material("fire", snap_res)
+			vp.add_child(_panic_fire)
+			_sfx_at(Vector3(_panic_pos.x, 1.0, _panic_pos.y), _sfx_expl, -2.0)
+			_spawn_flash3d(_panic_pos, 3.0, 0.4, 1.6)
+	elif _panic_t > PANIC_BURN:
+		_clear_panic()
+		_panic_next = _rng.randf_range(16.0, 34.0)
+
+
+func _spawn_panic() -> void:
+	_panic_pos = _random_land_point(_rng)
+	_panic_dir = [Vector2(1, 0), Vector2(-1, 0), Vector2(0, 1), Vector2(0, -1)][_rng.randi() % 4]
+	_panic_t = 0.0
+	_panic_phase = 0
+	var m: BoxMesh = BoxMesh.new()
+	m.size = Vector3(2.0, 1.4, 4.6)
+	_panic = MeshInstance3D.new()
+	_panic.mesh = m
+	_panic.position = Vector3(_panic_pos.x, 0.7, _panic_pos.y)
+	_panic.rotation.y = PI * 0.5 if _panic_dir.x != 0.0 else 0.0
+	_panic.material_override = ThermalLib.get_material("hood_warm", snap_res)
+	vp.add_child(_panic)
+
+
+func _clear_panic() -> void:
+	if _panic != null:
+		_panic.queue_free()
+		_panic = null
+	if _panic_fire != null:
+		_panic_fire.queue_free()
+		_panic_fire = null
+
+
 func _sfx_at(at: Vector3, stream: AudioStream, vol_db: float = 0.0) -> void:
 	if stream == null or _sfx_pool.is_empty():
 		return
@@ -891,6 +962,7 @@ func _process(delta: float) -> void:
 	_age_flash3d(delta)
 	_advance_loot(delta)
 	_ambient_combat(delta)
+	_advance_panic(delta)
 
 	if mission != null:
 		var was: int = mission.result
@@ -1928,6 +2000,7 @@ func _place_touch_bar() -> void:
 func _rebuild_world() -> void:
 	_looted.clear()          # building indices are about to change; drop stale loot marks
 	_end_loot()
+	_clear_panic()
 	city.queue_free()
 	if cars != null:
 		cars.queue_free()

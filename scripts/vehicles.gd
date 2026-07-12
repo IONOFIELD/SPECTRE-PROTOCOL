@@ -59,3 +59,44 @@ func generate(snap_res: Vector2i, city: CityGen, count: int, seed_value: int = 3
 			continue
 		car.position = Vector3(at.x, 0.0, at.y)
 		add_child(car)
+	_scatter_wrecks(city, rng)
+
+
+## Box-car wrecks piled up + some ablaze in the streets -- an environmental read and
+## (as blockers in `rects`) obstacles the squad and horde must route around. Yaws stay
+## near-axis: the PSX vertex-snap shader over-draws rotated meshes into a bright mass.
+func _scatter_wrecks(city: CityGen, rng: RandomNumberGenerator) -> void:
+	var pitch: float = CityGen.BLOCK + CityGen.STREET
+	for _p in 16:
+		var vertical: bool = rng.randf() < 0.5
+		var lane: float = float(rng.randi() % (city.grid_n + 1)) * pitch + CityGen.HALF_ST
+		var along: float = rng.randf_range(6.0, float(city.grid_n) * pitch - 6.0)
+		var at: Vector2 = Vector2(lane, along) if vertical else Vector2(along, lane)
+		if not Geometry2D.is_point_in_polygon(at, city.land_poly):
+			continue
+		var burning: bool = rng.randf() < 0.35
+		var count: int = 1 + rng.randi() % 3         # a pile of 1-3
+		for c in count:
+			var off: Vector2 = Vector2(rng.randf_range(-2.5, 2.5), rng.randf_range(-2.5, 2.5))
+			var yaw: float = (0.0 if vertical else PI * 0.5) + rng.randf_range(-0.15, 0.15)
+			_box_car(at + off, yaw, "burning" if (burning and c == 0) else "body_cold", burning and c == 0)
+		rects.append(Rect2(at.x - 4.0, at.y - 4.0, 8.0, 8.0))
+
+
+func _box_car(pos: Vector2, yaw: float, mat: String, ablaze: bool) -> void:
+	var m: BoxMesh = BoxMesh.new()
+	m.size = Vector3(2.0, 1.4, 4.6)
+	var mi: MeshInstance3D = MeshInstance3D.new()
+	mi.mesh = m
+	mi.position = Vector3(pos.x, 0.7, pos.y)
+	mi.rotation.y = yaw
+	mi.material_override = ThermalLib.get_material(mat, _snap_res)
+	add_child(mi)
+	if ablaze:
+		var fm: BoxMesh = BoxMesh.new()
+		fm.size = Vector3(2.2, 3.0, 2.6)
+		var fi: MeshInstance3D = MeshInstance3D.new()
+		fi.mesh = fm
+		fi.position = Vector3(pos.x, 2.3, pos.y)
+		fi.material_override = ThermalLib.get_material("fire", _snap_res)
+		add_child(fi)
