@@ -58,8 +58,8 @@ const MAT: Dictionary = {
 	"weapon":    {"t": 15.0, "sky": 1.0, "e": 0.30, "solar": 0.0, "d": 0, "dt": 0.0, "de": 0.0},
 	"suit_elite":{"t": 21.5, "sky": 1.0, "e": 0.93, "solar": 0.0, "d": 0, "dt": 0.0, "de": 0.0},
 	"zed":       {"t": 17.5, "sky": 1.0, "e": 0.96, "solar": 0.0, "d": 0, "dt": 0.0, "de": 0.0},
-	"fire":      {"t": 340.0, "sky": 0.0, "e": 1.00, "solar": 0.0, "d": 0, "dt": 0.0, "de": 0.0},
-	"burning":   {"t": 190.0, "sky": 0.0, "e": 0.97, "solar": 0.0, "d": 4, "dt": 22.0, "de": 0.05},  # a wreck on fire
+	"fire":      {"t": 340.0, "sky": 0.0, "e": 1.00, "solar": 0.0, "d": 0, "dt": 0.0, "de": 0.0, "flick": 1.0},
+	"burning":   {"t": 190.0, "sky": 0.0, "e": 0.97, "solar": 0.0, "d": 4, "dt": 22.0, "de": 0.05, "flick": 1.0},  # a wreck on fire
 }
 
 static var _shader: Shader
@@ -93,6 +93,7 @@ static func get_material(name: String, snap_res: Vector2i, snap: int = -1) -> Sh
 	mat.set_shader_parameter("detail", m["d"] if detail_on else 0)
 	mat.set_shader_parameter("detail_temp", m["dt"])
 	mat.set_shader_parameter("detail_emis", m["de"])
+	mat.set_shader_parameter("flicker", m.get("flick", 0.0))
 	mat.set_shader_parameter("sun_dir", SUN_DIR)
 	mat.set_shader_parameter("radiance_scale", RADIANCE_SCALE)
 	mat.set_shader_parameter("snap_res", Vector2(snap_res))

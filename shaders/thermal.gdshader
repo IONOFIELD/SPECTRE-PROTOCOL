@@ -34,6 +34,7 @@ uniform int   detail        = 0;
 uniform float detail_temp   = 0.0;    // degrees C, peak to peak
 uniform float detail_emis   = 0.0;
 uniform float storey_h      = 3.4;
+uniform float flicker       = 0.0;    // 1.0 for fire: a live swell/shrink pulse in radiance
 
 // Optional photographic detail. NOT albedo: the map holds the high-pass residual
 // of a real texture, which is structure (mortar, gaps, rivets) rather than colour.
@@ -195,5 +196,11 @@ void fragment() {
     float em    = clamp(emissivity + dE, 0.05, 1.0) * fall;
 
     float r = radiance(temp_c - sky + solar + dT) * em * (1.0 + fpn);
+    // fire flicker: a swell/shrink pulse (position-phased) so flames breathe. The bloom
+    // in the sensor pass turns the brightness swell into a soft, growing/shrinking glow.
+    if (flicker > 0.0) {
+        float ph = TIME * 5.5 + v_world_pos.x * 0.4 + v_world_pos.z * 0.4;
+        r *= 1.0 + flicker * (0.22 * sin(ph) + 0.10 * sin(ph * 2.3 + 1.7));
+    }
     ALBEDO = vec3(r * radiance_scale);
 }

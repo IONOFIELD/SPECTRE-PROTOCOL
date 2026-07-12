@@ -170,6 +170,7 @@ var _touch_moved: float = 0.0          # primary-touch travel, to tell a tap fro
 var _pinch_prev: float = 0.0           # last two-finger spread, for pinch-zoom
 var _last_tap_ms: int = 0              # for double-tap detection (move order)
 var _last_tap_pos: Vector2 = Vector2.ZERO
+var _move_blip: Dictionary = {}        # {pos, t}: a fading ring at the last move destination
 const DOUBLE_TAP_MS: int = 320         # a second tap within this window = a move order
 const DOUBLE_TAP_PX: float = 46.0      # ...and within this distance of the first
 
@@ -209,7 +210,7 @@ const FLAME_H: float = 1.3                 # nozzle height, m
 
 # feeds
 const FEED: Dictionary = {
-	"deploy": {"dist": 240.0, "el": 0.90, "fov": 40.0, "follow": true, "orbit": 0.0},
+	"deploy": {"dist": 240.0, "el": 0.90, "fov": 40.0, "follow": true, "orbit": 0.012},
 	"orbit":  {"dist": 1350.0, "el": 1.25, "fov": 40.0, "follow": false, "orbit": 0.015},
 }
 var feed := "deploy"
@@ -1021,6 +1022,10 @@ func _process(delta: float) -> void:
 	_advance_loot(delta)
 	_ambient_combat(delta)
 	_advance_panic(delta)
+	if _move_blip.has("pos"):
+		_move_blip["t"] += delta
+		if _move_blip["t"] > 1.2:
+			_move_blip.clear()
 
 	if mission != null:
 		var was: int = mission.result
@@ -1215,6 +1220,7 @@ func _draw_selection() -> void:
 	_draw_streets()
 	_draw_coast()
 	_draw_loot()
+	_draw_move_blip()
 	_draw_hud()
 	_draw_allegiance()
 	_draw_unit_boxes()
@@ -1247,7 +1253,9 @@ func _draw_selection() -> void:
 func _draw_streets() -> void:
 	if city == null:
 		return
-	var a: float = clampf((cam_dist - 380.0) / 700.0, 0.0, 1.0) * 0.30
+	# fade in past the tactical zoom, fade back OUT at the full pull-back so the wide
+	# overview is clean (no grid, no coastline).
+	var a: float = clampf((cam_dist - 380.0) / 300.0, 0.0, 1.0) * clampf((1250.0 - cam_dist) / 150.0, 0.0, 1.0) * 0.30
 	if a <= 0.01:
 		return
 	var col: Color = Color(0.55, 0.86, 0.70, a)
@@ -1262,8 +1270,8 @@ func _draw_streets() -> void:
 ## The shoreline: the land polygon stroked in cool cyan so the coast -- the boundary
 ## between the warm city and the cold bay -- reads at a glance at any zoom.
 func _draw_coast() -> void:
-	if city == null or city.land_poly.is_empty():
-		return
+	if city == null or city.land_poly.is_empty() or cam_dist > 1250.0:
+		return   # hidden at the full pull-back for a clean overview
 	var col: Color = Color(0.36, 0.76, 0.96, 0.75)
 	var poly: PackedVector2Array = city.land_poly
 	var n: int = poly.size()
@@ -1275,6 +1283,23 @@ func _draw_coast() -> void:
 		if cam.is_position_behind(a3) or cam.is_position_behind(b3):
 			continue
 		sel_layer.draw_line(_screen_point(a3), _screen_point(b3), col, 2.0)
+
+
+## A move-order blip: an expanding green ring + cross at the last commanded destination,
+## fading over ~1.2 s so you can see where you just sent the squad.
+func _draw_move_blip() -> void:
+	if not _move_blip.has("pos"):
+		return
+	var g: Vector2 = _move_blip["pos"]
+	var w: Vector3 = Vector3(g.x, 0.3, g.y)
+	if cam.is_position_behind(w):
+		return
+	var k: float = clampf(float(_move_blip["t"]) / 1.2, 0.0, 1.0)
+	var p: Vector2 = _screen_point(w)
+	var col: Color = Color(0.50, 1.0, 0.65, (1.0 - k) * 0.9)
+	sel_layer.draw_arc(p, 4.0 + k * 16.0, 0.0, TAU, 24, col, 2.0)
+	sel_layer.draw_line(p - Vector2(6, 0), p + Vector2(6, 0), col, 1.5)
+	sel_layer.draw_line(p - Vector2(0, 6), p + Vector2(0, 6), col, 1.5)
 
 
 ## Loot: a filling ring on the building you're holding, and a small dim ring on each
@@ -1777,13 +1802,22 @@ func _input(e: InputEvent) -> void:
 				_end_loot()
 				if _strike_arming:
 					_fire_ac130_at(_ground_pick(e.position))   # armed: click calls the strike
-				else:
-					if e.position.distance_to(drag_start) < 6.0:
-						_select_nearest(_ground_pick(e.position))
+				elif e.position.distance_to(drag_start) < 6.0:
+					# a click: double-click commands to the reticle, single-click selects
+					var now: int = Time.get_ticks_msec()
+					if now - _last_tap_ms < DOUBLE_TAP_MS and e.position.distance_to(_last_tap_pos) < DOUBLE_TAP_PX:
+						_last_tap_ms = 0
+						_double_tap(e.position)
 					else:
-						_select_in_rect(Rect2(drag_start, e.position - drag_start))
+						_last_tap_ms = now
+						_last_tap_pos = e.position
+						_select_nearest(_ground_pick(e.position))
+						if not sim.selected_ids().is_empty():
+							Audio.comms("ack_affirmative", 2500)   # "affirmative" on select
+				else:
+					_select_in_rect(Rect2(drag_start, e.position - drag_start))
 					if not sim.selected_ids().is_empty():
-						Audio.comms("ack_affirmative", 2500)   # "affirmative" on select
+						Audio.comms("ack_affirmative", 2500)
 		elif e.button_index == MOUSE_BUTTON_RIGHT and e.pressed:
 			var ids: Array = sim.selected_ids()
 			if not ids.is_empty():
@@ -1900,11 +1934,16 @@ func _tap(pos: Vector2) -> void:
 		Audio.comms("ack_affirmative", 2500)
 
 
-## Double tap: move the element you're driving to the tapped ground.
-func _double_tap(pos: Vector2) -> void:
-	if not sim.selected_ids().is_empty():
-		sim.order_move(sim.selected_ids(), _ground_pick(pos))
-		Audio.comms_order()
+## Double tap / double click: order the selected units to the ground under the RETICLE
+## CENTRE (where the optic is looking), not the tap point, and drop a blip there.
+func _double_tap(_pos: Vector2) -> void:
+	if sim.selected_ids().is_empty():
+		return
+	var win: Vector2 = Vector2(get_viewport().get_visible_rect().size)
+	var g: Vector2 = _ground_pick(win * 0.5)
+	sim.order_move(sim.selected_ids(), g)
+	Audio.comms_order()
+	_move_blip = {"pos": g, "t": 0.0}
 
 
 ## Nearest living squad member to a ground point, within a finger-sized radius, or -1.
