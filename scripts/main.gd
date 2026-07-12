@@ -3167,7 +3167,7 @@ func _start_game(count: int) -> void:
 		_menu_layer.queue_free()
 		_menu_layer = null
 	_menu_active = false
-	Audio.crossfade_music(MUSIC_DEPLOY, 1.2)   # the deploy track kicks in the moment you drop
+	Audio.play_music(MUSIC_DEPLOY, 0.0)   # hard cut to the deploy track the instant you drop
 	_layout_controls()                 # (bars auto-show in _process once _menu_active is false)
 	await _rebuild_world()          # respawn with the chosen team count at the edges
 	feed = "deploy"
