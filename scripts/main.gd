@@ -75,6 +75,8 @@ var _menu_title: Label                   # the SPECTRE PROTOCOL title -- scanner
 var _menu_fade: ColorRect                # black wash over the feed for the sim-reset transition
 var _menu_teams: Control                 # the team-count buttons
 var _menu_loadout: Control               # the squad-loadout steppers (shown after a team pick)
+var _menu_thermal_btn: Button            # menu palette-flip button (WHT/BLK HOT / IRONBOW)
+const MODE_NAMES: Array = ["WHT HOT", "BLK HOT", "IRONBOW"]
 var _loadout_lbls: Dictionary = {}       # unit kind -> its count Label in the loadout panel
 var _menu_ping_age: float = 999.0        # seconds since the last scanner ping (>= show = idle)
 var _menu_ping_next: float = 1.2         # seconds until the next ping (irregular)
@@ -1490,7 +1492,6 @@ func _process(delta: float) -> void:
 	if sel_layer != null:
 		sel_layer.queue_redraw()
 
-	var names: Array = ["WHT HOT", "BLK HOT", "IRONBOW"]
 	if _menu_active:
 		hud.text = ""                       # the menu stays clean -- just the sweep + the ping
 	elif p >= 0.0 and p < 0.46:
@@ -1501,7 +1502,7 @@ func _process(delta: float) -> void:
 			_intel_line(),
 			"AC-130 / PYLON TURN" if feed == "orbit" else "ELEMENT / GROUND",
 			sim.element_ids(0).size(), _squad_max, ("FREE" if sim.weapons_free else "HOLD"),
-			names[mode], snap_res.x, snap_res.y,
+			MODE_NAMES[mode], snap_res.x, snap_res.y,
 			int(cam.position.y), int(cam_dist),
 			"FROZEN" if agc.frozen else "AUTO", agc.lo, agc.hi,
 			Engine.get_frames_per_second()]
@@ -3033,9 +3034,28 @@ func _build_menu() -> void:
 	_menu_loadout = _build_loadout_panel()
 	box.add_child(_menu_loadout)
 	_menu_loadout.visible = false
+	# thermal-flip button, top-right corner -- previews the palette on the backdrop
+	_menu_thermal_btn = _menu_button("THERMAL: " + MODE_NAMES[mode])
+	_menu_thermal_btn.custom_minimum_size = Vector2(190, 34)
+	_menu_thermal_btn.add_theme_font_size_override("font_size", 14)
+	_menu_thermal_btn.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	_menu_thermal_btn.offset_left = -206.0
+	_menu_thermal_btn.offset_right = -16.0
+	_menu_thermal_btn.offset_top = 16.0
+	_menu_thermal_btn.offset_bottom = 50.0
+	_menu_thermal_btn.pressed.connect(_menu_flip_thermal)
+	_menu_layer.add_child(_menu_thermal_btn)
 	add_child(_menu_layer)
 	if first != null:
 		first.grab_focus()   # Tutorial default-highlighted
+
+
+## Menu thermal-flip: cycle the palette so you can preview WHT/BLK HOT + IRONBOW on the
+## backdrop; the choice carries into the run.
+func _menu_flip_thermal() -> void:
+	mode = (mode + 1) % 3
+	if _menu_thermal_btn != null:
+		_menu_thermal_btn.text = "THERMAL: " + MODE_NAMES[mode]
 
 
 ## The squad-loadout panel: one row per unit type with -/+ steppers, then DEPLOY / BACK.
