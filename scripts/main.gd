@@ -93,6 +93,7 @@ var _sfx_next: int = 0
 var _sfx_gun: AudioStream
 var _sfx_claw: AudioStream
 var _sfx_death: AudioStream
+var _sfx_strike: AudioStream
 var sel_layer: Control
 var drag_start: Vector2 = Vector2.ZERO
 var dragging: bool = false
@@ -178,6 +179,7 @@ func _ready() -> void:
 	_sfx_gun = load("res://audio/sfx/gun_rifle.wav")
 	_sfx_claw = load("res://audio/sfx/zed_attack.wav")
 	_sfx_death = load("res://audio/sfx/zed_death.wav")
+	_sfx_strike = load("res://audio/sfx/ac130_strike.wav")
 
 
 func _build_tree() -> void:
@@ -692,7 +694,7 @@ func _drain_audio() -> void:
 				if e["team"] != WorldSim.CIVILIAN:
 					_score_kill()
 			"strike":
-				_sfx_at(at, _sfx_gun)   # placeholder cannon burst -- drop a GAU sfx in audio/sfx
+				_sfx_at(at, _sfx_strike)   # AC-130 cannon report at the impact
 			"man_down":
 				Audio.comms("need_backup", 2500)
 
