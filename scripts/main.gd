@@ -62,6 +62,11 @@ const ELEMENT_ROSTER: Array = [&"cdr", &"cbt", &"med", &"snp", &"rec"]   # per t
 const USE_MODELS: bool = false
 const HELP_TEXT: String = "[LMB] pick   [drag] box-select   [RMB] move   [F] weapons free\n[TAB]/[1-4] element   [SPACE] AC-130 view   [WASD] pan   [wheel] zoom\n[T] palette   [C] snow   [H] hide      EXFIL: cross a bridge on foot"
 
+# AC-130 gunship ISR HUD palette
+const HUD_COL: Color = Color(0.74, 0.95, 0.80, 0.90)   # ISR green-white
+const HUD_DIM: Color = Color(0.74, 0.95, 0.80, 0.42)
+const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
+
 var res_idx := 1
 var snap_res: Vector2i = RESOLUTIONS[1]
 
@@ -97,6 +102,10 @@ var mission: Mission
 var banner: Label                      # win / lose card, hidden until the mission ends
 var help: Label
 var show_help: bool = true
+
+# AC-130 HUD + touch
+var _touch_bar: Control                # on-screen control bar (mobile); null until built
+var _kills: int = 0                    # confirmed hostile kills, for the threat readout
 
 # feeds
 const FEED: Dictionary = {
@@ -144,8 +153,10 @@ func _ready() -> void:
 		ThermalLib.maps_on = false
 	if OS.get_environment("SPECTRE_NOSNAP") != "":
 		ThermalLib.snap_default = false
+	_init_res()                    # frame the feed to the window we were opened with
 	_build_tree()
 	_spawn()
+	get_window().size_changed.connect(_reframe)   # ...and re-frame if it changes / rotates
 	set_process_input(true)
 	Audio.play_music(MUSIC_BED, 0.0)   # abrupt cut-in; the track has its own hard start
 	Audio.play_ambience(AMBIENCE_BED, 3.0)   # ghost-town ambience swells under the mix
@@ -293,6 +304,19 @@ func _build_tree() -> void:
 		agc.median = 0.86
 
 
+## The detector array reshapes to the WINDOW: a fixed vertical resolution (the R
+## key cycles it) and a width that follows the window aspect, so the thermal feed
+## fills any screen -- landscape desktop or portrait phone -- without letterboxing
+## or stretch. This is v0.19's frame-to-the-interface behaviour.
+func _init_res() -> void:
+	var win: Vector2i = get_window().size
+	if win.x <= 0 or win.y <= 0:
+		return
+	var aspect: float = float(win.x) / float(win.y)
+	var base_h: int = RESOLUTIONS[res_idx].y
+	snap_res = Vector2i(maxi(160, int(round(float(base_h) * aspect))), base_h)
+
+
 func _push_res() -> void:
 	vp.size = snap_res
 	if screen != null:
@@ -300,6 +324,29 @@ func _push_res() -> void:
 	sensor_mat.set_shader_parameter("res", Vector2(snap_res))
 	cut_mat.set_shader_parameter("res", Vector2(snap_res))
 	ThermalLib.clear_cache()   # snap_res is baked into every material
+
+
+## Window resized or the device rotated: reshape the feed + re-lay the controls.
+## Light -- no world rebuild (the meshes keep their materials; only the detector
+## grid + HUD layout follow the new frame).
+func _reframe() -> void:
+	if vp == null:
+		return
+	_init_res()
+	vp.size = snap_res
+	if screen != null:
+		screen.texture = vp.get_texture()
+	sensor_mat.set_shader_parameter("res", Vector2(snap_res))
+	cut_mat.set_shader_parameter("res", Vector2(snap_res))
+	_layout_controls()
+
+
+## Re-lay the on-screen touch controls for the current window/orientation. The
+## drawn HUD anchors itself; only the touch bar needs re-placing.
+func _layout_controls() -> void:
+	if _touch_bar == null:
+		return
+	# touch-bar layout is filled in when the control bar is built
 
 
 ## PS1 props, thermal-reskinned.
@@ -623,6 +670,10 @@ func _drain_audio() -> void:
 				_sfx_at(at, _sfx_claw)
 			"zed_death":
 				_sfx_at(at, _sfx_death)
+				_kills += 1
+			"kill":
+				if e["team"] != WorldSim.CIVILIAN:
+					_kills += 1
 			"man_down":
 				Audio.comms("need_backup", 2500)
 
@@ -832,6 +883,7 @@ const SEL_COL: Color = Color(0.62, 0.88, 0.70, 0.85)
 func _draw_selection() -> void:
 	if cut_t >= 0.0:
 		return                      # the overlay generator rides the same signal
+	_draw_hud()
 	_draw_allegiance()
 	for i in sim.count():
 		if not sim.alive[i] or not sim.selected[i]:
@@ -895,6 +947,67 @@ func _alleg_color(t: int) -> Color:
 		WorldSim.INFECTED: return Color(0.65, 0.45, 0.80, 0.70)   # horde, dim violet
 		WorldSim.CIVILIAN: return Color(0.85, 0.88, 0.95, 0.55)   # neutral, pale
 	return Color(0, 0, 0, 0)
+
+
+## The AC-130 gunship ISR HUD: corner targeting brackets, a gapped centre reticle
+## with range ticks + pipper, a rotating cardinal compass, the slant range, and a
+## red threat box (living hostiles + kills). Window space, over the feed.
+func _draw_hud() -> void:
+	var font: Font = ThemeDB.fallback_font
+	var win: Vector2 = Vector2(get_viewport().get_visible_rect().size)
+	var c: Vector2 = win * 0.5
+	var short: float = minf(win.x, win.y)
+
+	# corner targeting brackets
+	var m: float = 24.0
+	var arm: float = 30.0
+	for k in [Vector2(0, 0), Vector2(1, 0), Vector2(0, 1), Vector2(1, 1)]:
+		var p: Vector2 = Vector2(lerpf(m, win.x - m, k.x), lerpf(m, win.y - m, k.y))
+		var sx: float = 1.0 if k.x < 0.5 else -1.0
+		var sy: float = 1.0 if k.y < 0.5 else -1.0
+		sel_layer.draw_line(p, p + Vector2(arm * sx, 0.0), HUD_DIM, 1.5)
+		sel_layer.draw_line(p, p + Vector2(0.0, arm * sy), HUD_DIM, 1.5)
+
+	# centre reticle: gapped cross, range ticks, pipper
+	var gap: float = 15.0
+	var reach: float = short * 0.24
+	for d in [Vector2(1, 0), Vector2(-1, 0), Vector2(0, 1), Vector2(0, -1)]:
+		sel_layer.draw_line(c + d * gap, c + d * reach, HUD_COL, 1.5)
+		var perp: Vector2 = Vector2(-d.y, d.x)
+		for t in [0.42, 0.66, 0.9]:
+			var at: Vector2 = c + d * lerpf(gap, reach, t)
+			sel_layer.draw_line(at - perp * 5.0, at + perp * 5.0, HUD_COL, 1.5)
+	sel_layer.draw_arc(c, 5.0, 0.0, TAU, 16, HUD_COL, 1.5)
+
+	# rotating cardinal compass on a fixed ring around the reticle
+	var ring: float = short * 0.36
+	var tgt: Vector3 = Vector3(cam_tx, 1.0, cam_tz)
+	for card in [["N", Vector3(0, 0, -1)], ["E", Vector3(1, 0, 0)], ["S", Vector3(0, 0, 1)], ["W", Vector3(-1, 0, 0)]]:
+		var wp: Vector3 = tgt + (card[1] as Vector3) * 120.0
+		if cam.is_position_behind(wp):
+			continue
+		var dir: Vector2 = _screen_point(wp) - c
+		if dir.length() < 1.0:
+			continue
+		sel_layer.draw_string(font, c + dir.normalized() * ring - Vector2(4.0, -5.0), card[0], HORIZONTAL_ALIGNMENT_LEFT, -1, 15, HUD_COL)
+
+	# slant range by the reticle
+	sel_layer.draw_string(font, c + Vector2(reach + 8.0, 4.0), "%dM" % int(cam_dist), HORIZONTAL_ALIGNMENT_LEFT, -1, 13, HUD_COL)
+	_draw_threat(font, win)
+
+
+## Red threat box (INFESTATION-style): living hostiles + confirmed kills.
+func _draw_threat(font: Font, win: Vector2) -> void:
+	var hostiles: int = 0
+	for i in sim.count():
+		if sim.alive[i] and sim.team[i] != WorldSim.SQUAD and sim.team[i] != WorldSim.CIVILIAN:
+			hostiles += 1
+	var w: float = 190.0
+	var box: Rect2 = Rect2(win.x - w - 20.0, 18.0, w, 44.0)
+	sel_layer.draw_rect(box, Color(HUD_RED.r, HUD_RED.g, HUD_RED.b, 0.12), true)
+	sel_layer.draw_rect(box, HUD_RED, false, 1.5)
+	sel_layer.draw_string(font, box.position + Vector2(9.0, 17.0), "INFESTATION", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, HUD_RED)
+	sel_layer.draw_string(font, box.position + Vector2(9.0, 36.0), "HOSTILES %d   KILLS %d" % [hostiles, _kills], HORIZONTAL_ALIGNMENT_LEFT, -1, 12, HUD_COL)
 
 
 func _select_in_rect(r: Rect2) -> void:
