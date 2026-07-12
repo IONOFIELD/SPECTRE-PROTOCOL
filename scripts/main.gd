@@ -60,6 +60,7 @@ var _team_count: int = 4                 # chosen at the startup menu (solo / 2 
 # Your squad's loadout, chosen at the menu -- how many of each unit type deploy (element 0).
 var _loadout: Dictionary = {&"cdr": 1, &"cbt": 2, &"med": 1, &"snp": 1, &"rec": 1, &"eod": 1}
 var _pending_count: int = 1              # team count picked, awaiting the loadout confirm
+var _squad_max: int = 6                  # how many troopers you deployed with (for the SQUAD n/max readout)
 const LOADOUT_MAX: int = 4               # cap per unit type
 # Parley: rival teams (SQUAD element != 0) are hostile by default, but some are OPEN to a
 # truce. A truce is MUTUAL -- you offer (PARLEY) and they're open -> allied (both hold fire).
@@ -691,6 +692,8 @@ func _spawn() -> void:
 		_deploy_vehicle(base, e)
 		# YOUR squad (element 0) deploys the loadout you chose; rival teams use the default roster.
 		var roster: Array = _loadout_roster() if e == 0 else ELEMENT_ROSTER
+		if e == 0:
+			_squad_max = roster.size()
 		for j in roster.size():
 			var p: Vector2 = base + Vector2(float(j % 3) * 1.4, float(j / 3) * 1.4)
 			sim.spawn(p, roster[j], WorldSim.SQUAD, e)
@@ -1494,7 +1497,7 @@ func _process(delta: float) -> void:
 			_mission_line(),
 			_intel_line(),
 			"AC-130 / PYLON TURN" if feed == "orbit" else "ELEMENT / GROUND",
-			sim.element_ids(0).size(), ELEMENT_ROSTER.size(), ("FREE" if sim.weapons_free else "HOLD"),
+			sim.element_ids(0).size(), _squad_max, ("FREE" if sim.weapons_free else "HOLD"),
 			names[mode], snap_res.x, snap_res.y,
 			int(cam.position.y), int(cam_dist),
 			"FROZEN" if agc.frozen else "AUTO", agc.lo, agc.hi,
