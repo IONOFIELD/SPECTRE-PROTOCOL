@@ -470,8 +470,10 @@ func _block(rng: RandomNumberGenerator, bx: float, bz: float, dc: float) -> void
 		zone = 1
 
 	var r0: float = rng.randf()
-	var park_p: float = 0.08 if zone == 2 else 0.03    # denser still (~15% more built parcels)
-	var lot_p: float = 0.07 if zone == 2 else 0.04
+	# Fewer empty parcels than before -- a functional city lines its streets with
+	# buildings; open lots/greens are the exception, denser toward downtown.
+	var park_p: float = 0.05 if zone == 2 else 0.02
+	var lot_p: float = 0.05 if zone == 2 else 0.03
 
 	if r0 < park_p:
 		# a path bisects the green. Subtract it; do not lay it on top.

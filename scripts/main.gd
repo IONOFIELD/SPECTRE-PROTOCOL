@@ -24,8 +24,8 @@ extends Node
 const RESOLUTIONS: Array = [Vector2i(320, 180), Vector2i(640, 360), Vector2i(960, 540)]
 const CUT_DUR: float = 0.52
 const CUT_SWAP: float = 0.30          # the new feed goes live here, under the snow
-const INTRO_HOLD: float = 7.0         # seconds holding the deploy view before the AC-130 cut
-const ZOOM_MIN: float = 150.0         # closest: a clustered force still fits the screen at once
+const INTRO_HOLD: float = 4.5         # seconds holding CLOSE on the drop before pulling out to the wide view
+const ZOOM_MIN: float = 240.0         # closest: the ISR narrow-view distance -- you can't zoom in past the tactical frame
 const ZOOM_MAX: float = 1650.0        # farthest: the whole peninsula frames; ocean, never void, beyond
 const MUSIC_MENU: String = "res://audio/music/music 1.wav"     # the menu / startup theme (loops)
 const MUSIC_DEPLOY: String = "res://audio/music/music 2.wav"   # kicks in the moment you deploy (loops)
@@ -59,15 +59,16 @@ const GAUNTLET_PER_BRIDGE: int = 44   # infected choking each bridge deck
 const ELEMENTS: int = 4                 # max player teams (touch bar 1-4)
 var _team_count: int = 4                 # chosen at the startup menu (solo / 2 / 3 / 4)
 # Your squad's loadout, chosen at the menu -- how many of each unit type deploy (element 0).
-var _loadout: Dictionary = {&"cdr": 2, &"cbt": 14, &"med": 4, &"snp": 3, &"rec": 2, &"eod": 1}   # sums to REQUIRED_TROOPS
+const FIXED_CDR: int = 1                  # every team fields exactly one commander -- fixed, not choosable
+const CHOOSABLE: Array = [&"cbt", &"med", &"snp", &"rec", &"eod"]   # the five tunable roles (the commander is set)
+var _loadout: Dictionary = {&"cbt": 15, &"med": 4, &"snp": 3, &"rec": 2, &"eod": 1}   # choosable roles; +1 cdr = REQUIRED_TROOPS
 var _pending_count: int = 1              # team count picked, awaiting the loadout confirm
-var _squad_max: int = 6                  # how many troopers you deployed with (for the SQUAD n/max readout)
-const LOADOUT_MAX: int = 20              # cap per unit type
-const REQUIRED_TROOPS: int = 26          # the squad must field exactly this many to deploy
+var _squad_max: int = 26                 # how many troopers you deployed with (for the SQUAD n/max readout)
+const LOADOUT_MAX: int = 22              # cap per unit type
+const REQUIRED_TROOPS: int = 26          # EVERY team fields exactly this many (1 commander + 25 choosable) to deploy
 # Parley: rival teams (SQUAD element != 0) are hostile by default, but some are OPEN to a
 # truce. A truce is MUTUAL -- you offer (PARLEY) and they're open -> allied (both hold fire).
-var _rival_open: Dictionary = {}         # rival element -> true if it would accept a truce
-var _player_offer: Dictionary = {}       # rival element -> true if YOU have offered one
+var _rival_open: Dictionary = {}         # rival element -> true if that team also runs a passive stance
 var _tutorial: bool = false              # tutorial run: calmer map, control hints
 var _menu_active: bool = true            # true until the player starts from the menu
 var _menu_layer: CanvasLayer             # the startup menu overlay, freed on start
@@ -151,16 +152,16 @@ const ELEMENT_ROSTER: Array = [&"cdr", &"cbt", &"med", &"snp", &"rec", &"eod"]  
 # the role is carried by HEAT + SIZE, not the model. false = minimalist thermal
 # shapes (the rymdkapsel read, matches v0.19); true = the PS1 .glb + idle rigs.
 const USE_MODELS: bool = false
-const HELP_TEXT: String = "[LMB] pick   [RMB] move   [F] weapons free   [V] AC-130 strike\n[TAB]/[1-4] element   [E] scan   [P] parley truce   [SPACE] AC-130 view\n[WASD] pan   [wheel] zoom   [T] palette   [C] snow   [H] hide\nEXFIL: cross a bridge, reach an evac LZ, or wipe the rival teams"
+const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] passive stance   [V] arm  [B] AC-130 strike\n[TAB]/[Q] unit type   [1] select all   [E] scan   [SPACE] wide / ISR view\n[WASD] pan   [wheel] zoom   [T] palette   [C] snow   [H] hide\nEXFIL: cross a bridge, reach an evac LZ, or wipe the rival teams"
 
 # AC-130 gunship ISR HUD palette
-const HUD_COL: Color = Color(0.74, 0.95, 0.80, 0.90)   # ISR green-white
-const HUD_DIM: Color = Color(0.74, 0.95, 0.80, 0.42)
+const HUD_COL: Color = Color(0.59, 0.78, 0.65, 0.90)   # ISR green-white (darkened)
+const HUD_DIM: Color = Color(0.59, 0.78, 0.65, 0.42)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 87
+const BUILD_PUSHES: int = 88
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
-const TAG_FRIEND: Color = Color(0.45, 0.95, 0.70, 0.95)
+const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
 const TAG_ENEMY: Color = Color(1.00, 0.30, 0.30, 0.95)
 const TAG_VEHICLE: Color = Color(0.96, 0.90, 0.32, 0.95)
 const TAG_ZED: Color = Color(0.72, 0.42, 0.95, 0.90)   # the horde, purple
@@ -180,6 +181,7 @@ var cars: Vehicles
 var props: Node3D
 var cut_rect: ColorRect
 var hud: Label
+var _hud_font: Font                    # the game HUD font (Inversionz), for drawn banners/threat text
 
 var sensor_mat: ShaderMaterial
 var cut_mat: ShaderMaterial
@@ -232,6 +234,9 @@ var mission: Mission
 var _sani_deployed: bool = false
 var _sani_music_on: bool = false       # the wipe-force theme layer is live (asset present)
 var _deploy_anim: Dictionary = {}      # {body, rotor, start, rest, t, dur, heli}: your insertion flying in
+var _deploy_stagger: Array = []        # [{i, at, form}]: element-0 troopers disembarking one by one
+var _deploy_clock: float = 0.0         # seconds since the drop, drives the disembark stagger
+var _intro_t: float = -1.0             # >=0: the intro camera is holding close on the drop before pulling out wide
 var _nuke_fired: bool = false          # hoarding 50 HDDs trips a nuke -- total loss
 const NUKE_HDD: int = 50               # drives that draw the strike that ends everything
 # The Sanitation theme layer -- drop one of these in and it rides in by proximity on deploy.
@@ -240,7 +245,7 @@ const SANI_MUS_NEAR: float = 30.0      # within this many metres the theme is at
 const SANI_MUS_FAR: float = 240.0      # past this the theme fades toward the floor
 var banner: Label                      # win / lose card, hidden until the mission ends
 var help: Label
-var show_help: bool = true
+var show_help: bool = false             # controls card off by default -- CTRL/H brings it up (keeps the HUD clean)
 
 # AC-130 HUD + touch
 var _bar_l: Control                    # lower-LEFT cluster: REGROUP / unit-type / ALL
@@ -248,6 +253,9 @@ var _bar_r: Control                    # lower-RIGHT cluster: command + camera +
 var _arm_btn: Button                   # AC-130 ARM (lit only when unlocked + disarmed)
 var _fire_btn: Button                  # AC-130 FIRE (lit only when armed)
 var _locked_btn: Button                # big LOCKED cover over ARM/FIRE until the kill threshold
+var _psv_btn: Button                   # PSV: passive-stance toggle (lit while passive)
+var _pal_btn: Button                   # PAL: shows the current palette name (WHT/BLK HOT / IRONBOW)
+var _passive: bool = false             # your team holds fire on any rival team that's also passive
 var _status_panel: Label               # squad status readout, toggled by the STATUS button
 var _kills: int = 0                    # confirmed hostile kills, for the threat readout
 var _san_kills: int = 0                # Sanitation elites down -- debrief highlight
@@ -277,6 +285,8 @@ var _looted: Dictionary = {}           # building index -> true (cleared, can't 
 var _loot_count: int = 0               # buildings looted this mission
 var _hdd: int = 0                       # HDD drives recovered -> end-of-mission score multiplier
 var _hdd_pickups: Array[Vector2] = []  # dedicated intel drops scattered on the map
+var _landmarks: Array = []             # [{pos, name, col, idx}] named civic buildings, randomized per game
+var _landmark_class: Dictionary = {}   # building idx -> loot class for the named civic buildings
 var _loot_rng: RandomNumberGenerator = RandomNumberGenerator.new()
 var _loot_toast: String = ""           # transient readout: what the last building held
 var _loot_toast_t: float = 0.0         # seconds of toast left
@@ -339,7 +349,6 @@ var frame_n := 0.0
 var mode := 0
 var snap_on := true
 var cctv := 0.85
-var _auto_fired := false
 var probe_lock: bool = false   # freeze the follow cam for A/B captures
 var agc_pinned: bool = false   # A/B rig only
 var _shot_dir: String = OS.get_environment("SPECTRE_SHOT")
@@ -365,6 +374,8 @@ func _ready() -> void:
 		ThermalLib.snap_default = false
 	if (_shot_dir != "" or _map_dir != "") and OS.get_environment("SPECTRE_MENU") == "":
 		_menu_sim = false          # captures/dev hooks show the real game, not the menu sweep
+		_menu_active = false       # straight into gameplay -- set BEFORE _spawn so the disembark stages
+		_intro_t = 0.0             # capture runs still play the intro (deploy hold -> wide pull)
 	_init_res()                    # frame the feed to the window we were opened with
 	_build_tree()
 	_build_version_stamp()         # the build number, top-right, always on top
@@ -387,11 +398,10 @@ func _ready() -> void:
 		if ResourceLoader.exists(pth):
 			_sfx_sanvox.append(load(pth))
 	_sfx_scan = load("res://audio/sfx/scan.wav")
-	# Captures / dev hooks run the game directly; players get the startup menu (music1 is
-	# already playing) with a slowly-rotating feed behind it.
-	if (_shot_dir != "" or _map_dir != "") and OS.get_environment("SPECTRE_MENU") == "":
-		_menu_active = false
-	else:
+	_hud_font = load(HUD_FONT)          # the game font, for the drawn banners + threat box
+	# Players get the startup menu (music1 already playing) over a slowly-rotating feed;
+	# captures/dev hooks (which cleared _menu_active above) drop straight into gameplay.
+	if _menu_active:
 		feed = "orbit"
 		_apply_feed()
 		_build_menu()
@@ -692,23 +702,29 @@ func _spawn() -> void:
 	sim.load_map(walls, city.water, city.bridges, city.map_lo, city.map_hi, city.land_poly)
 	# Each team inserts from a different edge (EDGE_BASES) so no two deploy close; an
 	# insertion vehicle marks the drop. The exfil bridges are N (Golden Gate) and E (Bay).
+	var base0: Vector2 = Vector2(300.0, 470.0)
 	for e in _team_count:
 		var base: Vector2 = EDGE_BASES[e % EDGE_BASES.size()]
 		if not Geometry2D.is_point_in_polygon(base, city.land_poly):
 			base = Vector2(300.0, 470.0)
+		if e == 0:
+			base0 = base
 		_deploy_vehicle(base, e)
-		# YOUR squad (element 0) deploys the loadout you chose; rival teams use the default roster.
-		var roster: Array = _loadout_roster() if e == 0 else ELEMENT_ROSTER
+		# EVERY team fields REQUIRED_TROOPS (1 commander + 25). You pick element 0's mix;
+		# rivals field the standard 26. Element 0 spawns CLUSTERED at the drop and disembarks
+		# to formation (see the stagger); rivals spawn already spread into a loose block.
+		var roster: Array = _loadout_roster() if e == 0 else _rival_roster()
 		if e == 0:
 			_squad_max = roster.size()
 		for j in roster.size():
-			var p: Vector2 = base + Vector2(float(j % 3) * 1.4, float(j / 3) * 1.4)
+			var p: Vector2 = base if e == 0 else base + Vector2(float(j % 6) * 1.6, float(j / 6) * 1.6)
 			sim.spawn(p, roster[j], WorldSim.SQUAD, e)
 	_populate_world()
 	# win by escaping a bridge, extracting via an evac LZ, or eliminating the rival teams.
 	mission = Mission.new()
 	mission.setup(city.escapes, _evac_zones(), 0, _team_count)
 	_spawn_hdd_pickups()
+	_assign_landmarks()
 	_init_dispositions()
 	# one visual per sim unit, index-aligned with the sim arrays.
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
@@ -721,6 +737,8 @@ func _spawn() -> void:
 		views.append(v)
 		_anim.append(Animator.new(v, _rng) if v != null else null)
 	_select_element(active_element)
+	if not _menu_active:
+		_setup_deploy_stagger(base0)   # element 0 disembarks the insertion vehicle one by one
 
 
 ## Seed the whole ecology: the ambient horde + crowd + sanitation on the land, a
@@ -788,21 +806,58 @@ func _deploy_vehicle(base: Vector2, e: int) -> void:
 		_deploy_anim = {"body": body, "rotor": rotor, "start": start, "rest": rest, "t": 0.0, "dur": 2.8, "heli": kind == 0}
 
 
-## Ease the player's insertion vehicle from off-map down to its drop point over the anim.
+## Stage element 0's disembark: each trooper starts hidden aboard the insertion vehicle at
+## the drop, then pops out on a stagger and walks to its slot in a loose formation ring
+## around the base -- the v0.19 insertion read. (Rivals just spawn in place.)
+func _setup_deploy_stagger(base: Vector2) -> void:
+	_deploy_stagger.clear()
+	_deploy_clock = 0.0
+	var ids: Array = []
+	for i in sim.count():
+		if sim.team[i] == WorldSim.SQUAD and sim.element[i] == 0:
+			ids.append(i)
+	for k in ids.size():
+		var i: int = ids[k]
+		var ang: float = float(k) / maxf(1.0, float(ids.size())) * TAU
+		var rad: float = 7.0 + float(k % 4) * 3.5                 # a few loose rings, not a stack
+		var form: Vector2 = base + Vector2(cos(ang), sin(ang)) * rad
+		var at: float = 1.8 + float(k) * 0.08                     # after the bird lands, one by one (all out < INTRO_HOLD)
+		_deploy_stagger.append({"i": i, "at": at, "form": form})
+		sim.pos[i] = base                                         # aboard the vehicle at the drop
+		if i < views.size() and views[i] != null:
+			views[i].visible = false                             # inside -- revealed on disembark
+
+
+## Ease the player's insertion vehicle in from off-map, and release the troopers on their
+## stagger: each appears at the drop (with a little jitter) and is ordered out to formation.
 func _advance_deploy(delta: float) -> void:
-	if _deploy_anim.is_empty():
+	if not _deploy_anim.is_empty():
+		_deploy_anim["t"] += delta
+		var k: float = clampf(_deploy_anim["t"] / _deploy_anim["dur"], 0.0, 1.0)
+		var e: float = 1.0 - pow(1.0 - k, 3.0)                     # ease-out
+		var body: MeshInstance3D = _deploy_anim["body"]
+		if is_instance_valid(body):
+			body.position = (_deploy_anim["start"] as Vector3).lerp(_deploy_anim["rest"] as Vector3, e)
+			var rotor: MeshInstance3D = _deploy_anim["rotor"]
+			if rotor != null and is_instance_valid(rotor):
+				rotor.position = body.position + Vector3(0.0, 0.7, 0.0)   # ride above the hull
+		if k >= 1.0:
+			_deploy_anim = {}
+	if _deploy_stagger.is_empty():
 		return
-	_deploy_anim["t"] += delta
-	var k: float = clampf(_deploy_anim["t"] / _deploy_anim["dur"], 0.0, 1.0)
-	var e: float = 1.0 - pow(1.0 - k, 3.0)                     # ease-out
-	var body: MeshInstance3D = _deploy_anim["body"]
-	if is_instance_valid(body):
-		body.position = (_deploy_anim["start"] as Vector3).lerp(_deploy_anim["rest"] as Vector3, e)
-		var rotor: MeshInstance3D = _deploy_anim["rotor"]
-		if rotor != null and is_instance_valid(rotor):
-			rotor.position = body.position + Vector3(0.0, 0.7, 0.0)   # ride above the hull
-	if k >= 1.0:
-		_deploy_anim = {}
+	_deploy_clock += delta
+	var out: Array = []
+	for s in _deploy_stagger:
+		if _deploy_clock < float(s["at"]):
+			continue
+		var i: int = s["i"]
+		if i < views.size() and views[i] != null and sim.alive[i]:
+			views[i].visible = true
+			sim.pos[i] += Vector2(_rng.randf_range(-1.6, 1.6), _rng.randf_range(-1.6, 1.6))
+			sim.order_move([i], s["form"])                        # walk out to the formation slot
+		out.append(s)
+	for s in out:
+		_deploy_stagger.erase(s)
 
 
 ## Evac-helo LZs: one for solo/2/3 teams, two for 4. Marked on the HUD; reaching one
@@ -811,57 +866,72 @@ func _evac_zones() -> Array[Rect2]:
 	var zones: Array[Rect2] = []
 	if city == null:
 		return zones
-	var pads: Array = [Vector2(560.0, 470.0), Vector2(410.0, 720.0)]
+	# The evac chopper's takeoff pad(s) are RANDOMISED each game -- a new open spot every run,
+	# labelled on the HUD so you know where to steer for extraction.
+	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
+	rng.randomize()
 	var n: int = 2 if _team_count >= 4 else 1
 	for i in n:
-		var c: Vector2 = pads[i]
-		if not Geometry2D.is_point_in_polygon(c, city.land_poly):
-			c = Vector2(400.0, 500.0)
+		var c: Vector2 = _random_land_point(rng)
 		zones.append(Rect2(c.x - 9.0, c.y - 9.0, 18.0, 18.0))
 	return zones
+
+
+## Name a handful of random civic buildings each game -- a police station, two hospitals, a
+## bio lab -- for the in-world headers + matching loot payouts. Randomised every run.
+func _assign_landmarks() -> void:
+	_landmarks.clear()
+	_landmark_class.clear()
+	if _menu_sim or city == null or city.buildings.is_empty():
+		return
+	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
+	rng.randomize()
+	var specs: Array = [["POLICE STATION", LC_POLICE], ["HOSPITAL", LC_HOSP], ["HOSPITAL", LC_HOSP], ["BIO LAB", LC_BIO]]
+	var used: Dictionary = {}
+	for spec in specs:
+		var bi: int = _pick_landmark_building(rng, used)
+		if bi < 0:
+			continue
+		used[bi] = true
+		var b: Dictionary = city.buildings[bi]
+		_landmarks.append({"pos": Vector2(b["x"] + b["w"] * 0.5, b["z"] + b["d"] * 0.5), "name": String(spec[0]), "idx": bi})
+		_landmark_class[bi] = int(spec[1])
+
+
+## A random building index not already taken, preferring a taller footprint (a civic
+## building isn't a shack); falls back to any free building.
+func _pick_landmark_building(rng: RandomNumberGenerator, used: Dictionary) -> int:
+	var best: int = -1
+	for _try in 40:
+		var bi: int = rng.randi() % city.buildings.size()
+		if used.has(bi):
+			continue
+		if int(city.buildings[bi].get("fl", 1)) >= 3:
+			return bi                    # a good tall pick -- take it
+		if best < 0:
+			best = bi                    # otherwise remember a fallback
+	return best
 
 
 ## Roll each rival team's disposition: about half are OPEN to a truce, the rest fight to
 ## the end. You still have to PARLEY to actually stand a truce up (it's mutual).
 func _init_dispositions() -> void:
 	_rival_open.clear()
-	_player_offer.clear()
 	for e in range(1, _team_count):
-		_rival_open[e] = _rng.randf() < 0.5
+		_rival_open[e] = _rng.randf() < 0.5   # ~half the rival teams run a passive stance
 	_recompute_alliances()
 
 
-## Fold the two offers into the sim's allied map: a team is allied (mutual hold-fire) only
-## when YOU have offered AND it is open. A battered rival (<=1 unit left) turns open to beg off.
+## Fold the player's passive stance into the sim's allied map: a rival is allied (mutual
+## hold-fire, both still hunting the infected + Sanitation) only when YOU are passive AND it
+## is also passive. A battered rival (<=1 unit left) turns passive to beg off.
 func _recompute_alliances() -> void:
 	if sim == null:
 		return
 	for e in range(1, _team_count):
 		if sim.element_ids(e).size() <= 1:
 			_rival_open[e] = true
-		sim.allied[e] = _player_offer.get(e, false) and _rival_open.get(e, false)
-
-
-## Offer or withdraw a truce with the rival team nearest the reticle (whoever you're
-## looking at). Mutual: it only stands up if that team is open.
-func _parley() -> void:
-	if sim == null or _team_count <= 1 or _menu_active:
-		return
-	var e: int = _rival_near_reticle()
-	if e < 0:
-		_loot_say("PARLEY  --  NO TEAM IN SIGHT")
-		return
-	_player_offer[e] = not _player_offer.get(e, false)
-	_recompute_alliances()
-	if sim.allied.get(e, false):
-		Audio.comms("ack_affirmative", 800)
-		_loot_say("TEAM %d  --  TRUCE STANDS" % (e + 1))
-	elif not _player_offer[e]:
-		Audio.comms("order_ready", 800)
-		_loot_say("TEAM %d  --  TRUCE WITHDRAWN" % (e + 1))
-	else:
-		Audio.comms("order_ready", 800)
-		_loot_say("TEAM %d  --  HAILED (NO ANSWER)" % (e + 1))
+		sim.allied[e] = _passive and _rival_open.get(e, false)
 
 
 ## The rival element (SQUAD, not your team) whose nearest unit sits closest to the reticle.
@@ -1353,9 +1423,13 @@ func _process(delta: float) -> void:
 		_layout_controls()   # re-place the touch bar once the viewport size has settled
 	if _shot_dir != "":
 		_maybe_capture()
-	if not _menu_active and not _auto_fired and frame_n > INTRO_HOLD * 60.0:
-		_auto_fired = true
-		_channel_change("orbit")
+	# intro: hold CLOSE on the drop while the squad disembarks, then pull out to the wide
+	# gunship view (the default gameplay framing) -- the v0.19 insertion camera.
+	if not _menu_active and _intro_t >= 0.0:
+		_intro_t += delta
+		if _intro_t >= INTRO_HOLD:
+			_intro_t = -1.0
+			_channel_change("orbit")
 	if _shot_dir != "" and OS.get_environment("SPECTRE_PROBE") != "" and int(frame_n) == 55:
 		# stand in the street and look straight at one facade
 		var b: Dictionary = city.buildings[0]
@@ -1490,6 +1564,11 @@ func _process(delta: float) -> void:
 	agc.push(sensor_mat)
 	sensor_mat.set_shader_parameter("mode", mode)
 	sensor_mat.set_shader_parameter("time_s", float(Time.get_ticks_msec()) / 1000.0)
+	# Bloom haloes hot bodies at tactical range (correct) but at the wide view the mostly-cold-
+	# ocean frame drops the scene median, collapses the bloom threshold, and the whole city
+	# blooms over the sea -- washing out the land/water/bridge read. Taper it right down with
+	# altitude so the map stays legible. (_map_overview forces it to 0 for captures.)
+	sensor_mat.set_shader_parameter("bloom", lerpf(0.50, 0.05, clampf((cam_dist - 380.0) / 800.0, 0.0, 1.0)))
 
 	cut_mat.set_shader_parameter("cut_p", p)
 	cut_mat.set_shader_parameter("frame_n", frame_n)
@@ -1502,11 +1581,11 @@ func _process(delta: float) -> void:
 	elif p >= 0.0 and p < 0.46:
 		hud.text = "" if int(frame_n) % 16 < 8 else "SIGNAL ACQ"
 	else:
-		hud.text = "%s\n%s\n\nFEED  %s\nSQUAD %d/%d   WPN %s\nMODE  %s\nRES   %dx%d\nALT   %d M   SLANT %d M\nAGC   %s %.3f/%.3f\nFPS   %d" % [
+		hud.text = "%s\n%s\n\nFEED  %s\nSQUAD %d/%d   STANCE %s\nMODE  %s\nRES   %dx%d\nALT   %d M   SLANT %d M\nAGC   %s %.3f/%.3f\nFPS   %d" % [
 			_mission_line(),
 			_intel_line(),
 			"AC-130 / PYLON TURN" if feed == "orbit" else "ELEMENT / GROUND",
-			sim.element_ids(0).size(), _squad_max, ("FREE" if sim.weapons_free else "HOLD"),
+			sim.element_ids(0).size(), _squad_max, ("PASSIVE" if _passive else "ENGAGE"),
 			MODE_NAMES[mode], snap_res.x, snap_res.y,
 			int(cam.position.y), int(cam_dist),
 			"FROZEN" if agc.frozen else "AUTO", agc.lo, agc.hi,
@@ -1620,7 +1699,7 @@ func _show_banner(won: bool) -> void:
 	]
 	banner.text = "\n".join(rows)
 	banner.add_theme_font_size_override("font_size", 26)
-	banner.add_theme_color_override("font_color", Color(0.55, 1.0, 0.65) if won else Color(1.0, 0.5, 0.42))
+	banner.add_theme_color_override("font_color", Color(0.44, 0.80, 0.52) if won else Color(1.0, 0.5, 0.42))
 	# dim the frozen battlefield behind the printout so the readout reads cleanly
 	var bg: StyleBoxFlat = StyleBoxFlat.new()
 	bg.bg_color = Color(0.0, 0.02, 0.0, 0.72)
@@ -1628,7 +1707,7 @@ func _show_banner(won: bool) -> void:
 	banner.visible = true
 
 
-const SEL_COL: Color = Color(0.62, 0.88, 0.70, 0.85)
+const SEL_COL: Color = Color(0.50, 0.72, 0.57, 0.85)
 
 ## Menu backdrop bookkeeping: fire the scanner ping on an irregular beat (its own SFX),
 ## and when the Sanitation force has cleared every other entity, roll the sim over.
@@ -1701,8 +1780,8 @@ func _draw_menu_scan() -> void:
 	var a: float = fade * strobe
 	if a <= 0.01:
 		return
-	var green: Color = Color(0.40, 1.0, 0.55, a)
-	var ray: Color = Color(0.40, 1.0, 0.55, a * 0.45)
+	var green: Color = Color(0.32, 0.80, 0.44, a)
+	var ray: Color = Color(0.32, 0.80, 0.44, a * 0.45)
 	var drawn: int = 0
 	for i in sim.count():
 		if drawn >= MENU_RAY_MAX:
@@ -1732,6 +1811,7 @@ func _draw_selection() -> void:
 	_draw_streets()
 	_draw_loot()
 	_draw_hdd_pickups()
+	_draw_landmarks()
 	_draw_move_marker()
 	_draw_hud()
 	_draw_scan_pulse()
@@ -1768,7 +1848,7 @@ func _draw_streets() -> void:
 	var a: float = clampf((cam_dist - 380.0) / 300.0, 0.0, 1.0) * clampf((1250.0 - cam_dist) / 150.0, 0.0, 1.0) * 0.30
 	if a <= 0.01:
 		return
-	var col: Color = Color(0.55, 0.86, 0.70, a)
+	var col: Color = Color(0.44, 0.69, 0.56, a)
 	for seg in city.road_lines:
 		var a3: Vector3 = Vector3(seg[0].x, 0.15, seg[0].y)
 		var b3: Vector3 = Vector3(seg[1].x, 0.15, seg[1].y)
@@ -1785,17 +1865,31 @@ func _draw_scan_pulse() -> void:
 	var cmd: int = _commander()
 	if cmd < 0:
 		return
-	var w: Vector3 = Vector3(sim.pos[cmd].x, 0.9, sim.pos[cmd].y)
-	if cam.is_position_behind(w):
-		return
-	var c: Vector2 = _screen_point(w)                        # the pulse rolls out from the commander
-	var edge: Vector2 = _screen_point(Vector3(sim.pos[cmd].x + SCAN_RANGE, 0.9, sim.pos[cmd].y))
-	var maxr: float = maxf(20.0, c.distance_to(edge))        # SCAN_RANGE in screen pixels
+	# the pulse expands FLAT ON THE GROUND from the commander -- a world-space ring
+	# projected to screen (an ellipse in perspective), not a screen-space disc.
+	var o: Vector2 = sim.pos[cmd]
 	var k: float = _scan_pulse_t / SCAN_PULSE
-	var rad: float = k * maxr
+	var rad_m: float = k * SCAN_RANGE
 	var a: float = (1.0 - k) * 0.85
-	sel_layer.draw_arc(c, rad, 0.0, TAU, 64, Color(0.40, 1.0, 0.55, a), 2.5)
-	sel_layer.draw_arc(c, rad * 0.7, 0.0, TAU, 48, Color(0.40, 1.0, 0.55, a * 0.5), 1.5)
+	_draw_ground_ring(o, rad_m, Color(0.32, 0.80, 0.44, a), 2.5)
+	_draw_ground_ring(o, rad_m * 0.7, Color(0.32, 0.80, 0.44, a * 0.5), 1.5)
+
+
+## A ring lying FLAT on the ground: a world-space circle of radius `rad_m` metres about a
+## ground point, projected to screen. Breaks the line if it wraps behind the camera.
+func _draw_ground_ring(centre: Vector2, rad_m: float, col: Color, width: float) -> void:
+	if rad_m < 0.5:
+		return
+	var pts: PackedVector2Array = PackedVector2Array()
+	var seg: int = 48
+	for s in seg + 1:
+		var ang: float = float(s) / float(seg) * TAU
+		var w: Vector3 = Vector3(centre.x + cos(ang) * rad_m, 0.3, centre.y + sin(ang) * rad_m)
+		if cam.is_position_behind(w):
+			break
+		pts.append(_screen_point(w))
+	if pts.size() >= 2:
+		sel_layer.draw_polyline(pts, col, width)
 
 
 ## The move-order marker: a spinning equilateral triangle at the destination. It stays up
@@ -1805,8 +1899,8 @@ func _draw_move_marker() -> void:
 	if not _move_marker.has("pos"):
 		return
 	var g: Vector2 = _move_marker["pos"]
-	var col: Color = Color(0.50, 1.0, 0.65, 0.95)
-	var r: float = 6.0                          # metres on the ground plane
+	var col: Color = Color(0.40, 0.80, 0.52, 0.95)
+	var r: float = 3.6                          # metres on the ground plane (40% smaller)
 	var spin: float = frame_n * 0.05
 	# build the triangle in WORLD space on the ground, then project -- so it lies flat on
 	# the ground in perspective (a spinning decal), not a flat billboard facing the camera.
@@ -1877,7 +1971,7 @@ func _draw_hdd_pickups() -> void:
 			continue
 		var p: Vector2 = _screen_point(w3)
 		var inside: bool = box.has_point(p)
-		var col: Color = Color(0.55, 1.0, 0.72, 0.9 if inside else 0.34)
+		var col: Color = Color(0.44, 0.80, 0.58, 0.9 if inside else 0.34)
 		var r: float = 5.0
 		var pts: PackedVector2Array = PackedVector2Array()
 		for a in 4:
@@ -1894,7 +1988,7 @@ func _draw_hdd_pickups() -> void:
 func _draw_escapes() -> void:
 	if mission == null or mission.result != Mission.ONGOING or city == null:
 		return
-	var col: Color = Color(0.5, 1.0, 0.6, 0.85)
+	var col: Color = Color(0.40, 0.80, 0.48, 0.85)
 	for z in city.escapes:
 		var centre: Vector3 = Vector3(z.position.x + z.size.x * 0.5, 0.6, z.position.y + z.size.y * 0.5)
 		if cam.is_position_behind(centre):
@@ -1911,7 +2005,7 @@ func _draw_escapes() -> void:
 func _draw_evac() -> void:
 	if mission == null or mission.result != Mission.ONGOING or _sani_deployed or not mission.evac_open():
 		return
-	var col: Color = Color(0.55, 1.0, 0.68, 0.85)
+	var col: Color = Color(0.44, 0.80, 0.54, 0.85)
 	for z in mission.evacs:
 		var centre: Vector3 = Vector3(z.position.x + z.size.x * 0.5, 0.6, z.position.y + z.size.y * 0.5)
 		if cam.is_position_behind(centre):
@@ -1925,6 +2019,39 @@ func _draw_evac() -> void:
 			var d: Vector2 = Vector2(cos(a + float(s) * PI * 0.5), sin(a + float(s) * PI * 0.5)) * rad * 0.72
 			sel_layer.draw_line(c - d, c + d, Color(col.r, col.g, col.b, 0.5), 1.5)
 		sel_layer.draw_string(ThemeDB.fallback_font, c + Vector2(rad + 5.0, 4.0), "EVAC", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, col)
+
+
+## Small in-world headers over the named civic buildings + the evac takeoff pad -- police
+## station, hospitals, bio lab, and where the chopper lifts from. Reads at tactical/mid
+## zoom, fades out at the wide pull-back. Not fogged (these are known landmarks).
+func _draw_landmarks() -> void:
+	if _menu_active or city == null:
+		return
+	var a: float = clampf((900.0 - cam_dist) / 260.0, 0.0, 1.0)
+	if a <= 0.02:
+		return
+	var font: Font = ThemeDB.fallback_font
+	for lm in _landmarks:
+		var pos: Vector2 = lm["pos"]
+		var p3: Vector3 = Vector3(pos.x, 7.0, pos.y)
+		if cam.is_position_behind(p3):
+			continue
+		_landmark_header(font, _screen_point(p3), String(lm["name"]), Color(HUD_COL.r, HUD_COL.g, HUD_COL.b, a))
+	if mission != null and mission.result == Mission.ONGOING:
+		var gc: Color = Color(0.44, 0.80, 0.54, a)
+		for z in mission.evacs:
+			var c3: Vector3 = Vector3(z.get_center().x, 6.0, z.get_center().y)
+			if cam.is_position_behind(c3):
+				continue
+			_landmark_header(font, _screen_point(c3), "EVAC LZ", gc)
+
+
+## A centred header label with a small down-tick to the structure below it.
+func _landmark_header(font: Font, p: Vector2, text: String, col: Color) -> void:
+	var fs: int = 11
+	var w: float = font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
+	sel_layer.draw_line(p, p + Vector2(0.0, 6.0), col, 1.0)
+	sel_layer.draw_string(font, Vector2(p.x - w * 0.5, p.y - 3.0), text, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, col)
 
 
 ## A tiny allegiance pip over each contact you can SEE -- the v0.19 coloured-unit read, so
@@ -2038,7 +2165,7 @@ func _draw_tags(font: Font) -> void:
 		if not mine and not _identified(i):
 			continue                             # fog of war: tag only what you can see
 		if t == WorldSim.SQUAD:
-			_corner_box(p, 7.0, _squad_col(i))
+			continue                             # squad already boxed by _draw_unit_boxes -- no double bracket
 		elif t == WorldSim.INFECTED:
 			_caret(p - Vector2(0.0, 9.0), 5.0, TAG_ZED, true)
 			sel_layer.draw_string(font, p + Vector2(7.0, -3.0), "%dm" % int(sim.pos[i].distance_to(me)), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, TAG_ZED)
@@ -2158,46 +2285,90 @@ func _draw_hud() -> void:
 	if locked:
 		sel_layer.draw_string(font, c + Vector2(-42.0, reach + 22.0), "TGT LOCKED", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, HUD_RED)
 
-	# AC-130 fire-mission status, bottom-left above the attitude gauge
+	# AC-130 fire-mission status -- by its BUTTONS (bottom-right), right-aligned above the bar.
+	var ac_txt: String
+	var ac_col: Color
 	if _strike_arming:
-		sel_layer.draw_string(font, Vector2(30.0, win.y - 178.0), "AC-130  DESIGNATE TARGET", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, HUD_RED)
+		ac_txt = "AC-130  DESIGNATE"
+		ac_col = HUD_RED
 		sel_layer.draw_string(font, Vector2(0.0, 94.0), "DESIGNATE STRIKE  --  TAP TARGET", HORIZONTAL_ALIGNMENT_CENTER, win.x, 15, HUD_RED)
 	elif _zombie_kills >= AC_UNLOCK:
-		sel_layer.draw_string(font, Vector2(30.0, win.y - 178.0), "AC-130 GUNSHIP  READY", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, HUD_COL)
+		ac_txt = "AC-130 GUNSHIP READY"
+		ac_col = HUD_COL
 	else:
-		sel_layer.draw_string(font, Vector2(30.0, win.y - 178.0), "AC-130  LOCKED  %d/%d KILLS" % [_zombie_kills, AC_UNLOCK], HORIZONTAL_ALIGNMENT_LEFT, -1, 13, HUD_DIM)
+		ac_txt = "AC-130  %d/%d KILLS" % [_zombie_kills, AC_UNLOCK]
+		ac_col = HUD_DIM
+	var acw: float = font.get_string_size(ac_txt, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x
+	sel_layer.draw_string(font, Vector2(win.x - 18.0 - acw, win.y - 74.0), ac_txt, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, ac_col)
 
-	# ISR scan status, just above the AC-130 line
+	# ISR scan status, bottom-left
 	if _scan_t < SCAN_REVEAL:
-		sel_layer.draw_string(font, Vector2(30.0, win.y - 160.0), "SCAN ACTIVE  %ds" % int(ceil(SCAN_REVEAL - _scan_t)), HORIZONTAL_ALIGNMENT_LEFT, -1, 13, HUD_COL)
+		sel_layer.draw_string(font, Vector2(30.0, win.y - 196.0), "SCAN ACTIVE  %ds" % int(ceil(SCAN_REVEAL - _scan_t)), HORIZONTAL_ALIGNMENT_LEFT, -1, 13, HUD_COL)
 	elif _scan_t < SCAN_COOLDOWN:
-		sel_layer.draw_string(font, Vector2(30.0, win.y - 160.0), "SCAN  %ds" % int(ceil(SCAN_COOLDOWN - _scan_t)), HORIZONTAL_ALIGNMENT_LEFT, -1, 13, HUD_DIM)
+		sel_layer.draw_string(font, Vector2(30.0, win.y - 196.0), "SCAN  %ds" % int(ceil(SCAN_COOLDOWN - _scan_t)), HORIZONTAL_ALIGNMENT_LEFT, -1, 13, HUD_DIM)
 	else:
-		sel_layer.draw_string(font, Vector2(30.0, win.y - 160.0), "SCAN READY  [E]", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, HUD_COL)
+		sel_layer.draw_string(font, Vector2(30.0, win.y - 196.0), "SCAN READY  [E]", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, HUD_COL)
 
-	# Parley status: the rival team under the reticle and its stance toward you.
+	# Passive-stance readout: your stance, or the reticle team's relationship to you.
 	if not _menu_active and _team_count > 1 and mission != null and mission.result == Mission.ONGOING:
+		var stance_txt: String = "STANCE  PASSIVE" if _passive else "STANCE  ENGAGE"
+		var stance_col: Color = TAG_ALLY if _passive else HUD_COL
 		var e: int = _rival_near_reticle()
 		if e >= 0:
-			var txt: String
-			var col: Color
 			if sim.allied.get(e, false):
-				txt = "TEAM %d  ALLIED  [P] BREAK" % (e + 1)
-				col = TAG_ALLY
-			elif _player_offer.get(e, false):
-				txt = "TEAM %d  HAILED -- NO ANSWER" % (e + 1)
-				col = TAG_PASSIVE
+				stance_txt = "TEAM %d  ALLIED" % (e + 1)
+				stance_col = TAG_ALLY
 			elif _rival_open.get(e, false):
-				txt = "TEAM %d  OPEN  [P] TRUCE" % (e + 1)
-				col = TAG_PASSIVE
+				stance_txt = "TEAM %d  PASSIVE  [P]" % (e + 1)
+				stance_col = TAG_PASSIVE
 			else:
-				txt = "TEAM %d  HOSTILE  [P] HAIL" % (e + 1)
-				col = HUD_RED
-			sel_layer.draw_string(font, Vector2(30.0, win.y - 142.0), txt, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, col)
+				stance_txt = "TEAM %d  HOSTILE" % (e + 1)
+				stance_col = HUD_RED
+		sel_layer.draw_string(font, Vector2(30.0, win.y - 178.0), stance_txt, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, stance_col)
 
+	_draw_top_banner(font, win)
 	_draw_attitude(font, win)
 	_draw_threat(font, win)
 	_draw_strike()
+
+
+## Top-centre mission banner. Before/at evac: a countdown to the helo (T-minus), then the
+## on-station clock. Once the Sanitation force lands, that vanishes and a red-bloomed
+## RADIATION WARNING takes its place for as long as they're loose.
+func _draw_top_banner(_font: Font, win: Vector2) -> void:
+	if _menu_active or mission == null or mission.result != Mission.ONGOING:
+		return
+	var font: Font = _hud_font                # the game HUD font, per the banner style
+	var cx: float = win.x * 0.5
+	var y: float = 72.0
+	if _sani_deployed:
+		var txt: String = "RADIATION WARNING  :  CAUTION  :  SANITATION FORCE DEPLOYED  :  CAUTION  :  EVACUATE IMMEDIATELY"
+		var fs: int = 14 if win.x >= 900.0 else 9
+		var tw: float = font.get_string_size(txt, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
+		var pad: float = 18.0
+		var box: Rect2 = Rect2(cx - tw * 0.5 - pad, y - 16.0, tw + pad * 2.0, 30.0)
+		var pulse: float = 0.5 + 0.5 * sin(frame_n * 0.11)          # a slow red throb behind it
+		for k in range(5, 0, -1):
+			sel_layer.draw_rect(box.grow(float(k) * 7.0), Color(1.0, 0.13, 0.10, 0.04 + 0.03 * pulse), true)
+		sel_layer.draw_rect(box, Color(0.07, 0.06, 0.07, 0.72), true)   # dark grey, transparent
+		sel_layer.draw_rect(box, Color(1.0, 0.28, 0.24, 0.6 + 0.4 * pulse), false, 2.0)   # red outline
+		sel_layer.draw_string(font, Vector2(cx - tw * 0.5, y + 4.0), txt, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, HUD_RED)
+		return
+	# evac timer: a countdown to arrival, then the on-station clock
+	var txt2: String
+	if mission.evac_open():
+		var left: int = int(ceil(Mission.EVAC_LEAVE - mission.t))
+		txt2 = "EVAC ON STATION   %d:%02d LEFT" % [left / 60, left % 60]
+	else:
+		var until: int = int(ceil(Mission.EVAC_ARRIVE - mission.t))
+		txt2 = "EVAC INBOUND   T-%d:%02d" % [until / 60, until % 60]
+	var fs2: int = 16
+	var tw2: float = font.get_string_size(txt2, HORIZONTAL_ALIGNMENT_LEFT, -1, fs2).x
+	var pad2: float = 14.0
+	var box2: Rect2 = Rect2(cx - tw2 * 0.5 - pad2, y - 15.0, tw2 + pad2 * 2.0, 27.0)
+	sel_layer.draw_rect(box2, Color(0.0, 0.03, 0.0, 0.5), true)
+	sel_layer.draw_rect(box2, Color(HUD_COL.r, HUD_COL.g, HUD_COL.b, 0.6), false, 1.5)
+	sel_layer.draw_string(font, Vector2(cx - tw2 * 0.5, y + 4.0), txt2, HORIZONTAL_ALIGNMENT_LEFT, -1, fs2, HUD_COL)
 
 
 ## The impact FX: a hot ring blooming out from the strike point, fading over ~0.7 s.
@@ -2364,8 +2535,10 @@ func _draw_flashes() -> void:
 ## Attitude gauge, bottom-left: a heading dial with the optic azimuth pointer, the
 ## optic elevation, and the pylon-turn state -- the AC-130's bank/attitude circle.
 func _draw_attitude(font: Font, win: Vector2) -> void:
-	var gc: Vector2 = Vector2(66.0, win.y - 132.0)
-	var gr: float = 27.0
+	if help != null and help.visible:
+		return                              # the controls card owns this corner -- yield to it
+	var gc: Vector2 = Vector2(66.0, win.y - 140.0)   # raised, clear of the readout stack above
+	var gr: float = 24.0
 	sel_layer.draw_arc(gc, gr, 0.0, TAU, 40, HUD_DIM, 1.5)
 	for a in range(0, 360, 30):
 		var av: Vector2 = Vector2(sin(deg_to_rad(a)), -cos(deg_to_rad(a)))
@@ -2379,19 +2552,20 @@ func _draw_attitude(font: Font, win: Vector2) -> void:
 	sel_layer.draw_string(font, gc + Vector2(gr + 8.0, 12.0), "EL %02d" % int(rad_to_deg(cam_el)), HORIZONTAL_ALIGNMENT_LEFT, -1, 12, HUD_COL)
 
 
-## Red threat box (INFESTATION-style): living hostiles + confirmed kills.
-func _draw_threat(font: Font, win: Vector2) -> void:
+## Red threat box (INFESTATION-style): living hostiles + confirmed kills. Game HUD font.
+func _draw_threat(_font: Font, win: Vector2) -> void:
+	var font: Font = _hud_font
 	var hostiles: int = 0
 	for i in sim.count():
 		if sim.alive[i] and sim.team[i] != WorldSim.SQUAD and sim.team[i] != WorldSim.CIVILIAN:
 			hostiles += 1
-	var w: float = 190.0
+	var w: float = 200.0
 	var box: Rect2 = Rect2(win.x - w - 20.0, 18.0, w, 62.0)
 	sel_layer.draw_rect(box, Color(HUD_RED.r, HUD_RED.g, HUD_RED.b, 0.12), true)
 	sel_layer.draw_rect(box, HUD_RED, false, 1.5)
-	sel_layer.draw_string(font, box.position + Vector2(9.0, 17.0), "INFESTATION", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, HUD_RED)
-	sel_layer.draw_string(font, box.position + Vector2(9.0, 36.0), "HOSTILES %d   KILLS %d" % [hostiles, _kills], HORIZONTAL_ALIGNMENT_LEFT, -1, 12, HUD_COL)
-	sel_layer.draw_string(font, box.position + Vector2(9.0, 54.0), "SCORE %d" % _score, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, HUD_COL)
+	sel_layer.draw_string(font, box.position + Vector2(9.0, 17.0), "INFESTATION", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, HUD_RED)
+	sel_layer.draw_string(font, box.position + Vector2(9.0, 36.0), "HOSTILES %d   KILLS %d" % [hostiles, _kills], HORIZONTAL_ALIGNMENT_LEFT, -1, 11, HUD_COL)
+	sel_layer.draw_string(font, box.position + Vector2(9.0, 54.0), "SCORE %d" % _score, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, HUD_COL)
 
 
 func _select_in_rect(r: Rect2) -> void:
@@ -2484,11 +2658,10 @@ func _input(e: InputEvent) -> void:
 				show_help = not show_help
 				if help != null:
 					help.visible = show_help
-			KEY_F: _toggle_fire()
 			KEY_V: _request_strike()          # arm the AC-130
 			KEY_B: _fire_reticle()            # fire it on the reticle
 			KEY_E: _request_scan()
-			KEY_P: _parley()
+			KEY_P: _toggle_passive()          # passive stance -- hold fire with other passive teams
 			KEY_TAB: _cycle_unit_type()       # cycle which of your unit types is selected
 			KEY_Q: _cycle_unit_type()
 			KEY_1: _select_all_squad()        # select the whole squad
@@ -2704,6 +2877,8 @@ func _resolve_loot(bidx: int) -> void:
 ## Payout class for a building, stable across the mission (a cheap index hash). HDD is
 ## the common drop; the specialist sites are rarer.
 func _loot_class(bidx: int) -> int:
+	if _landmark_class.has(bidx):
+		return int(_landmark_class[bidx])   # a named civic building pays out its kind
 	var r: int = int(abs(bidx * 2654435761)) % 100
 	if r < 60:
 		return LC_HDD
@@ -2754,17 +2929,28 @@ func _loot_say(s: String) -> void:
 	_loot_toast_t = LOOT_TOAST_TIME
 
 
-func _toggle_fire() -> void:
-	sim.weapons_free = not sim.weapons_free
-	Audio.comms("open_fire" if sim.weapons_free else "hold_fire", 0)
-
-
 func _toggle_feed() -> void:
 	_channel_change("orbit" if feed == "deploy" else "deploy")
 
 
 func _cycle_palette() -> void:
 	mode = (mode + 1) % 3
+	if _pal_btn != null:
+		_pal_btn.text = MODE_NAMES[mode]                    # the button reads the current palette
+	if is_instance_valid(_menu_thermal_btn):
+		_menu_thermal_btn.text = "THERMAL: " + MODE_NAMES[mode]
+
+
+## PSV: toggle your team's passive stance. While passive, any RIVAL team that's also
+## running passive is held as an ally -- you don't fire on each other, and both keep
+## engaging the infected + Sanitation. Drop it and you're free-fire on every team again.
+func _toggle_passive() -> void:
+	_passive = not _passive
+	_recompute_alliances()
+	if _psv_btn != null:
+		_psv_btn.modulate = Color(1, 1, 1, 1.0) if _passive else Color(1, 1, 1, 0.7)
+	Audio.comms("ack_affirmative" if _passive else "order_ready", 800)
+	_loot_say("PASSIVE STANCE  --  %s" % ("ON" if _passive else "OFF"))
 
 
 ## The two thumb-reach control clusters. LOWER-LEFT is unit selection: REGROUP, a big
@@ -2787,16 +2973,30 @@ func _build_touch_bar(host: CanvasLayer) -> void:
 	var ball: Button = _hud_button("ALL", 62)
 	ball.pressed.connect(_select_all_squad)
 	lbar.add_child(ball)
+	var bctrl: Button = _hud_button("CTRL")           # controls card lives on the LEFT, by the card it opens
+	bctrl.pressed.connect(_toggle_controls)
+	lbar.add_child(bctrl)
 	host.add_child(lbar)
 	_bar_l = lbar
 
 	# --- lower-right: command + camera + AC-130 ---
 	var rbar: HBoxContainer = HBoxContainer.new()
 	rbar.add_theme_constant_override("separation", 6)
-	for spec in [["WPN", _toggle_fire], ["SCAN", _request_scan], ["PRLY", _parley], ["ISR", _toggle_feed], ["PAL", _cycle_palette], ["CTRL", _toggle_controls]]:
-		var b: Button = _hud_button(String(spec[0]))
-		b.pressed.connect(spec[1])
-		rbar.add_child(b)
+	var bscan: Button = _hud_button("SCAN")
+	bscan.pressed.connect(_request_scan)
+	rbar.add_child(bscan)
+	# PSV: one passive-stance toggle (replaces WPN + PRLY). Two passive teams hold fire on
+	# each other and both keep firing on the infected + Sanitation.
+	_psv_btn = _hud_button("PSV")
+	_psv_btn.pressed.connect(_toggle_passive)
+	rbar.add_child(_psv_btn)
+	var bisr: Button = _hud_button("ISR")
+	bisr.pressed.connect(_toggle_feed)
+	rbar.add_child(bisr)
+	# PAL: labelled with the CURRENT palette; press cycles WHT HOT -> BLK HOT -> IRONBOW.
+	_pal_btn = _hud_button(MODE_NAMES[mode], 92)
+	_pal_btn.pressed.connect(_cycle_palette)
+	rbar.add_child(_pal_btn)
 	# the AC-130 slot: a LOCKED cover until the kill threshold, then it vanishes to reveal
 	# the ARM-over-FIRE stack (mutually exclusive -- see _update_ac_buttons).
 	var ac_slot: Control = Control.new()
@@ -3098,9 +3298,18 @@ func _build_loadout_panel() -> Control:
 	var g0: Control = Control.new()
 	g0.custom_minimum_size = Vector2(0, 6)
 	v.add_child(g0)
+	# the commander is fixed at 1 -- shown but not adjustable
+	var cdr_row: HBoxContainer = HBoxContainer.new()
+	cdr_row.add_theme_constant_override("separation", 8)
+	var cdr_nm: Label = _menu_label("COMMANDER", 15, HUD_DIM)
+	cdr_nm.custom_minimum_size = Vector2(150, 0)
+	cdr_nm.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	cdr_row.add_child(cdr_nm)
+	cdr_row.add_child(_menu_label("1  (FIXED)", 15, HUD_DIM))
+	v.add_child(cdr_row)
 	_loadout_lbls = {}
-	var names: Dictionary = {&"cdr": "COMMANDER", &"cbt": "COMBAT", &"med": "MEDIC", &"snp": "SNIPER", &"rec": "RECON", &"eod": "EOD"}
-	for k in ELEMENT_ROSTER:
+	var names: Dictionary = {&"cbt": "COMBAT", &"med": "MEDIC", &"snp": "SNIPER", &"rec": "RECON", &"eod": "EOD"}
+	for k in CHOOSABLE:
 		var row: HBoxContainer = HBoxContainer.new()
 		row.add_theme_constant_override("separation", 8)
 		var nm: Label = _menu_label(names[k], 15, HUD_COL)
@@ -3156,7 +3365,7 @@ func _adjust_loadout(k: StringName, d: int) -> void:
 
 
 func _refresh_loadout_labels() -> void:
-	var total: int = 0
+	var total: int = FIXED_CDR                      # the commander is always in the count
 	for k in _loadout_lbls:
 		(_loadout_lbls[k] as Label).text = str(_loadout[k])
 		total += int(_loadout[k])
@@ -3171,23 +3380,33 @@ func _refresh_loadout_labels() -> void:
 
 
 func _confirm_loadout() -> void:
-	var total: int = 0
+	var total: int = FIXED_CDR
 	for k in _loadout:
 		total += int(_loadout[k])
 	if total != REQUIRED_TROOPS:
-		return                       # must field exactly the required squad size
+		return                       # must field exactly the required squad size (26)
 	_start_game(_pending_count)
 
 
-## Expand the loadout dict into a spawn roster (element 0). Never empty -- a lone rifleman
-## at minimum, and a commander is folded in if you dropped every leader (the scan needs one).
+## Expand the player's loadout into a spawn roster (element 0): the fixed commander first,
+## then the choosable roles. Always exactly REQUIRED_TROOPS.
 func _loadout_roster() -> Array:
 	var r: Array = []
-	for k in ELEMENT_ROSTER:
+	for _c in FIXED_CDR:
+		r.append(&"cdr")
+	for k in CHOOSABLE:
 		for _n in int(_loadout.get(k, 0)):
 			r.append(k)
-	if r.is_empty():
-		r.append(&"cbt")
+	return r
+
+
+## Every rival team fields the same 26 -- one commander + a standard 25-strong spread --
+## so all deployed teams are real forces, not a token six.
+func _rival_roster() -> Array:
+	var r: Array = [&"cdr"]
+	for spec in [[&"cbt", 15], [&"med", 4], [&"snp", 3], [&"rec", 2], [&"eod", 1]]:
+		for _n in int(spec[1]):
+			r.append(spec[0])
 	return r
 
 
@@ -3260,7 +3479,7 @@ func _start_game(count: int) -> void:
 	await _rebuild_world()          # respawn with the chosen team count at the edges
 	feed = "deploy"
 	_apply_feed()
-	_auto_fired = true              # skip the intro auto-orbit -- we're deploying now
+	_intro_t = 0.0                  # hold close on the disembark, then auto-pull to the wide view
 	if _tutorial and help != null:
 		show_help = true
 		help.visible = true

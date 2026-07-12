@@ -21,16 +21,18 @@ const RADIANCE_SCALE: float = 1.0     # requires SubViewport.use_hdr_2d = true
 const SUN_DIR: Vector3 = Vector3(0.855, 0.300, -0.425)   # where the sun set
 
 const MAT: Dictionary = {
-	# Cold city at night: the whole map sits in a tight DARK-GREY band so warm bodies +
-	# fire are what pop. Ocean is the coldest (reads black on WHT HOT / white on BLK HOT);
-	# roads sit a touch above the ground so the grid still reads; bridges a mid-tone.
-	"water":     {"t": 9.0, "sky": 16.0, "e": 0.96, "solar": 0.3, "d": 6, "dt": 0.95, "de": 0.02},
-	"beach":     {"t": 15.0, "sky": 5.0, "e": 0.94, "solar": 2.6, "d": 6, "dt": 1.5, "de": 0.03},   # sand at the waterline
-	"ship":      {"t": 15.0, "sky": 6.5, "e": 0.92, "solar": 3.2, "d": 3, "dt": 1.4, "de": 0.03},   # steel hull
-	"bridge":    {"t": 12.5, "sky": 7.0, "e": 0.94, "solar": 2.4, "d": 3, "dt": 1.4, "de": 0.03},   # deck: between water + land
+	# Night city, but the three big zones are pulled well APART so land, water, and the
+	# bridge decks read at a glance in every palette (they used to sit in one grey band):
+	#   OCEAN  is a clean, near-black cold sheet (coldest thing in frame -> clips to black)
+	#   LAND   is a clear mid grey, roads brighter so the street grid reads
+	#   BRIDGE decks run WARM -- bright causeways over the black water, the way across
+	"water":     {"t": 7.0, "sky": 19.0, "e": 0.96, "solar": 0.2, "d": 6, "dt": 0.40, "de": 0.02},   # clean cold sheet, near black
+	"beach":     {"t": 16.0, "sky": 4.0, "e": 0.94, "solar": 2.8, "d": 6, "dt": 1.3, "de": 0.03},   # bright sand fringe at the waterline
+	"ship":      {"t": 16.0, "sky": 5.5, "e": 0.92, "solar": 3.2, "d": 3, "dt": 1.4, "de": 0.03},   # steel hull
+	"bridge":    {"t": 19.0, "sky": 2.0, "e": 0.94, "solar": 2.6, "d": 3, "dt": 0.80, "de": 0.03},   # WARM deck: a bright ribbon over the sea
 	"ground":    {"t": 14.5, "sky": 3.0, "e": 0.94, "solar": 2.4, "d": 2, "dt": 1.8, "de": 0.03},
-	"park":      {"t": 11.5, "sky": 9.0, "e": 0.97, "solar": 1.0, "d": 2, "dt": 2.2, "de": 0.02, "ms": Vector2(3.0, 3.0)},
-	"road":      {"t": 16.5, "sky": 2.5, "e": 0.93, "solar": 2.8, "d": 3, "dt": 1.8, "de": 0.05, "ms": Vector2(4.0, 2.586)},
+	"park":      {"t": 11.0, "sky": 9.5, "e": 0.97, "solar": 1.0, "d": 2, "dt": 2.2, "de": 0.02, "ms": Vector2(3.0, 3.0)},
+	"road":      {"t": 18.0, "sky": 2.5, "e": 0.93, "solar": 2.8, "d": 3, "dt": 1.8, "de": 0.05, "ms": Vector2(4.0, 2.586)},
 	"sidewalk":  {"t": 13.5, "sky": 3.5, "e": 0.94, "solar": 2.2, "d": 6, "dt": 1.2, "de": 0.02, "ms": Vector2(1.8, 1.8)},
 	"grass":     {"t": 11.5, "sky": 4.5, "e": 0.97, "solar": 0.8, "d": 7, "dt": 2.2, "de": 0.02, "ms": Vector2(1.5, 1.5)},
 	"lot":       {"t": 14.5, "sky": 2.8, "e": 0.93, "solar": 2.6, "d": 8, "dt": 1.6, "de": 0.04},

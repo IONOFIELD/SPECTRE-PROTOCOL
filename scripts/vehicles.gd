@@ -24,10 +24,11 @@ const FLEET: Array = [
 	"res://models/cars/luty_low_poly_ps1.glb",
 ]
 
-## Uniform scale per asset (metres-ish length after scale). Eyeball-tuned.
-const FLEET_SCALE: Array = [
-	1.15, 1.15, 1.20, 1.15, 1.25, 1.10, 1.20, 1.15, 1.10, 1.15, 1.10, 1.00,
-]
+## Every car is FIT to the same footprint so a mixed fleet reads as one consistent
+## size on the feed (spawn_fit stretches each GLB to this box; PSX proportions vary,
+## the silhouette shouldn't). ~2 m wide, 4.6 m long -- a sedan.
+const CAR_SIZE: Vector3 = Vector3(2.0, 1.5, 4.6)
+const JAM_GAP: float = 5.4     # bumper-to-bumper spacing down a jammed lane, metres
 
 var _snap_res: Vector2i = Vector2i(640, 360)
 var rects: Array[Rect2] = []   # empty: light cars are not sim blockers
@@ -39,27 +40,59 @@ func generate(snap_res: Vector2i, city: CityGen, count: int, seed_value: int = 3
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 	rng.seed = seed_value
 	var pitch: float = CityGen.BLOCK + CityGen.STREET
-	# Cap hard: 16 GLB cars is plenty for FLIR; more is just draw calls.
-	var n: int = mini(count, 16)
-	var running_i: int = 0   # first car is the warm-engine tell
+	# A few loose parked cars scattered on the streets...
+	var n: int = mini(count, 10)
 	for i in n:
 		var vertical: bool = rng.randf() < 0.5
 		var lane: float = float(rng.randi() % (city.grid_n + 1)) * pitch
 		lane += (CityGen.HALF_ST - 1.9) * (1.0 if rng.randf() < 0.5 else -1.0)
 		var along: float = rng.randf_range(4.0, float(city.grid_n) * pitch - 4.0)
 		var at: Vector2 = Vector2(lane, along) if vertical else Vector2(along, lane)
-		var yaw: float = 0.0 if vertical else PI * 0.5
-		yaw += rng.randf_range(-0.08, 0.08)
-		var fi: int = rng.randi() % FLEET.size()
-		var path: String = FLEET[fi]
-		var sc: float = FLEET_SCALE[fi]
-		var mat: String = "hood_hot" if i == running_i else "body_cold"
-		var car: Node3D = ThermalModel.spawn(path, mat, _snap_res, sc, yaw, true)
-		if car == null:
+		if not Geometry2D.is_point_in_polygon(at, city.land_poly):
 			continue
-		car.position = Vector3(at.x, 0.0, at.y)
-		add_child(car)
+		var yaw: float = (0.0 if vertical else PI * 0.5) + rng.randf_range(-0.08, 0.08)
+		_car(at, yaw, "hood_hot" if i == 0 else "body_cold", rng)
+	# ...and several ABANDONED TRAFFIC JAMS: cars backed up nose-to-tail down a lane,
+	# all facing the same way -- the city froze mid-evacuation.
+	for _j in 6:
+		_traffic_jam(city, rng)
 	_scatter_wrecks(city, rng)
+
+
+## One car, fit to CAR_SIZE so the whole fleet is a single consistent size on FLIR.
+func _car(pos: Vector2, yaw: float, mat: String, rng: RandomNumberGenerator) -> void:
+	var path: String = FLEET[rng.randi() % FLEET.size()]
+	var car: Node3D = ThermalModel.spawn_fit(path, mat, _snap_res, CAR_SIZE, yaw)
+	if car == null:
+		return
+	car.position = Vector3(pos.x, 0.0, pos.y)
+	add_child(car)
+
+
+## A gridlocked lane: 5-12 cars bumper-to-bumper along one side of a street, all
+## pointed the same way, mostly cold (abandoned) with the odd engine still warm. The
+## jam is visual only (not a sim blocker) so the squad and horde still thread through.
+func _traffic_jam(city: CityGen, rng: RandomNumberGenerator) -> void:
+	var pitch: float = CityGen.BLOCK + CityGen.STREET
+	var vertical: bool = rng.randf() < 0.5
+	var lane: float = float(rng.randi() % (city.grid_n + 1)) * pitch
+	var side: float = 1.0 if rng.randf() < 0.5 else -1.0
+	lane += (CityGen.HALF_ST - 2.2) * side          # sit in one lane, not the centreline
+	var facing: bool = rng.randf() < 0.5             # which way the queue points
+	var count: int = 5 + rng.randi() % 8
+	var span: float = float(city.grid_n) * pitch
+	var start: float = rng.randf_range(6.0, maxf(7.0, span - 6.0 - float(count) * JAM_GAP))
+	var yaw: float
+	if vertical:
+		yaw = 0.0 if facing else PI
+	else:
+		yaw = PI * 0.5 if facing else -PI * 0.5
+	for k in count:
+		var along: float = start + float(k) * JAM_GAP
+		var at: Vector2 = Vector2(lane, along) if vertical else Vector2(along, lane)
+		if not Geometry2D.is_point_in_polygon(at, city.land_poly):
+			continue
+		_car(at, yaw + rng.randf_range(-0.05, 0.05), "hood_hot" if rng.randf() < 0.12 else "body_cold", rng)
 
 
 ## Box-car wrecks piled up + some ablaze in the streets -- an environmental read and
