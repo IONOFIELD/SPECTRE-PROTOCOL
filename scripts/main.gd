@@ -126,6 +126,9 @@ var _sfx_blast: AudioStream
 var _sfx_flash: AudioStream
 var _sfx_expl: AudioStream             # distant explosion, for ambient war
 var _sfx_yell: AudioStream             # civilian panic (drop audio/sfx/civ_panic.wav to enable)
+var _sfx_sanvox: Array[AudioStream] = []   # sanitation vocals: the squad comms, reversed (eerie)
+var _sanvox_t: float = 0.0
+var _sanvox_next: float = 6.0
 var _ambient_t: float = 0.0            # ambient-combat timer: war rumbling around the map
 var _ambient_next: float = 3.0
 # panic driver: a warm car bolts down a street, crashes, and burns -- environmental
@@ -269,6 +272,10 @@ func _ready() -> void:
 	_sfx_flash = load("res://audio/sfx/flashbang.wav")
 	_sfx_expl = load("res://audio/sfx/dist_explosion.wav")
 	_sfx_yell = load("res://audio/sfx/civ_panic.wav") if ResourceLoader.exists("res://audio/sfx/civ_panic.wav") else null
+	for stem in ["ack_affirmative", "ack_inposition", "hold_fire", "need_backup", "open_fire", "order_go", "order_move_out", "order_push", "order_ready"]:
+		var pth: String = "res://audio/sfx/sanvox/" + stem + ".wav"
+		if ResourceLoader.exists(pth):
+			_sfx_sanvox.append(load(pth))
 	# Captures / dev hooks run the game directly; players get the startup menu (music1 is
 	# already playing) with a slowly-rotating feed behind it.
 	if (_shot_dir != "" or _map_dir != "") and OS.get_environment("SPECTRE_MENU") == "":
@@ -926,6 +933,29 @@ func _clear_panic() -> void:
 		_panic_fire = null
 
 
+## Sanitation vocals: every so often a living Sanitation unit mutters a reversed radio
+## callout from its position -- ISR-filtered + positional, so it's an eerie backwards
+## voice that gets louder as the apex faction closes on you.
+func _sanitation_vox(delta: float) -> void:
+	if _sfx_sanvox.is_empty() or sim == null or _menu_active:
+		return
+	_sanvox_t += delta
+	if _sanvox_t < _sanvox_next:
+		return
+	_sanvox_t = 0.0
+	_sanvox_next = _rng.randf_range(7.0, 16.0)
+	var pick: int = -1
+	var seen: int = 0
+	for i in sim.count():
+		if sim.alive[i] and sim.team[i] == WorldSim.SANITATION:
+			seen += 1
+			if _rng.randi() % seen == 0:      # reservoir pick, one pass
+				pick = i
+	if pick < 0:
+		return
+	_sfx_at(Vector3(sim.pos[pick].x, 1.0, sim.pos[pick].y), _sfx_sanvox[_rng.randi() % _sfx_sanvox.size()], -1.0)
+
+
 func _sfx_at(at: Vector3, stream: AudioStream, vol_db: float = 0.0) -> void:
 	if stream == null or _sfx_pool.is_empty():
 		return
@@ -1022,6 +1052,7 @@ func _process(delta: float) -> void:
 	_advance_loot(delta)
 	_ambient_combat(delta)
 	_advance_panic(delta)
+	_sanitation_vox(delta)
 	if _move_blip.has("pos"):
 		_move_blip["t"] += delta
 		if _move_blip["t"] > 1.2:

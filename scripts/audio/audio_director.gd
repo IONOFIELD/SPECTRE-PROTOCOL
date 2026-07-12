@@ -61,6 +61,10 @@ const BUS_COMMS := "Comms"
 const COMMS_DB := -0.75             # voice sits 0.75 dB under the rest of the net
 const COMMS_PITCH_CENTS := -120.0   # a touch of weight; the robot timbre is baked in
 
+## World SFX (gunfire, explosions, zeds) were barely audible. Raise the whole SFX bus,
+## and drop the Comms bus by the same amount so the tuned radio voice nets unchanged.
+const SFX_BOOST_DB := 4.0
+
 var _music_a: AudioStreamPlayer
 var _music_b: AudioStreamPlayer
 var _music_cur: AudioStreamPlayer
@@ -88,11 +92,12 @@ func _setup_buses() -> void:
 	_install_isr(BUS_ISR)
 	_ensure_bus(BUS_MUSIC, BUS_MASTER, MUSIC_BED_DB)        # clean, straight to Master
 	_ensure_bus(BUS_AMBIENCE, BUS_ISR, AMBIENCE_BED_DB)     # ambience is a "noise" -> ISR
-	_ensure_bus(BUS_SFX, BUS_ISR, 0.0)
+	_ensure_bus(BUS_SFX, BUS_ISR, SFX_BOOST_DB)   # gunfire/explosions/zeds run louder
 	_ensure_bus(BUS_UI, BUS_ISR, 0.0)
 	# Comms routes INTO SFX (higher index, so it's processed first): the voice still
 	# drives the music duck and rides the ISR filter, this bus just pitches + trims it.
-	_ensure_bus(BUS_COMMS, BUS_SFX, COMMS_DB)
+	# Subtract the SFX boost here so the tuned radio voice nets the same as before.
+	_ensure_bus(BUS_COMMS, BUS_SFX, COMMS_DB - SFX_BOOST_DB)
 	_install_comms_pitch(BUS_COMMS)
 	_install_ducking(BUS_MUSIC, BUS_SFX)
 	_install_ducking(BUS_AMBIENCE, BUS_SFX)
