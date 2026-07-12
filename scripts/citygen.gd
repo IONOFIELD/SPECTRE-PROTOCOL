@@ -35,6 +35,8 @@ const LANE: float = 64.0       # bridge deck width
 const FAR: float = 40.0        # depth of a bridge's far-end escape zone
 const GG_X: float = 90.0       # Golden Gate lane, off the west of the north edge
 const BAY_Z: float = 360.0     # Bay Bridge lane, off the east edge
+const BEACH_W: float = 15.0    # how far the sand reaches inland from the coastline
+const BEACH_SEA: float = 7.0   # ...and how far it laps out over the water
 
 @export var grid_n: int = 13     # ~806 m across (13 x 62 m); ~120 s to cross at 6.6 m/s
 @export var seed_value: int = 11
@@ -136,6 +138,9 @@ func generate(snap_res: Vector2i) -> void:
 	smi.position = Vector3((map_lo.x + map_hi.x) * 0.5, -1.5, (map_lo.y + map_hi.y) * 0.5)
 	smi.material_override = ThermalLib.get_material("water", _snap_res)
 	add_child(smi)
+
+	_lay_beach()     # sand ring at the waterline, so the coast/edges read
+	_lay_ships()     # transport ships at a pier off the SE bay, below the Bay Bridge
 
 	# --- bridge decks over the water
 	for b in bridges:
@@ -321,6 +326,56 @@ func _soma_building(rng: RandomNumberGenerator, c: Vector2, bw: float, bd: float
 		_add_box(Vector3(c.x, 0.0, c.y), Vector3(bw, h, bd), wall_mat)
 	var core: float = minf(bw, bd) * 0.82
 	buildings.append({"x": c.x - core * 0.5, "z": c.y - core * 0.5, "w": core, "d": core, "fl": fl})
+
+
+## A sand ring along the coastline: a beach band from BEACH_SEA out over the water to
+## BEACH_W inland, laid just under the ground so the city blocks cover the inland side
+## and the beach shows as a bright fringe at the waterline (per the reference FLIR).
+func _lay_beach() -> void:
+	if land_poly.is_empty():
+		return
+	var n: int = land_poly.size()
+	var ctr: Vector2 = Vector2.ZERO
+	for v in land_poly:
+		ctr += v
+	ctr /= float(n)
+	var st: SurfaceTool = SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	st.set_normal(Vector3.UP)
+	for e in n:
+		var a: Vector2 = land_poly[e]
+		var b: Vector2 = land_poly[(e + 1) % n]
+		var inward: Vector2 = (b - a).orthogonal().normalized()
+		if (ctr - (a + b) * 0.5).dot(inward) < 0.0:
+			inward = -inward
+		var ai: Vector2 = a + inward * BEACH_W
+		var bi: Vector2 = b + inward * BEACH_W
+		var ao: Vector2 = a - inward * BEACH_SEA
+		var bo: Vector2 = b - inward * BEACH_SEA
+		var p0: Vector3 = Vector3(ao.x, -0.04, ao.y)
+		var p1: Vector3 = Vector3(bo.x, -0.04, bo.y)
+		var p2: Vector3 = Vector3(bi.x, -0.04, bi.y)
+		var p3: Vector3 = Vector3(ai.x, -0.04, ai.y)
+		for v in [p0, p2, p1, p0, p3, p2]:
+			st.set_normal(Vector3.UP)
+			st.add_vertex(v)
+	var mi: MeshInstance3D = MeshInstance3D.new()
+	mi.mesh = st.commit()
+	mi.material_override = ThermalLib.get_material("beach", _snap_res)
+	add_child(mi)
+
+
+## Transport ships docked at a pier off the SE bay, below the Bay Bridge. Scenery on
+## the water (units can't reach it) -- big warm hulls + hot funnels on the cold bay.
+func _lay_ships() -> void:
+	var coast_x: float = 940.0
+	var pier_z: float = 600.0
+	_add_box(Vector3(coast_x + 45.0, -1.5, pier_z), Vector3(96.0, 0.5, 9.0), "road")   # the pier deck
+	for bz in [pier_z - 26.0, pier_z + 26.0, pier_z + 78.0]:
+		var sx: float = coast_x + 78.0
+		_add_box(Vector3(sx, -1.5, bz), Vector3(74.0, 5.0, 17.0), "ship")            # hull
+		_add_box(Vector3(sx - 22.0, -1.5, bz), Vector3(11.0, 11.0, 11.0), "parapet") # superstructure
+		_add_box(Vector3(sx + 12.0, -1.5, bz), Vector3(6.0, 9.0, 6.0), "hvac")       # warm funnel
 
 
 ## The San Francisco coastline, ~1,150 m across, clockwise from the Lands End tip.
