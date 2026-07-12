@@ -1,23 +1,12 @@
-# SPECTRE PROTOCOL // Godot 4 Render Stack
+# SPECTRE PROTOCOL
 
-Godot 4.3+ (uses static vars). Forward+ renderer. Open the folder, run `main.tscn`.
+A thermal-optic squad-tactical game. You command ground elements through an
+AC-130 gunship's ISR sensor feed — a FLIR downlink over a night-time San
+Francisco — while an infection, rival teams, and an apex "Sanitation" force
+work the same streets.
 
-Keys: `SPACE` channel change · `T` palette · `J` vertex snap · `C` cctv · `R` internal res · `G` freeze AGC · `O` auto orbit · drag orbit · shift-drag pan · wheel zoom
-
----
-
-## Read this first
-
-**None of this has been run against a real Godot editor.** I have no GPU and no
-Godot binary in my environment. What I *did* verify is the only thing I could:
-I re-implemented the GDScript rig line for line in another language and swept
-the full gait at four speeds. Max bone-length error is 0.0000000 m, and the hip
-(0.90) sits below the leg (0.455 + 0.455 = 0.910) so the knee never locks.
-
-Everything else is careful, unverified code. The list of things most likely to
-be wrong is at the bottom. Read it before you spend an hour debugging.
-
----
+Built in **Godot 4.7**. Open the folder in Godot and press Play (`main.tscn`
+is the entry scene). Runs on both the Forward+ and Mobile renderers.
 
 ## The one idea
 
@@ -25,136 +14,115 @@ be wrong is at the bottom. Read it before you spend an hour debugging.
 
 Every surface carries a temperature in Celsius. `thermal.gdshader` converts it
 with Stefan-Boltzmann, `((T + 273.15) / 300)^4`, and writes that scalar to
-ALBEDO. Nothing downstream knows about colour until `sensor.gdshader` picks a
-palette at the very last step.
+ALBEDO. Nothing downstream knows about colour until `sensor.gdshader` applies a
+palette at the very last step. Things fall out of the physics for free:
 
-Consequences that fall out for free rather than being authored:
-
-- **WHT HOT / BLK HOT is a sign flip.** Not three parallel colour tables.
-- **Roofs go black on their own.** `sky_loss` is how many degrees an up-facing
-  surface sheds to a cold night sky. One `wall` material at 16.5 C with
-  `sky_loss = 8.5` renders a 16.5 C wall *and* an 8 C roof. The physics does the
-  shading. One material, one draw call.
-- **Weapons read cold.** Gun metal has emissivity 0.30. It is the same
-  temperature as the air and it looks it, against a 33 C operator.
-- **Zombies are hard to see.** 17.5 C, near ambient. That is a mechanic, not a
+- **WHT HOT / BLK HOT is a sign flip**, not two parallel colour tables.
+- **Roofs cool on their own.** `sky_loss` is how many degrees an up-facing
+  surface sheds to the cold night sky, so one material renders a warm wall *and*
+  a cold roof from a single draw call.
+- **Weapons read cold.** Gun metal sits at emissivity 0.30 against a 33 °C
+  operator.
+- **The infected are hard to see.** Near-ambient body heat — a mechanic, not a
   palette choice.
-- **Your own explosions blind your optic.** Fire is 340 C, roughly 15x a warm
-  body in radiance. The AGC renormalises the frame to whatever is in it.
+- **Fire blinds the optic.** A flame is many times a warm body in radiance, and
+  the AGC re-exposes the whole frame around it.
 
 ## Pipeline
 
 ```
-  thermal.gdshader   temperature -> radiance, vertex snap, flat shading
-        |            (SubViewport 640x360, MSAA off, debanding off)
+  thermal.gdshader     temperature -> radiance, PSX vertex snap, flat shading
+        |              (HDR SubViewport, the detector array)
         v
-  sensor.gdshader    optics defocus -> bloom -> AGC -> gamma -> fixed pattern
-        |            noise -> column noise -> temporal noise -> vignette ->
-        |            dead pixels -> ordered dither -> 5-bit quantise -> palette
+  sensor.gdshader      defocus -> bloom -> AGC -> noise (fixed-pattern, column,
+        |              temporal) -> vignette -> dead pixels -> dither -> palette
         v
-  channel_cut.gdshader   flash -> snow -> roll -> tearing -> sync -> lock
-                         plus persistent interlace, head-switching, dropout
+  channel_cut.gdshader flash -> snow -> roll -> tearing -> sync -> lock, plus
+                       interlace, head-switching, dropout
 ```
 
-The split is not cosmetic. Sensor artifacts belong to the *optic*. Display
-artifacts belong to the *monitor*. If snow went into the radiance buffer,
-black-hot mode would invert your static and the AGC would try to expose for it.
+The split is deliberate: sensor artifacts belong to the *optic* and ride in the
+radiance buffer; display artifacts belong to the *monitor* and sit on top. The
+internal render target is **640×360** — a detector resolution, not an art
+choice. The AGC (`agc.gd`) is an auto-exposure that percentile-stretches each
+frame, so the picture hunts and settles the way a real sensor does.
 
-## Why 640x360
+## Playing
 
-A FLIR Boson is 640x512. The internal render target is not an art decision, it
-is the detector array. `R` cycles 320x180 / 640x360 / 960x540.
+A startup menu picks the run: **Tutorial**, or **Solo / 2 / 3 / 4 teams**.
+Behind the menu, a Sanitation force sweeps a live simulation of the city.
 
-## The channel cut, 520 ms
+You drive **one** element; the other teams are AI rivals fighting each other and
+you. The board is worked through the optic:
 
-| t | phase | |
-|---|---|---|
-| 0 - 26 ms | FLASH | switch bounce, 16 px tear |
-| 26 - 156 ms | SNOW | full-contrast static, roll, retrace bar. AGC frozen, HUD dropped |
-| 156 ms | SWAP | new camera goes live, hidden under the snow |
-| 156 - 239 ms | ACQUIRE | feed bleeds through, tearing decays |
-| 239 - 270 ms | SYNC | discrete vertical-hold jumps |
-| 270 - 520 ms | LOCK | `agc.knock_out_of_lock()` fires. The picture washes out and settles. |
+- **Scan** (`E`) — enemy teams sit unidentified until an ISR scan paints them
+  for a few seconds, on a cooldown.
+- **Parley** (`P`) — offer a truce to the team under the reticle. Truces are
+  mutual; a bracket colour tells you each team's stance (green yours, cyan
+  allied, amber open to a truce, red hostile).
+- **Loot** — hold on a building to clear it. It pays out an HDD drive, a field
+  hospital (heal), a police armory (armor or a damage buff), or a bio-lab
+  (damage resistance) — and can turn out to be a nest that mauls whoever
+  breached it. Dedicated HDD drives are also scattered to scoop on foot.
+- **AC-130** — a boresight fire mission unlocks after 100 infected kills; `V`
+  designates a target. Friendly fire is real.
+- **Sanitation** — draw enough heat and the apex force deploys. Once it's loose,
+  extraction closes and only a bridge (or wiping the force) gets you out.
 
-That last beat is what sells it. The camera does not arrive already exposed.
+**Win** by eliminating every rival team, extracting on an evac LZ, or escaping
+across a bridge. **Lose** if your element is wiped — or if you hoard 50 HDDs and
+trip the nuke that levels everything. HDDs recovered multiply the final score.
+
+Each unit type flies its own marker over the bracket — combat, commander, medic,
+sniper, recon, EOD, and the Sanitation trefoil.
+
+### Controls
+
+```
+LMB pick    RMB move    double-click send to reticle    hold-on-building loot
+TAB / 1-4 element    Q / TYP cycle unit type    F weapons free    V AC-130 strike
+E scan    P parley    SPACE AC-130 / ground view    WASD pan    wheel zoom
+T palette    C monitor snow    G freeze AGC    O auto-orbit    H toggle help
+```
+
+Touch is supported (tap select, double-tap move, drag pan, pinch zoom, and an
+on-screen control bar), so the same build runs on desktop and mobile.
+
+## The simulation
+
+`scripts/sim/world_sim.gd` is a struct-of-arrays sim (RefCounted, no nodes):
+six factions on an irregular SF coastline with bridges, line-of-sight, steering,
+axis-separated collision, medics, an EOD area weapon, and the Sanitation force's
+flash-evade. It runs headless and is covered by `scripts/sim/sim_test.gd`:
+
+```
+Godot_v4.7-stable_win64_console.exe --headless --path . --script res://scripts/sim/sim_test.gd
+```
+
+## Audio
+
+The whole mix is built in code by the `Audio` autoload
+(`scripts/audio/audio_director.gd`) — no bus-layout resource to desync. The bus
+graph is `Master -> ISR -> {Music, Ambience, SFX, UI, Comms}`. The **ISR** bus
+is the gunship downlink: a radio band-pass, lo-fi crush, and AGC that every
+diegetic sound rides. Squad radio calls run through a baked cyborg voice on the
+**Comms** bus. World SFX are positional (an `AudioStreamPlayer3D` pool with a
+listener on the camera).
 
 ## Files
 
 | file | what |
 |---|---|
-| `shaders/thermal.gdshader` | spatial. temperature to radiance. vertex snapping. |
-| `shaders/sensor.gdshader` | canvas. the detector. on the SubViewportContainer. |
-| `shaders/channel_cut.gdshader` | canvas. the monitor. full-screen ColorRect. |
-| `scripts/thermal_lib.gd` | the temperature table. 24 materials. |
-| `scripts/trooper.gd` | 12-limb rig, two-bone IK, gait phase from distance. |
-| `scripts/citygen.gd` | low-poly city. box + parapet + HVAC + tank. |
-| `scripts/agc.gd` | percentile stretch from a downscaled viewport read. |
-| `scripts/main.gd` | builds the whole tree in code. no .tscn to desync. |
-| `scripts/audio/audio_director.gd` | autoload `Audio`. bus graph, ducking, master limiter, music bed. |
-| `audio/music/music1.wav` | the bed. a seamless loop, mastered hot; level set on the bus. |
+| `shaders/thermal.gdshader` | temperature → radiance, vertex snap, flat shading, fire writhe |
+| `shaders/sensor.gdshader` | the detector: AGC, bloom, noise, dither, palette |
+| `shaders/channel_cut.gdshader` | the monitor: snow, roll, tearing, sync |
+| `scripts/thermal_lib.gd` | the material temperature table |
+| `scripts/agc.gd` | percentile-stretch auto-exposure |
+| `scripts/citygen.gd` | the procedural San Francisco (coast, bridges, SoMa, Market St) |
+| `scripts/sim/world_sim.gd` | the struct-of-arrays combat sim |
+| `scripts/sim/mission.gd` | win / lose logic |
+| `scripts/main.gd` | builds the tree in code, drives render / input / HUD / FX |
+| `scripts/audio/audio_director.gd` | the `Audio` autoload: buses, ISR filter, comms voice |
 
-## Audio
-
-Built after r8. The whole mix comes up in code in `scripts/audio/audio_director.gd`
-(autoload `Audio`), for the same reason the render tree does — nothing to desync.
-Bus graph is `Master -> {Music, SFX, UI}`, with a compressor on `Music`
-sidechained to `SFX` so world sound ducks the bed, and a hard limiter on `Master`
-because every asset here is mastered hot (`music1` peaks at 0 dBFS). The bed loops,
-forced in code rather than trusted to the WAV importer. Drop new sounds in
-`audio/sfx` / `audio/ui`, trigger with `Audio.sfx(...)` / `Audio.ui(...)`. Full
-notes, the tuning knobs, and the obvious wiring hooks (the channel cut is the
-first SFX cue that should exist) are in **`audio/README.md`**.
-
-## Fixed in r2
-
-GDScript's analyzer cannot infer a type from a conditional expression, and it
-reports the failure as a **parse error**, not a warning. Every `var x := A if
-cond else B` in the pack was one. Same for `var m := SOME_DICT[key]`, where the
-index yields a Variant. Both patterns are now explicitly typed throughout:
-
-    var zone := 0 if dc < 1.6 else 1        # parse error
-    var zone: int = 0 if dc < 1.6 else 1    # fine
-
-`citygen.gd:50` was simply the first one the loader reached, alphabetically.
-`trooper.gd`, `main.gd`, and `thermal_lib.gd` had the same bug waiting.
-
-## Most likely to be broken
-
-Ranked by how much of your evening it will cost.
-
-1. **AGC read.** `agc.gd` calls `vp.get_texture().get_image()`, which forces a
-   GPU to CPU sync. It runs every 4th frame on an 80x45 downscale. If it stalls,
-   move the sampling to a second tiny SubViewport, or swap the whole thing for
-   `CameraAttributesPractical.auto_exposure_enabled` and drive `agc_lo/agc_hi`
-   from `Environment` instead.
-
-2. **Radiance range.** I default `radiance_scale` to 1/16 so everything stays in
-   `[0, 1]` and the viewport does not need HDR. That costs precision at 8 bits.
-   If you see banding in the roofs, set `SubViewport.use_hdr_2d = true` and
-   `radiance_scale = 1.0`, then re-tune `agc_lo/agc_hi` (they will be 16x larger).
-
-3. **`POSITION` in `vertex()`.** Writing clip-space POSITION is how the vertex
-   snap works. If Godot fights you over `PROJECTION_MATRIX * MODELVIEW_MATRIX`,
-   the fallback is `render_mode skip_vertex_transform` and doing the whole
-   transform by hand.
-
-4. **`varying flat vec3`.** Required for the flat-shaded facets. If the compiler
-   rejects it, compute the world normal per-fragment from `dFdx/dFdy` of the
-   world position instead.
-
-5. **`hint_screen_texture` in `channel_cut.gdshader`.** The ColorRect must draw
-   *after* the SubViewportContainer. It is on a `CanvasLayer` above it, which
-   should be enough, but check.
-
-6. **Trooper yaw.** Godot models face -Z, so `rotation.y = atan2(-dx, -dz)`. If
-   the squad walks sideways, this is the line.
-
-## Not ported from v0.20
-
-Windows on the buildings (needs inset quads, not a box face). Vehicles. Fires
-and explosion splats. Fog of war. Every HUD overlay. The whole sim.
-
-The sim is roughly 2,800 lines of JavaScript with no physics engine, only AABBs,
-arrays, and steering. It does not port, it gets rewritten. Estimate three to
-five weekends. The look pipeline in front of you is the weekend that matters,
-because it is the part that was expensive to get right the first time.
+`main.tscn` is the entry scene; the render tree, HUD, and audio graph are all
+assembled in code so there is nothing in a scene file to fall out of sync.
