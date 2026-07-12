@@ -57,6 +57,10 @@ const SURVIVOR_PER_HOLDOUT: int = 3
 const GAUNTLET_PER_BRIDGE: int = 44   # infected choking each bridge deck
 const ELEMENTS: int = 4                 # max player teams (touch bar 1-4)
 var _team_count: int = 4                 # chosen at the startup menu (solo / 2 / 3 / 4)
+# Your squad's loadout, chosen at the menu -- how many of each unit type deploy (element 0).
+var _loadout: Dictionary = {&"cdr": 1, &"cbt": 2, &"med": 1, &"snp": 1, &"rec": 1, &"eod": 1}
+var _pending_count: int = 1              # team count picked, awaiting the loadout confirm
+const LOADOUT_MAX: int = 4               # cap per unit type
 # Parley: rival teams (SQUAD element != 0) are hostile by default, but some are OPEN to a
 # truce. A truce is MUTUAL -- you offer (PARLEY) and they're open -> allied (both hold fire).
 var _rival_open: Dictionary = {}         # rival element -> true if it would accept a truce
@@ -67,6 +71,9 @@ var _menu_layer: CanvasLayer             # the startup menu overlay, freed on st
 var _menu_sim: bool = true               # menu backdrop: a heavy Sanitation force sweeping the city
 var _menu_title: Label                   # the SPECTRE PROTOCOL title -- scanner rays fire from it
 var _menu_fade: ColorRect                # black wash over the feed for the sim-reset transition
+var _menu_teams: Control                 # the team-count buttons
+var _menu_loadout: Control               # the squad-loadout steppers (shown after a team pick)
+var _loadout_lbls: Dictionary = {}       # unit kind -> its count Label in the loadout panel
 var _menu_ping_age: float = 999.0        # seconds since the last scanner ping (>= show = idle)
 var _menu_ping_next: float = 1.2         # seconds until the next ping (irregular)
 var _menu_resetting: bool = false        # a fade-out / respawn / fade-in cycle is running
@@ -215,6 +222,7 @@ var mission: Mission
 # heat (kills). Once deployed, the only way out is a bridge or wiping the whole force.
 var _sani_deployed: bool = false
 var _sani_music_on: bool = false       # the wipe-force theme layer is live (asset present)
+var _deploy_anim: Dictionary = {}      # {body, rotor, start, rest, t, dur, heli}: your insertion flying in
 var _nuke_fired: bool = false          # hoarding 50 HDDs trips a nuke -- total loss
 const NUKE_HDD: int = 50               # drives that draw the strike that ends everything
 const SANI_DEPLOY_KILLS: int = 45      # your kill count that summons the wipe force
@@ -681,9 +689,11 @@ func _spawn() -> void:
 		if not Geometry2D.is_point_in_polygon(base, city.land_poly):
 			base = Vector2(300.0, 470.0)
 		_deploy_vehicle(base, e)
-		for j in ELEMENT_ROSTER.size():
+		# YOUR squad (element 0) deploys the loadout you chose; rival teams use the default roster.
+		var roster: Array = _loadout_roster() if e == 0 else ELEMENT_ROSTER
+		for j in roster.size():
 			var p: Vector2 = base + Vector2(float(j % 3) * 1.4, float(j / 3) * 1.4)
-			sim.spawn(p, ELEMENT_ROSTER[j], WorldSim.SQUAD, e)
+			sim.spawn(p, roster[j], WorldSim.SQUAD, e)
 	_populate_world()
 	# win by escaping a bridge, extracting via an evac LZ, or eliminating the rival teams.
 	mission = Mission.new()
@@ -729,11 +739,11 @@ func _populate_world() -> void:
 			sim.spawn_line(&"zed", WorldSim.INFECTED, b, GAUNTLET_PER_BRIDGE, rng)   # the choked deck
 
 
-## The insertion vehicle marking a team's deployment edge -- a helo (with rotor), a
-## truck, or a boat, cycled per team. Scenery, parented to the city so a rebuild frees
-## it. A warm hull that reads on FLIR beside the freshly-dropped squad.
+## The insertion vehicle at a team's deployment edge -- a helo (with rotor), a truck, or
+## a boat. YOUR team (element 0) gets a random one that flies/drives/sails IN from off-map
+## (see _advance_deploy); rival teams cycle a static one. Parented to the city.
 func _deploy_vehicle(base: Vector2, e: int) -> void:
-	var kind: int = e % 3
+	var kind: int = (_rng.randi() % 3) if e == 0 else (e % 3)
 	var bm: BoxMesh = BoxMesh.new()
 	if kind == 0:
 		bm.size = Vector3(3.0, 2.4, 8.0)      # helo
@@ -743,17 +753,46 @@ func _deploy_vehicle(base: Vector2, e: int) -> void:
 		bm.size = Vector3(4.0, 2.2, 10.0)     # boat
 	var body: MeshInstance3D = MeshInstance3D.new()
 	body.mesh = bm
-	body.position = Vector3(base.x - 5.0, bm.size.y * 0.5, base.y - 5.0)
+	var rest: Vector3 = Vector3(base.x - 5.0, bm.size.y * 0.5, base.y - 5.0)
+	body.position = rest
 	body.material_override = ThermalLib.get_material("hood_warm", snap_res)
 	city.add_child(body)
+	var rotor: MeshInstance3D = null
 	if kind == 0:
 		var rm: BoxMesh = BoxMesh.new()
 		rm.size = Vector3(14.0, 0.2, 0.7)
-		var rotor: MeshInstance3D = MeshInstance3D.new()
+		rotor = MeshInstance3D.new()
 		rotor.mesh = rm
-		rotor.position = Vector3(base.x - 5.0, 3.1, base.y - 5.0)
+		rotor.position = Vector3(rest.x, 3.1, rest.z)
 		rotor.material_override = ThermalLib.get_material("parapet", snap_res)
 		city.add_child(rotor)
+	if e == 0 and city != null:
+		# fly YOUR insertion in from off-map: a helo drops from altitude, a truck/boat drives in.
+		var outward: Vector2 = (base - city.land.get_center()).normalized()
+		var start: Vector3 = rest + Vector3(outward.x, 0.0, outward.y) * 70.0
+		if kind == 0:
+			start.y = 46.0
+		body.position = start
+		if rotor != null:
+			rotor.position = Vector3(start.x, start.y + 0.7, start.z)
+		_deploy_anim = {"body": body, "rotor": rotor, "start": start, "rest": rest, "t": 0.0, "dur": 2.8, "heli": kind == 0}
+
+
+## Ease the player's insertion vehicle from off-map down to its drop point over the anim.
+func _advance_deploy(delta: float) -> void:
+	if _deploy_anim.is_empty():
+		return
+	_deploy_anim["t"] += delta
+	var k: float = clampf(_deploy_anim["t"] / _deploy_anim["dur"], 0.0, 1.0)
+	var e: float = 1.0 - pow(1.0 - k, 3.0)                     # ease-out
+	var body: MeshInstance3D = _deploy_anim["body"]
+	if is_instance_valid(body):
+		body.position = (_deploy_anim["start"] as Vector3).lerp(_deploy_anim["rest"] as Vector3, e)
+		var rotor: MeshInstance3D = _deploy_anim["rotor"]
+		if rotor != null and is_instance_valid(rotor):
+			rotor.position = body.position + Vector3(0.0, 0.7, 0.0)   # ride above the hull
+	if k >= 1.0:
+		_deploy_anim = {}
 
 
 ## Evac-helo LZs: one for solo/2/3 teams, two for 4. Marked on the HUD; reaching one
@@ -1347,6 +1386,7 @@ func _process(delta: float) -> void:
 	_age_flashes(delta)
 	_age_flash3d(delta)
 	_advance_loot(delta)
+	_advance_deploy(delta)
 	_collect_hdd_pickups()
 	if _flame_sfx_cd > 0.0:
 		_flame_sfx_cd = maxf(0.0, _flame_sfx_cd - delta)
@@ -1578,6 +1618,12 @@ const SEL_COL: Color = Color(0.62, 0.88, 0.70, 0.85)
 func _update_menu(delta: float) -> void:
 	if sim == null:
 		return
+	# top-down look over the whole map for the menu backdrop (slowly turning with orbit_auto)
+	cam_el = 1.45
+	cam_dist = 1600.0
+	if city != null:
+		cam_tx = city.land.get_center().x
+		cam_tz = city.land.get_center().y
 	_menu_ping_age += delta
 	if _menu_ping_age >= _menu_ping_next:
 		_menu_ping_age = 0.0
@@ -1646,7 +1692,9 @@ func _draw_menu_scan() -> void:
 		var tp: Vector2 = _screen_point(w)
 		sel_layer.draw_line(origin, origin.lerp(tp, reach), ray, 1.0)
 		if reach >= 1.0:
-			_corner_box(tp, 5.0, green)
+			# the Sanitation force keeps its red brackets on every ping; the rest green
+			var bcol: Color = TAG_ENEMY if sim.team[i] == WorldSim.SANITATION else green
+			_corner_box(tp, 5.0, Color(bcol.r, bcol.g, bcol.b, a))
 		drawn += 1
 
 
@@ -2948,16 +2996,114 @@ func _build_menu() -> void:
 	var gap: Control = Control.new()
 	gap.custom_minimum_size = Vector2(0, 12)
 	box.add_child(gap)
+	# team selection -- picking a count (not Tutorial) opens the loadout screen
+	_menu_teams = VBoxContainer.new()
+	(_menu_teams as VBoxContainer).add_theme_constant_override("separation", 9)
+	(_menu_teams as VBoxContainer).alignment = BoxContainer.ALIGNMENT_CENTER
+	box.add_child(_menu_teams)
 	var first: Button = null
 	for o in [["TUTORIAL", -1], ["SOLO", 1], ["2 TEAMS", 2], ["3 TEAMS", 3], ["4 TEAMS", 4]]:
 		var b: Button = _menu_button(String(o[0]))
-		b.pressed.connect(_start_game.bind(int(o[1])))
-		box.add_child(b)
+		var cnt: int = int(o[1])
+		if cnt < 0:
+			b.pressed.connect(_start_game.bind(cnt))   # tutorial: the default squad, straight in
+		else:
+			b.pressed.connect(_open_loadout.bind(cnt))
+		_menu_teams.add_child(b)
 		if first == null:
 			first = b
+	# loadout panel -- hidden until a team count is chosen
+	_menu_loadout = _build_loadout_panel()
+	box.add_child(_menu_loadout)
+	_menu_loadout.visible = false
 	add_child(_menu_layer)
 	if first != null:
 		first.grab_focus()   # Tutorial default-highlighted
+
+
+## The squad-loadout panel: one row per unit type with -/+ steppers, then DEPLOY / BACK.
+func _build_loadout_panel() -> Control:
+	var v: VBoxContainer = VBoxContainer.new()
+	v.add_theme_constant_override("separation", 5)
+	v.alignment = BoxContainer.ALIGNMENT_CENTER
+	v.add_child(_menu_label("SQUAD LOADOUT", 18, HUD_COL))
+	var g0: Control = Control.new()
+	g0.custom_minimum_size = Vector2(0, 6)
+	v.add_child(g0)
+	_loadout_lbls = {}
+	var names: Dictionary = {&"cdr": "COMMANDER", &"cbt": "COMBAT", &"med": "MEDIC", &"snp": "SNIPER", &"rec": "RECON", &"eod": "EOD"}
+	for k in ELEMENT_ROSTER:
+		var row: HBoxContainer = HBoxContainer.new()
+		row.add_theme_constant_override("separation", 8)
+		var nm: Label = _menu_label(names[k], 15, HUD_COL)
+		nm.custom_minimum_size = Vector2(150, 0)
+		nm.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+		row.add_child(nm)
+		var minus: Button = _menu_button("-")
+		minus.custom_minimum_size = Vector2(42, 34)
+		minus.pressed.connect(_adjust_loadout.bind(k, -1))
+		row.add_child(minus)
+		var cl: Label = _menu_label(str(_loadout[k]), 17, HUD_COL)
+		cl.custom_minimum_size = Vector2(34, 0)
+		row.add_child(cl)
+		_loadout_lbls[k] = cl
+		var plus: Button = _menu_button("+")
+		plus.custom_minimum_size = Vector2(42, 34)
+		plus.pressed.connect(_adjust_loadout.bind(k, 1))
+		row.add_child(plus)
+		v.add_child(row)
+	var g1: Control = Control.new()
+	g1.custom_minimum_size = Vector2(0, 8)
+	v.add_child(g1)
+	var deploy: Button = _menu_button("DEPLOY")
+	deploy.pressed.connect(_confirm_loadout)
+	v.add_child(deploy)
+	var back: Button = _menu_button("BACK")
+	back.pressed.connect(_close_loadout)
+	v.add_child(back)
+	return v
+
+
+func _open_loadout(count: int) -> void:
+	_pending_count = count
+	if _menu_teams != null:
+		_menu_teams.visible = false
+	if _menu_loadout != null:
+		_menu_loadout.visible = true
+	_refresh_loadout_labels()
+
+
+func _close_loadout() -> void:
+	if _menu_loadout != null:
+		_menu_loadout.visible = false
+	if _menu_teams != null:
+		_menu_teams.visible = true
+
+
+func _adjust_loadout(k: StringName, d: int) -> void:
+	_loadout[k] = clampi(int(_loadout[k]) + d, 0, LOADOUT_MAX)
+	_refresh_loadout_labels()
+
+
+func _refresh_loadout_labels() -> void:
+	for k in _loadout_lbls:
+		(_loadout_lbls[k] as Label).text = str(_loadout[k])
+
+
+func _confirm_loadout() -> void:
+	_start_game(_pending_count)
+
+
+## Expand the loadout dict into a spawn roster (element 0). Never empty -- a lone rifleman
+## at minimum, and a commander is folded in if you dropped every leader (the scan needs one).
+func _loadout_roster() -> Array:
+	var r: Array = []
+	for k in ELEMENT_ROSTER:
+		for _n in int(_loadout.get(k, 0)):
+			r.append(k)
+	if r.is_empty():
+		r.append(&"cbt")
+	return r
 
 
 func _menu_label(text: String, size: int, col: Color) -> Label:
