@@ -42,17 +42,17 @@ const ZOMBIES: Array = [
 	"res://models/characters/zombie_3.glb",
 ]
 const ZOMBIE_SCALE: float = 0.32
-const POP_INFECTED: int = 90    # ambient horde, spread over the ~806 m city
-const POP_CIV: int = 55         # the crowd -- warm panicked bodies to read among
+const POP_INFECTED: int = 99    # ambient horde, spread over the ~806 m city (+10%)
+const POP_CIV: int = 61         # the crowd -- warm panicked bodies to read among (+10%)
 const POP_SAN: int = 6          # the wipe force: rare, deadly, cool signatures (v0.19 elite = 6)
 # The wider ecology -- cheap now that units are shapes. Counts span the whole city.
-const POP_RUNNERS: int = 30     # fast, fragile infected mixed through the horde
-const POP_BRUTES: int = 13      # slow, tanky infected
+const POP_RUNNERS: int = 33     # fast, fragile infected mixed through the horde
+const POP_BRUTES: int = 14      # slow, tanky infected
 const ZED_HORDES: int = 3       # dense zombie clusters -- overwhelming if you wander in
-const ZED_PER_HORDE: int = 32   # a wall of bodies packed into a tight radius
-const BANDIT_CREWS: int = 5     # roaming armed crews...
+const ZED_PER_HORDE: int = 35   # a wall of bodies packed into a tight radius
+const BANDIT_CREWS: int = 6     # roaming armed crews... (+10%)
 const BANDIT_PER_CREW: int = 5
-const SURVIVOR_HOLDOUTS: int = 6   # dug-in armed holdouts...
+const SURVIVOR_HOLDOUTS: int = 7   # dug-in armed holdouts... (+10%)
 const SURVIVOR_PER_HOLDOUT: int = 3
 const GAUNTLET_PER_BRIDGE: int = 44   # infected choking each bridge deck
 const ELEMENTS: int = 4                 # max player teams (touch bar 1-4)
@@ -60,6 +60,16 @@ var _team_count: int = 4                 # chosen at the startup menu (solo / 2 
 var _tutorial: bool = false              # tutorial run: calmer map, control hints
 var _menu_active: bool = true            # true until the player starts from the menu
 var _menu_layer: CanvasLayer             # the startup menu overlay, freed on start
+# ISR scan: enemy teams (sanitation + rival teams) stay unidentified until a scan pulse
+# paints them for SCAN_REVEAL s; SCAN_COOLDOWN s between scans.
+var _scan_t: float = 999.0               # seconds since the last scan (>= REVEAL = hidden)
+const SCAN_REVEAL: float = 15.0
+const SCAN_COOLDOWN: float = 25.0
+
+
+## Is enemy unit i currently painted by a scan? (Sanitation / rival teams hide otherwise.)
+func _identified(_i: int) -> bool:
+	return _scan_t < SCAN_REVEAL
 # Insertion edges, spread around the peninsula so no two teams deploy close. Order is
 # W, E, N, S so 2 teams land opposite (W+E), 3 add N, 4 add S.
 const EDGE_BASES: Array = [Vector2(205, 615), Vector2(885, 480), Vector2(500, 215), Vector2(520, 945)]
@@ -79,7 +89,7 @@ const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 const TAG_FRIEND: Color = Color(0.45, 0.95, 0.70, 0.95)
 const TAG_ENEMY: Color = Color(1.00, 0.30, 0.30, 0.95)
 const TAG_VEHICLE: Color = Color(0.96, 0.90, 0.32, 0.95)
-const TAG_ZED: Color = Color(1.00, 0.38, 0.38, 0.90)
+const TAG_ZED: Color = Color(0.72, 0.42, 0.95, 0.90)   # the horde, purple
 const TEAM_CARET_ZOOM: float = 780.0   # above this altitude, one team caret not per-unit boxes
 const TAG_ZOOM_MAX: float = 900.0      # target tags only when zoomed in like the real optic
 
@@ -1309,29 +1319,37 @@ func _draw_escapes() -> void:
 
 ## A tiny allegiance pip over every living unit -- the v0.19 coloured-unit read, so
 ## warm human shapes (squad / bandit / survivor) don't all look alike on FLIR.
-## Distant contacts as coloured dots. The squad gets boxes + carets instead (below),
-## so it's skipped here. Zombies read as red dots per the brief.
+## Contacts as coloured pips: purple horde, red loose combatants, white civilians --
+## all always visible. The squad gets green-bracket boxes (below). Sanitation is the
+## apex: a black signature with red brackets, revealed only when identified by a scan.
 func _draw_allegiance() -> void:
 	for i in sim.count():
 		if not sim.alive[i] or sim.team[i] == WorldSim.SQUAD:
 			continue
-		var col: Color = _alleg_color(sim.team[i])
-		if col.a <= 0.0:
-			continue
 		var w: Vector3 = Vector3(sim.pos[i].x, 0.9, sim.pos[i].y)
 		if cam.is_position_behind(w):
 			continue
-		sel_layer.draw_circle(_screen_point(w), 2.5, col)
+		var p: Vector2 = _screen_point(w)
+		var t: int = sim.team[i]
+		if t == WorldSim.SANITATION:
+			if not _identified(i):
+				continue                                                    # hidden until a scan finds them
+			sel_layer.draw_circle(p, 2.7, Color(0.05, 0.05, 0.06, 0.95))   # black hull
+			_corner_box(p, 5.5, TAG_ENEMY)                                 # red brackets
+		else:
+			var col: Color = _alleg_color(t)
+			if col.a > 0.0:
+				sel_layer.draw_circle(p, 2.5, col)
 
 
 func _alleg_color(t: int) -> Color:
 	match t:
-		WorldSim.SQUAD: return Color(0.45, 0.95, 0.70, 0.90)      # friendly green
-		WorldSim.SANITATION: return Color(1.00, 0.28, 0.28, 0.95) # apex threat, hard red
-		WorldSim.BANDIT: return Color(1.00, 0.55, 0.20, 0.90)     # hostile, orange
-		WorldSim.SURVIVOR: return Color(1.00, 0.85, 0.35, 0.90)   # wary, amber
-		WorldSim.INFECTED: return Color(1.00, 0.32, 0.32, 0.80)   # the horde, red dots
-		WorldSim.CIVILIAN: return Color(0.85, 0.88, 0.95, 0.55)   # neutral, pale
+		WorldSim.SQUAD: return Color(0.90, 0.95, 1.00, 0.90)      # my units, white (green brackets)
+		WorldSim.SANITATION: return Color(0.05, 0.05, 0.06, 0.95) # black hull, red brackets
+		WorldSim.BANDIT: return Color(1.00, 0.30, 0.30, 0.90)     # loose combatant, red
+		WorldSim.SURVIVOR: return Color(1.00, 0.30, 0.30, 0.90)   # loose combatant, red
+		WorldSim.INFECTED: return Color(0.72, 0.42, 0.95, 0.80)   # the horde, purple
+		WorldSim.CIVILIAN: return Color(0.92, 0.94, 1.00, 0.60)   # civilian, white
 	return Color(0, 0, 0, 0)
 
 
@@ -1407,8 +1425,11 @@ func _draw_tags(font: Font) -> void:
 		elif t == WorldSim.INFECTED:
 			_caret(p - Vector2(0.0, 9.0), 5.0, TAG_ZED, true)
 			sel_layer.draw_string(font, p + Vector2(7.0, -3.0), "%dm" % int(sim.pos[i].distance_to(me)), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, TAG_ZED)
+		elif t == WorldSim.SANITATION:
+			if _identified(i):
+				_corner_box(p, 7.0, TAG_ENEMY)   # apex -- only once scanned
 		else:
-			_corner_box(p, 7.0, TAG_ENEMY)   # sanitation / bandit / survivor
+			_corner_box(p, 7.0, TAG_ENEMY)       # bandit / survivor, loose combatants
 		drawn += 1
 
 

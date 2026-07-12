@@ -142,9 +142,9 @@ func generate(snap_res: Vector2i) -> void:
 	_lay_beach()     # sand ring at the waterline, so the coast/edges read
 	_lay_ships()     # transport ships at a pier off the SE bay, below the Bay Bridge
 
-	# --- bridge decks over the water
+	# --- bridge decks over the water (a mid-tone between water and land, so they read)
 	for b in bridges:
-		_tile(b, "road")
+		_tile(b, "bridge")
 	_bridge_towers(bridges[0], true)     # Golden Gate runs north -- towers span x
 	_bridge_towers(bridges[1], false)    # Bay Bridge runs east -- towers span z
 
@@ -488,8 +488,8 @@ func _block(rng: RandomNumberGenerator, bx: float, bz: float, dc: float) -> void
 		zone = 1
 
 	var r0: float = rng.randf()
-	var park_p: float = 0.12 if zone == 2 else 0.04    # denser city -- fewer empty greens
-	var lot_p: float = 0.10 if zone == 2 else 0.06     # ...and fewer surface lots -> more houses
+	var park_p: float = 0.08 if zone == 2 else 0.03    # denser still (~15% more built parcels)
+	var lot_p: float = 0.07 if zone == 2 else 0.04
 
 	if r0 < park_p:
 		# a path bisects the green. Subtract it; do not lay it on top.

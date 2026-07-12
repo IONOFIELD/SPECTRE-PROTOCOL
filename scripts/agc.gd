@@ -46,8 +46,11 @@ func update(vp: SubViewport) -> void:
 	_vals.sort()
 
 	var n: int = _vals.size()
-	var t_lo: float = _vals[int(float(n) * 0.02)]
-	var t_hi: float = _vals[int(float(n) * 0.985)]
+	# Low black point + a high white point: the cold city (the bulk of the frame) lands
+	# in the dark-grey lower range, and only the hottest tail -- fire, warm bodies -- burns
+	# to white. That's the "ground stays dark grey, ocean black" look.
+	var t_lo: float = _vals[int(float(n) * 0.01)]
+	var t_hi: float = _vals[int(float(n) * 0.995)]
 	var t_med: float = _vals[n / 2]
 	if t_hi <= t_lo:
 		t_hi = t_lo + 1e-3

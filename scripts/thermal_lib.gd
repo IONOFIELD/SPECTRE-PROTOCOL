@@ -21,17 +21,24 @@ const RADIANCE_SCALE: float = 1.0     # requires SubViewport.use_hdr_2d = true
 const SUN_DIR: Vector3 = Vector3(0.855, 0.300, -0.425)   # where the sun set
 
 const MAT: Dictionary = {
-	"water":     {"t": 14.0, "sky": 15.0, "e": 0.96, "solar": 0.5, "d": 6, "dt": 0.95, "de": 0.02},
-	"beach":     {"t": 18.5, "sky": 4.0, "e": 0.94, "solar": 3.2, "d": 6, "dt": 1.6, "de": 0.03},   # sand at the waterline
-	"ship":      {"t": 15.5, "sky": 6.5, "e": 0.92, "solar": 4.0, "d": 3, "dt": 1.4, "de": 0.03},   # steel hull
-	"ground":    {"t": 19.0, "sky": 3.0, "e": 0.94, "solar": 3.2, "d": 2, "dt": 2.0, "de": 0.03},
-	"park":      {"t": 12.5, "sky": 11.0, "e": 0.97, "solar": 1.0, "d": 2, "dt": 2.6, "de": 0.02, "ms": Vector2(3.0, 3.0)},
-	"road":      {"t": 21.0, "sky": 2.5, "e": 0.93, "solar": 4.0, "d": 3, "dt": 2.0, "de": 0.05, "ms": Vector2(4.0, 2.586)},
-	"sidewalk":  {"t": 17.5, "sky": 3.5, "e": 0.94, "solar": 3.0, "d": 6, "dt": 1.3, "de": 0.02, "ms": Vector2(1.8, 1.8)},
-	"grass":     {"t": 12.0, "sky": 4.5, "e": 0.97, "solar": 0.8, "d": 7, "dt": 2.4, "de": 0.02, "ms": Vector2(1.5, 1.5)},
-	"lot":       {"t": 20.0, "sky": 2.8, "e": 0.93, "solar": 3.6, "d": 8, "dt": 1.8, "de": 0.04},
-	"wall":      {"t": 16.5, "sky": 8.5, "e": 0.92, "solar": 5.5, "d": 1, "dt": 2.0, "de": 0.04, "ms": Vector2(2.4, 1.2)},
-	"brick":     {"t": 16.5, "sky": 8.5, "e": 0.94, "solar": 5.5, "d": 1, "dt": 2.0, "de": 0.04, "ms": Vector2(2.0, 2.0)},
+	# Cold city at night: the whole map sits in a tight DARK-GREY band so warm bodies +
+	# fire are what pop. Ocean is the coldest (reads black on WHT HOT / white on BLK HOT);
+	# roads sit a touch above the ground so the grid still reads; bridges a mid-tone.
+	"water":     {"t": 9.0, "sky": 16.0, "e": 0.96, "solar": 0.3, "d": 6, "dt": 0.95, "de": 0.02},
+	"beach":     {"t": 15.0, "sky": 5.0, "e": 0.94, "solar": 2.6, "d": 6, "dt": 1.5, "de": 0.03},   # sand at the waterline
+	"ship":      {"t": 15.0, "sky": 6.5, "e": 0.92, "solar": 3.2, "d": 3, "dt": 1.4, "de": 0.03},   # steel hull
+	"bridge":    {"t": 12.5, "sky": 7.0, "e": 0.94, "solar": 2.4, "d": 3, "dt": 1.4, "de": 0.03},   # deck: between water + land
+	"ground":    {"t": 14.5, "sky": 3.0, "e": 0.94, "solar": 2.4, "d": 2, "dt": 1.8, "de": 0.03},
+	"park":      {"t": 11.5, "sky": 9.0, "e": 0.97, "solar": 1.0, "d": 2, "dt": 2.2, "de": 0.02, "ms": Vector2(3.0, 3.0)},
+	"road":      {"t": 16.5, "sky": 2.5, "e": 0.93, "solar": 2.8, "d": 3, "dt": 1.8, "de": 0.05, "ms": Vector2(4.0, 2.586)},
+	"sidewalk":  {"t": 13.5, "sky": 3.5, "e": 0.94, "solar": 2.2, "d": 6, "dt": 1.2, "de": 0.02, "ms": Vector2(1.8, 1.8)},
+	"grass":     {"t": 11.5, "sky": 4.5, "e": 0.97, "solar": 0.8, "d": 7, "dt": 2.2, "de": 0.02, "ms": Vector2(1.5, 1.5)},
+	"lot":       {"t": 14.5, "sky": 2.8, "e": 0.93, "solar": 2.6, "d": 8, "dt": 1.6, "de": 0.04},
+	# Building shells (GLB) have unreliable roof normals, so the sky_loss cooling that
+	# darkens the flat ground barely touches them -- set the base temp low directly so
+	# roofs blend into the dark-grey ground instead of glowing white.
+	"wall":      {"t": 13.0, "sky": 8.0, "e": 0.78, "solar": 1.0, "d": 1, "dt": 1.6, "de": 0.04, "ms": Vector2(2.4, 1.2)},
+	"brick":     {"t": 13.0, "sky": 8.0, "e": 0.80, "solar": 1.0, "d": 1, "dt": 1.6, "de": 0.04, "ms": Vector2(2.0, 2.0)},
 	"window":    {"t": 12.0, "sky": 2.0, "e": 0.75, "solar": 1.5, "d": 5, "dt": 0.8, "de": 0.0, "ms": Vector2(1.2, 1.2)},
 	"parapet":   {"t": 11.0, "sky": 5.0, "e": 0.91, "solar": 3.0, "d": 2, "dt": 1.0, "de": 0.02, "ms": Vector2(1.6, 1.6)},
 	"hvac":      {"t": 34.0, "sky": 0.5, "e": 0.93, "solar": 0.0, "d": 4, "dt": 1.5, "de": 0.02, "ms": Vector2(0.6, 0.6)},
