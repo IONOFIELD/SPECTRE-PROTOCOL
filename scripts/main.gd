@@ -3036,13 +3036,13 @@ func _build_menu() -> void:
 	_menu_loadout.visible = false
 	# thermal-flip button, top-right corner -- previews the palette on the backdrop
 	_menu_thermal_btn = _menu_button("THERMAL: " + MODE_NAMES[mode])
-	_menu_thermal_btn.custom_minimum_size = Vector2(190, 34)
-	_menu_thermal_btn.add_theme_font_size_override("font_size", 14)
+	_menu_thermal_btn.custom_minimum_size = Vector2(162, 28)
+	_menu_thermal_btn.add_theme_font_size_override("font_size", 12)
 	_menu_thermal_btn.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	_menu_thermal_btn.offset_left = -206.0
+	_menu_thermal_btn.offset_left = -178.0
 	_menu_thermal_btn.offset_right = -16.0
 	_menu_thermal_btn.offset_top = 16.0
-	_menu_thermal_btn.offset_bottom = 50.0
+	_menu_thermal_btn.offset_bottom = 44.0
 	_menu_thermal_btn.pressed.connect(_menu_flip_thermal)
 	_menu_layer.add_child(_menu_thermal_btn)
 	add_child(_menu_layer)
