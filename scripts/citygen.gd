@@ -55,6 +55,20 @@ var poly_hi: Vector2 = Vector2.ZERO
 var map_lo: Vector2 = Vector2.ZERO
 var map_hi: Vector2 = Vector2.ZERO
 
+# SoMa's rotated grid. South of Market, SF's streets swing ~40 deg off the avenue
+# grid to run parallel to Market St; the Financial District (north of Market) keeps
+# the orthogonal grid. We hole SoMa out of the main grid and lay a second grid
+# aligned to Market instead. Frame set in generate() from the Market endpoints.
+const SOMA_NEAR: float = 15.0     # start this far SE of Market's avenue centreline
+const SOMA_FAR: float = 250.0     # depth of the rotated wedge toward the bay
+const SOMA_S0: float = -70.0      # NE extent along Market (past the Embarcadero end)
+const SOMA_S1: float = 360.0      # SW extent along Market (down to Mission Bay)
+const SOMA_Y: float = 0.02        # rotated quads ride a hair above the main grid (no z-fight)
+var _mkt_a: Vector2 = Vector2.ZERO   # Market NE end (frame origin)
+var _mkt_u: Vector2 = Vector2.ZERO   # unit along Market, toward the SW
+var _mkt_v: Vector2 = Vector2.ZERO   # unit perpendicular, toward the bay (into SoMa)
+var _rquads: Dictionary = {}         # material -> Array of [Vector2 x4], rotated ground quads
+
 
 func building_rects() -> Array[Rect2]:
 	var out: Array[Rect2] = []
@@ -72,17 +86,31 @@ func _tile(r: Rect2, mat: String) -> void:
 
 
 func _emit_surfaces() -> void:
+	var mats: Dictionary = {}
 	for mat in _surfaces:
-		var rects: Array = _surfaces[mat]
+		mats[mat] = true
+	for mat in _rquads:
+		mats[mat] = true
+	for mat in mats:
 		var st: SurfaceTool = SurfaceTool.new()
 		st.begin(Mesh.PRIMITIVE_TRIANGLES)
 		st.set_normal(Vector3.UP)
-		for r in rects:
+		for r in _surfaces.get(mat, []):
 			var a: Vector3 = Vector3(r.position.x, 0.0, r.position.y)
 			var b: Vector3 = Vector3(r.end.x, 0.0, r.position.y)
 			var c: Vector3 = Vector3(r.end.x, 0.0, r.end.y)
 			var d: Vector3 = Vector3(r.position.x, 0.0, r.end.y)
 			for v in [a, c, b, a, d, c]:      # CCW seen from above
+				st.set_normal(Vector3.UP)
+				st.add_vertex(v)
+		for q in _rquads.get(mat, []):
+			# rotated ground quad (SoMa): 4 corners CCW, both windings so the optic
+			# never culls it, riding SOMA_Y above the main grid.
+			var p0: Vector3 = Vector3(q[0].x, SOMA_Y, q[0].y)
+			var p1: Vector3 = Vector3(q[1].x, SOMA_Y, q[1].y)
+			var p2: Vector3 = Vector3(q[2].x, SOMA_Y, q[2].y)
+			var p3: Vector3 = Vector3(q[3].x, SOMA_Y, q[3].y)
+			for v in [p0, p2, p1, p0, p3, p2, p0, p1, p2, p0, p2, p3]:
 				st.set_normal(Vector3.UP)
 				st.add_vertex(v)
 		var mi: MeshInstance3D = MeshInstance3D.new()
@@ -142,6 +170,12 @@ func generate(snap_res: Vector2i) -> void:
 	var mkt_a: Vector2 = Vector2(915.0, 375.0)
 	var mkt_b: Vector2 = Vector2(435.0, 765.0)
 	var mkt_half: float = 11.0
+	# Market frame for the SoMa grid: u runs SW down Market, v runs SE toward the bay.
+	_mkt_a = mkt_a
+	_mkt_u = (mkt_b - mkt_a).normalized()
+	_mkt_v = Vector2(-_mkt_u.y, _mkt_u.x)
+	if _mkt_v.dot(Vector2(1.0, 1.0)) < 0.0:
+		_mkt_v = -_mkt_v          # face the bay (SE), not inland
 	for gx in nx:
 		for gz in nz:
 			var bx: float = poly_lo.x + float(gx) * pitch + HALF_ST
@@ -149,6 +183,8 @@ func generate(snap_res: Vector2i) -> void:
 			var c: Vector2 = Vector2(bx + BLOCK * 0.5, bz + BLOCK * 0.5)
 			if not _in_land(c):
 				continue
+			if _in_soma(c):
+				continue          # SoMa is laid on the rotated Market grid instead
 			var east_land: bool = _in_land(c + Vector2(pitch, 0.0))
 			var south_land: bool = _in_land(c + Vector2(0.0, pitch))
 			if east_land:
@@ -164,6 +200,7 @@ func generate(snap_res: Vector2i) -> void:
 				continue     # Market St avenue -- no building on the line
 			_block(rng, bx, bz, c.distance_to(downtown) / pitch)
 
+	_lay_soma(rng)                               # rotated Market grid in the SoMa hole
 	_emit_surfaces()
 	_diag_road(mkt_a, mkt_b, mkt_half * 2.0)     # the avenue deck, over the cleared blocks
 
@@ -193,6 +230,87 @@ func _diag_road(a: Vector2, b: Vector2, w: float) -> void:
 	mi.mesh = st.commit()
 	mi.material_override = ThermalLib.get_material("road", _snap_res)
 	add_child(mi)
+
+
+## Is p inside the SoMa wedge? SE of Market (v>0), a band toward the bay over the
+## NE reach of the Market line. Holed out of the main grid; filled by _lay_soma.
+func _in_soma(p: Vector2) -> bool:
+	var rel: Vector2 = p - _mkt_a
+	var s: float = rel.dot(_mkt_u)
+	var t: float = rel.dot(_mkt_v)
+	return t > SOMA_NEAR and t < SOMA_FAR and s > SOMA_S0 and s < SOMA_S1
+
+
+## Collect a rotated ground quad (4 corners CCW) for a material; emitted in _emit_surfaces.
+func _rtile(c0: Vector2, c1: Vector2, c2: Vector2, c3: Vector2, mat: String) -> void:
+	if not _rquads.has(mat):
+		_rquads[mat] = []
+	_rquads[mat].append([c0, c1, c2, c3])
+
+
+## A rectangle in the Market frame: centre, half-widths along u (Market) and v (bay).
+func _rrect(centre: Vector2, hu: float, hv: float, mat: String) -> void:
+	var u: Vector2 = _mkt_u
+	var v: Vector2 = _mkt_v
+	_rtile(centre - u * hu - v * hv, centre + u * hu - v * hv,
+		centre + u * hu + v * hv, centre - u * hu + v * hv, mat)
+
+
+## Fill the SoMa hole with a grid aligned to Market: for every cell that lands in the
+## wedge, lay the two streets on its bay/SW edges, the lot, and a rotated mid-rise.
+func _lay_soma(rng: RandomNumberGenerator) -> void:
+	var pitch: float = BLOCK + STREET
+	var yaw: float = atan2(_mkt_u.x, _mkt_u.y)      # heading of u, the sim's convention
+	var i0: int = int(floor(SOMA_S0 / pitch)) - 1
+	var i1: int = int(ceil(SOMA_S1 / pitch)) + 1
+	var jn: int = int(ceil((SOMA_FAR - SOMA_NEAR) / pitch)) + 1
+	for i in range(i0, i1):
+		for j in range(jn):
+			var s: float = float(i) * pitch + BLOCK * 0.5
+			var t: float = SOMA_NEAR + float(j) * pitch + BLOCK * 0.5
+			var c: Vector2 = _mkt_a + _mkt_u * s + _mkt_v * t
+			if not _in_land(c) or _in_park(c) or not _in_soma(c):
+				continue
+			_soma_cell(rng, c, yaw)
+
+
+func _soma_cell(rng: RandomNumberGenerator, c: Vector2, yaw: float) -> void:
+	var pitch: float = BLOCK + STREET
+	# the SE/SW streets + their intersection (each shared gap laid once), then the lot
+	_rrect(c + _mkt_u * (pitch * 0.5), STREET * 0.5, pitch * 0.5, "road")
+	_rrect(c + _mkt_v * (pitch * 0.5), pitch * 0.5, STREET * 0.5, "road")
+	_rrect(c, BLOCK * 0.5, BLOCK * 0.5, "lot")
+
+	if rng.randf() < 0.15:
+		return                          # surface parking -- SoMa is full of it; breaks the lattice
+
+	# dense mid-rise, taller toward the Financial District (near the NE end of Market)
+	var near: float = c.distance_to(_mkt_a)
+	var fl: int = 3 + rng.randi() % 4
+	if near < 150.0:
+		fl = 6 + rng.randi() % 6
+	elif near < 300.0:
+		fl = 4 + rng.randi() % 4
+	var span: float = BLOCK - 2.0 * SIDEWALK - 2.0 * SETBACK
+	var bw: float = span * rng.randf_range(0.72, 0.96)
+	var bd: float = span * rng.randf_range(0.72, 0.96)
+	_soma_building(rng, c, yaw, bw, bd, fl)
+
+
+## A rotated shell centred on the cell. The sim gets a conservative inscribed AABB so
+## the building's diagonal corners never clog SoMa's narrow streets for nav/LOS.
+func _soma_building(rng: RandomNumberGenerator, c: Vector2, yaw: float, bw: float, bd: float, fl: int) -> void:
+	var h: float = float(fl) * FLOOR_H
+	var wall_mat: String = "brick" if rng.randf() < 0.35 else "wall"
+	var path: String = LIGHT_BUILDINGS[rng.randi() % LIGHT_BUILDINGS.size()]
+	var shell: Node3D = ThermalModel.spawn_fit(path, wall_mat, _snap_res, Vector3(bw, h, bd), yaw)
+	if shell != null:
+		shell.position = Vector3(c.x, 0.0, c.y)
+		add_child(shell)
+	else:
+		_add_box(Vector3(c.x, 0.0, c.y), Vector3(bw, h, bd), wall_mat)
+	var core: float = minf(bw, bd) * 0.82
+	buildings.append({"x": c.x - core * 0.5, "z": c.y - core * 0.5, "w": core, "d": core, "fl": fl})
 
 
 ## The San Francisco coastline, ~1,150 m across, clockwise from the Lands End tip.
