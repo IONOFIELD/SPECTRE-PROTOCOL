@@ -526,6 +526,27 @@ func _reap() -> void:
 			events.append({"kind": kd, "pos": pos[k], "team": team[k], "unit": kind[k]})
 
 
+## An AC-130 fire mission on a point: everything within `radius` takes `dmg` at
+## once. Friendly fire is real -- squad and civilians caught in the ring die too,
+## so the optic has to be slewed off your own people first. Deaths log to events
+## (audio + kill counter) exactly like combat. Call between step() and the drain.
+func air_strike(center: Vector2, radius: float, dmg: float) -> void:
+	events.append({"kind": "strike", "pos": center, "team": -1, "unit": &"ac130"})
+	var r2: float = radius * radius
+	for i in count():
+		if not alive[i] or pos[i].distance_squared_to(center) > r2:
+			continue
+		hp[i] -= dmg
+		if hp[i] <= 0.0:
+			alive[i] = false
+			vel[i] = Vector2.ZERO
+			has_order[i] = false
+			selected[i] = false
+			foe[i] = -1
+			var kd: String = "man_down" if team[i] == SQUAD else ("zed_death" if team[i] == INFECTED else "kill")
+			events.append({"kind": kd, "pos": pos[i], "team": team[i], "unit": kind[i]})
+
+
 ## Line of sight on the ground plane: no building blocks the segment a->b. O(buildings)
 ## with a cheap bbox reject; buildings are few and this is only asked on a fresh
 ## acquire or a shot, never every unit every tick.

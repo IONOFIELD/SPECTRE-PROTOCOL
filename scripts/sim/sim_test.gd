@@ -30,6 +30,7 @@ func _initialize() -> void:
 	test_new_factions()
 	test_terrain()
 	test_land_polygon()
+	test_air_strike()
 	test_population_hunts_and_fights()
 	test_elements_and_medic()
 	test_mission_exfil()
@@ -412,6 +413,26 @@ func test_land_polygon() -> void:
 		s.step(1.0 / 60.0)
 	check("a carved bridge lets a unit off the land", s.pos[b2].y > 196.0,
 		"unit y=%.1f (south coast at 190)" % s.pos[b2].y)
+
+
+## An AC-130 strike kills everything in the ring -- hostiles AND friendlies.
+func test_air_strike() -> void:
+	var s: WorldSim = WorldSim.new()
+	s.set_bounds(Vector2(-40, -40), Vector2(160, 160))
+	var zed: int = s.spawn(Vector2(50, 50), &"zed", WorldSim.INFECTED)
+	var san: int = s.spawn(Vector2(54, 50), &"san", WorldSim.SANITATION)   # 400 hp, still dies
+	var squad: int = s.spawn(Vector2(52, 52), &"cbt", WorldSim.SQUAD)      # friendly fire
+	var far: int = s.spawn(Vector2(92, 50), &"zed", WorldSim.INFECTED)     # outside the ring
+	s.air_strike(Vector2(52, 50), 16.0, 450.0)
+	check("the strike kills the hostiles in the ring", not s.alive[zed] and not s.alive[san],
+		"zed alive=%s, san alive=%s" % [s.alive[zed], s.alive[san]])
+	check("friendly fire is real -- squad in the ring dies too", not s.alive[squad], "squad alive=%s" % s.alive[squad])
+	check("units outside the ring survive", s.alive[far], "far alive=%s" % s.alive[far])
+	var logged: bool = false
+	for e in s.events:
+		if e["kind"] == "strike":
+			logged = true
+	check("the strike is logged for audio + FX", logged, "events=%d" % s.events.size())
 
 
 ## A populated city: factions land on walkable ground, and the hunting horde

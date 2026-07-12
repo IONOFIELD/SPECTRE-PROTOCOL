@@ -60,7 +60,7 @@ const ELEMENT_ROSTER: Array = [&"cdr", &"cbt", &"med", &"snp", &"rec"]   # per t
 # the role is carried by HEAT + SIZE, not the model. false = minimalist thermal
 # shapes (the rymdkapsel read, matches v0.19); true = the PS1 .glb + idle rigs.
 const USE_MODELS: bool = false
-const HELP_TEXT: String = "[LMB] pick   [drag] box-select   [RMB] move   [F] weapons free\n[TAB]/[1-4] element   [SPACE] AC-130 view   [WASD] pan   [wheel] zoom\n[T] palette   [C] snow   [H] hide      EXFIL: cross a bridge on foot"
+const HELP_TEXT: String = "[LMB] pick   [RMB] move   [F] weapons free   [V] AC-130 strike\n[TAB]/[1-4] element   [SPACE] AC-130 view   [WASD] pan   [wheel] zoom\n[T] palette   [C] snow   [H] hide      EXFIL: cross a bridge on foot"
 
 # AC-130 gunship ISR HUD palette
 const HUD_COL: Color = Color(0.74, 0.95, 0.80, 0.90)   # ISR green-white
@@ -109,6 +109,15 @@ var _kills: int = 0                    # confirmed hostile kills, for the threat
 var _touches: Dictionary = {}          # active touch index -> position
 var _touch_moved: float = 0.0          # primary-touch travel, to tell a tap from a drag
 var _pinch_prev: float = 0.0           # last two-finger spread, for pinch-zoom
+
+# AC-130 fire support -- a kill-charged boresight strike (v0.19's killstreak)
+const AC_COST: int = 14                # kills to arm one fire mission
+const STRIKE_R: float = 16.0           # kill radius, metres
+const STRIKE_DMG: float = 460.0        # one burst flattens even the Sanitation elite
+var _ac_charge: int = 0                # kills banked toward the next strike
+var _fire_req: bool = false            # a strike was requested this frame
+var _strike_pos: Vector2 = Vector2.ZERO
+var _strike_t: float = 999.0           # seconds since the last strike, for the impact FX
 
 # feeds
 const FEED: Dictionary = {
@@ -673,10 +682,12 @@ func _drain_audio() -> void:
 				_sfx_at(at, _sfx_claw)
 			"zed_death":
 				_sfx_at(at, _sfx_death)
-				_kills += 1
+				_score_kill()
 			"kill":
 				if e["team"] != WorldSim.CIVILIAN:
-					_kills += 1
+					_score_kill()
+			"strike":
+				_sfx_at(at, _sfx_gun)   # placeholder cannon burst -- drop a GAU sfx in audio/sfx
 			"man_down":
 				Audio.comms("need_backup", 2500)
 
@@ -689,6 +700,29 @@ func _sfx_at(at: Vector3, stream: AudioStream) -> void:
 	p.stream = stream
 	p.position = at
 	p.play()
+
+
+func _score_kill() -> void:
+	_kills += 1
+	_ac_charge = mini(AC_COST, _ac_charge + 1)
+
+
+## Request an AC-130 fire mission (if armed). Fired next frame, on the boresight.
+func _request_strike() -> void:
+	if _ac_charge >= AC_COST:
+		_fire_req = true
+
+
+## Call the strike on the optic boresight (the camera target). Everything in the
+## ring dies -- friendly fire included, so slew off your own squad first.
+func _fire_ac130() -> void:
+	if _ac_charge < AC_COST:
+		return
+	_ac_charge = 0
+	_strike_pos = Vector2(cam_tx, cam_tz)
+	_strike_t = 0.0
+	sim.air_strike(_strike_pos, STRIKE_R, STRIKE_DMG)
+	Audio.comms("open_fire", 0)
 
 
 func _process(delta: float) -> void:
@@ -728,8 +762,12 @@ func _process(delta: float) -> void:
 		sim.order_move(sim.selected_ids(), Vector2(150, 132))   # scripted order, for capture
 
 	sim.step(delta)
+	if _fire_req:
+		_fire_req = false
+		_fire_ac130()          # appends strike + kill events for the drain below
 	_sync_visuals(delta)
 	_drain_audio()
+	_strike_t += delta
 
 	if mission != null:
 		var was: int = mission.result
@@ -1008,8 +1046,31 @@ func _draw_hud() -> void:
 	if locked:
 		sel_layer.draw_string(font, c + Vector2(-42.0, reach + 22.0), "TGT LOCKED", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, HUD_RED)
 
+	# AC-130 fire-mission status, bottom-left above the attitude gauge
+	if _ac_charge >= AC_COST:
+		sel_layer.draw_string(font, Vector2(30.0, win.y - 178.0), "AC-130 GUNSHIP  READY", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, HUD_COL)
+	else:
+		sel_layer.draw_string(font, Vector2(30.0, win.y - 178.0), "AC-130  ARMING  %d/%d" % [_ac_charge, AC_COST], HORIZONTAL_ALIGNMENT_LEFT, -1, 13, HUD_DIM)
+
 	_draw_attitude(font, win)
 	_draw_threat(font, win)
+	_draw_strike()
+
+
+## The impact FX: a hot ring blooming out from the strike point, fading over ~0.7 s.
+func _draw_strike() -> void:
+	if _strike_t > 0.7:
+		return
+	var w3: Vector3 = Vector3(_strike_pos.x, 0.5, _strike_pos.y)
+	if cam.is_position_behind(w3):
+		return
+	var cc: Vector2 = _screen_point(w3)
+	var edge: Vector2 = _screen_point(Vector3(_strike_pos.x + STRIKE_R, 0.5, _strike_pos.y))
+	var rad: float = maxf(8.0, cc.distance_to(edge))
+	var k: float = _strike_t / 0.7
+	var fade: float = 1.0 - k
+	sel_layer.draw_circle(cc, rad * (0.35 + k * 0.2), Color(1.0, 0.95, 0.82, fade * 0.8))
+	sel_layer.draw_arc(cc, rad * (0.5 + k * 0.6), 0.0, TAU, 44, Color(1.0, 0.78, 0.45, fade), 3.0)
 
 
 ## Attitude gauge, bottom-left: a heading dial with the optic azimuth pointer, the
@@ -1141,6 +1202,7 @@ func _input(e: InputEvent) -> void:
 				if help != null:
 					help.visible = show_help
 			KEY_F: _toggle_fire()
+			KEY_V: _request_strike()
 			KEY_TAB: _pick_element((active_element + 1) % ELEMENTS)
 			KEY_1: _pick_element(0)
 			KEY_2: _pick_element(1)
@@ -1252,9 +1314,12 @@ func _build_touch_bar(host: CanvasLayer) -> void:
 		var b: Button = _hud_button(str(n + 1))
 		b.pressed.connect(_pick_element.bind(n))
 		_touch_bar.add_child(b)
-	var bf: Button = _hud_button("FIRE")
+	var bf: Button = _hud_button("WPN")
 	bf.pressed.connect(_toggle_fire)
 	_touch_bar.add_child(bf)
+	var bs: Button = _hud_button("STRK")
+	bs.pressed.connect(_request_strike)
+	_touch_bar.add_child(bs)
 	var bi: Button = _hud_button("ISR")
 	bi.pressed.connect(_toggle_feed)
 	_touch_bar.add_child(bi)
