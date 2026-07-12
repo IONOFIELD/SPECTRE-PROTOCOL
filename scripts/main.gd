@@ -130,9 +130,11 @@ const FLASH_LIFE: float = 0.12         # seconds a muzzle flash stays lit
 const FLASH_MAX: int = 80              # cap, so a big firefight can't flood the overlay
 # 3D thermal blasts: hot emissive blobs in the feed that bloom + fade -- reused
 # for the AC-130 strike, EOD grenades, the sanitation flamethrower + flash-nades.
-const FLASH3D_POOL: int = 16
+const FLASH3D_POOL: int = 32               # a sanitation flame burns ~3 blobs, so run deep
 var _flash3d: Array[MeshInstance3D] = []   # free pool
 var _flash3d_busy: Array = []              # active: [{node, t, life, peak}]
+const FLAME_LEN: float = 11.0              # visible reach of the fire jet, m
+const FLAME_H: float = 1.3                 # nozzle height, m
 
 # feeds
 const FEED: Dictionary = {
@@ -711,6 +713,8 @@ func _drain_audio() -> void:
 			"blast":
 				_sfx_at(at, _sfx_blast)    # EOD grenade / RPG
 				_spawn_flash3d(e["pos"], 4.0, 0.35, 1.6)
+			"flame":
+				_spawn_flame(e["pos"], e["to"])   # sanitation fire jet -- glow only, no report
 			"man_down":
 				Audio.comms("need_backup", 2500)
 
@@ -1170,6 +1174,23 @@ func _spawn_flash3d(pos: Vector2, peak: float, life: float, h: float = 2.0) -> v
 	mi.scale = Vector3.ONE * 0.02
 	mi.visible = true
 	_flash3d_busy.append({"node": mi, "t": 0.0, "life": life, "peak": peak})
+
+
+## Sanitation flamethrower: a hot plume that reads on thermal as an elongated
+## glow -- overlapping fire-blobs from the nozzle toward the target, fattest and
+## hottest at the muzzle, tapering to the tip. Bloom smears them into one tongue.
+func _spawn_flame(from: Vector2, to: Vector2) -> void:
+	var dir: Vector2 = to - from
+	var dist: float = dir.length()
+	if dist < 1e-3:
+		return
+	dir /= dist
+	var reach: float = minf(dist, FLAME_LEN)
+	var steps: Array = [0.07, 0.28, 0.52, 0.80]   # fraction of reach for each blob
+	var sizes: Array = [1.7, 1.35, 0.95, 0.55]    # bloom radius, m -- fat hot root, tapering tip
+	for k in steps.size():
+		var p: Vector2 = from + dir * (reach * float(steps[k]))
+		_spawn_flash3d(p, float(sizes[k]), 0.32, FLAME_H)
 
 
 func _age_flash3d(delta: float) -> void:

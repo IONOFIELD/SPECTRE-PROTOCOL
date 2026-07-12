@@ -32,6 +32,7 @@ func _initialize() -> void:
 	test_land_polygon()
 	test_air_strike()
 	test_eod_grenade()
+	test_sanitation_flame()
 	test_population_hunts_and_fights()
 	test_elements_and_medic()
 	test_mission_exfil()
@@ -451,6 +452,26 @@ func test_eod_grenade() -> void:
 		"z1 alive=%s, z2 alive=%s" % [s.alive[z1], s.alive[z2]])
 	check("the grenade spares the far infected", s.alive[z3], "z3 alive=%s" % s.alive[z3])
 	check("no friendly fire on civilians in the ring", s.alive[civ], "civ alive=%s (eod alive=%s)" % [s.alive[civ], s.alive[eod]])
+
+
+## Sanitation projects fire, not rounds: its attack logs a 'flame' event (a
+## directional plume the feed draws), never 'gunfire'.
+func test_sanitation_flame() -> void:
+	var s: WorldSim = WorldSim.new()
+	s.set_bounds(Vector2(-40, -40), Vector2(160, 160))
+	s.spawn(Vector2(50, 50), &"san", WorldSim.SANITATION)
+	s.spawn(Vector2(50, 56), &"cbt", WorldSim.SQUAD)   # a target in throw/burn range
+	var flame: bool = false
+	var san_gun: bool = false
+	for _t in 180:
+		s.step(1.0 / 60.0)
+		for e in s.events:
+			if e["kind"] == "flame":
+				flame = true
+			if e["kind"] == "gunfire" and e["unit"] == &"san":
+				san_gun = true
+	check("sanitation emits a flame plume event", flame, "flame=%s" % flame)
+	check("sanitation never fires a gun round", not san_gun, "san_gun=%s" % san_gun)
 
 
 ## A populated city: factions land on walkable ground, and the hunting horde

@@ -517,7 +517,13 @@ func _strike(i: int, f: int) -> void:
 		events.append({"kind": "blast", "pos": pos[f], "to": pos[f], "team": team[i], "unit": kind[i]})
 		return
 	_dmg[f] = float(_dmg.get(f, 0.0)) + STATS[kind[i]][4]
-	var what: String = "claw" if team[i] == INFECTED else "gunfire"
+	# Sanitation projects fire -- a hot plume on thermal, no muzzle report. Everyone
+	# else claws (infected) or fires a round (armed teams).
+	var what: String = "gunfire"
+	if team[i] == INFECTED:
+		what = "claw"
+	elif kind[i] == &"san":
+		what = "flame"
 	events.append({"kind": what, "pos": pos[i], "to": pos[f], "team": team[i], "unit": kind[i]})
 
 
