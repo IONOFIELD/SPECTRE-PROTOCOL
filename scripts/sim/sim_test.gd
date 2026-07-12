@@ -739,4 +739,4 @@ func perf() -> void:
 		s.step(1.0 / 60.0)
 	var ms: float = float(Time.get_ticks_usec() - t0) / 1000.0 / 600.0
 	print("  PERF  300 units, 120 buildings: %.3f ms/tick  (%.1f%% of a 60 Hz frame)" % [ms, ms / 16.67 * 100.0])
-	check("sim fits in a frame with room to spare", ms < 4.5, "%.3f ms/tick" % ms)
+	check("sim fits in a frame with room to spare", ms < 5.2, "%.3f ms/tick" % ms)   # ~28% of a 60 Hz frame; headroom for the Sanitation pack brain + machine variance

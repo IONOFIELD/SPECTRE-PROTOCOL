@@ -14,6 +14,8 @@ const SEPARATION: float = 0.90        # start pushing apart at this range
 const ARRIVE: float = 0.6             # slow down inside this, stop inside RADIUS
 const WAYPOINT: float = 1.1           # corner-cutting tolerance on intermediate nodes
 const MAX_PUSH: float = 2.4           # m/s of separation velocity, capped
+const SAN_PACK_R: float = 6.0         # Sanitation cohesion kicks in past this from the pack centre
+const SAN_COHESION: float = 1.5       # how hard a straggling elite is reeled back into formation
 const CELL: float = 12.0              # measured knee: rebuild cost falls with cell size,
                                       # query cost is flat (call overhead dominates candidates).
 const HEAL_RANGE: float = 9.0
@@ -55,7 +57,7 @@ const STATS: Dictionary = {
 	&"run": [7.8, 34.0, 38.0, 1.4, 9.0, 0.8],       # runner: OUTRUNS the squad, fragile, quick claw
 	&"bru": [3.4, 150.0, 28.0, 1.9, 26.0, 1.6],     # brute: slow, soaks a magazine, heavy claw
 	&"civ": [3.6, 40.0, 30.0, 0.0, 0.0, 0.0],       # civilian: unarmed, runs but gets caught
-	&"san": [7.4, 400.0, 40.8, 30.0, 25.0, 0.6],    # Sanitation elite: armoured (400 hp), fast, ranged
+	&"san": [9.2, 400.0, 40.8, 30.0, 25.0, 0.6],    # Sanitation elite: armoured (400 hp), FAST pack, ranged
 	&"bnd": [6.8, 75.0, 30.0, 16.0, 14.0, 1.0],     # bandit: aggressive armed hunter, squishy
 	&"svr": [5.4, 95.0, 18.0, 20.0, 16.0, 1.1],     # survivor: dug-in holdout, short sight, hits hard
 }
@@ -113,6 +115,8 @@ var allied: Dictionary = {}           # element -> true if that rival is allied 
 var events: Array = []
 var _dmg: Dictionary = {}             # target index -> damage queued this tick
 var _tick: int = 0
+var _san_c: Vector2 = Vector2.ZERO     # Sanitation pack centroid (cohesion anchor), per tick
+var _san_foe: int = -1                 # the pack's shared hunt target, -1 = none
 
 var buildings: Array[Rect2] = []      # ground-plane AABBs, metres -- block LOS + nav + collision
 var water: Array[Rect2] = []          # the bay/strait/ocean -- block nav + collision, NOT LOS
@@ -339,6 +343,7 @@ func step(dt: float) -> void:
 	events.clear()
 	_dmg.clear()
 	_tick += 1
+	_update_san_pack()           # the Sanitation pack's shared centroid + hunt target
 
 	for i in count():
 		if not alive[i]:
@@ -551,11 +556,8 @@ func _combat(i: int, sp: float) -> Vector2:
 	var t: int = team[i]
 	if t == CIVILIAN:
 		return _flee(i, sp)
-	# Sanitation mid-evade: weapon down, slide to the flank point it flashed toward.
-	if t == SANITATION and evade[i] > 0.0:
-		var run: Vector2 = evade_to[i] - pos[i]
-		var rd: float = run.length()
-		return run / rd * sp if rd > 1.5 else Vector2.ZERO
+	if t == SANITATION:
+		return _san_combat(i, sp)      # one tight, fast, roaming pack -- search & destroy
 	var f: int = foe[i]
 	if f == -1 or not alive[f]:
 		return Vector2.ZERO
@@ -567,20 +569,70 @@ func _combat(i: int, sp: float) -> Vector2:
 				_strike(i, f)
 			return Vector2.ZERO
 		return (pos[f] - pos[i]) / maxf(d, 1e-5) * sp
-	# Sanitation under fire: rarely trade its next action for a flash-bang + a flank,
-	# reappearing at a new angle. Pinned (recently hit) + off cooldown + a low roll.
-	if t == SANITATION and hurt[i] > 0.0 and flash_cd[i] <= 0.0 and _rng.randf() < FLASH_CHANCE:
-		return _pop_flash(i, f, sp)
-	# shooters: squad, sanitation, bandits, survivors. Fire in range, clear line.
+	# shooters: squad, bandits, survivors. Fire in range, clear line.
 	# Only the squad's trigger is disciplined (weapons_free); the rest fire at will.
 	if d <= reach and _los(pos[i], pos[f]):
-		# your squad's trigger is disciplined (weapons_free); rivals + the rest fire at will
 		if cd[i] <= 0.0 and (t != SQUAD or weapons_free or element[i] != player_element):
 			_strike(i, f)
 		return Vector2.ZERO          # in range: stand and shoot
 	if _unit_hunts(i):
-		return (pos[f] - pos[i]) / maxf(d, 1e-5) * sp   # rivals, sanitation, bandits close in
+		return (pos[f] - pos[i]) / maxf(d, 1e-5) * sp   # rivals, bandits close in
 	return Vector2.ZERO              # your squad + survivors hold (player-ordered; survivor digs in)
+
+
+## The Sanitation force fights as ONE tight, fast pack. It roams to the nearest prey to
+## the pack's centre (search & destroy), reels stragglers back with cohesion, fires
+## anything in range, and still pops the odd flash-evade when pinned.
+func _san_combat(i: int, sp: float) -> Vector2:
+	if evade[i] > 0.0:                          # mid-evade: slide to the flank point
+		var run: Vector2 = evade_to[i] - pos[i]
+		var rd: float = run.length()
+		return run / rd * sp if rd > 1.5 else Vector2.ZERO
+	var f: int = foe[i]
+	if f != -1 and alive[f] and hurt[i] > 0.0 and flash_cd[i] <= 0.0 and _rng.randf() < FLASH_CHANCE:
+		return _pop_flash(i, f, sp)             # pinned: flash-bang + break contact
+	# fire anything in range + line of sight, but KEEP MOVING with the pack -- they gun down
+	# what they pass without ever breaking formation.
+	if f != -1 and alive[f] and cd[i] <= 0.0:
+		var reach: float = STATS[kind[i]][3]
+		if pos[i].distance_to(pos[f]) <= reach and _los(pos[i], pos[f]):
+			_strike(i, f)
+	# ROAM as one tight pack: steer to the shared hunt target + cohesion toward the centre
+	var dir: Vector2 = Vector2.ZERO
+	if _san_foe != -1 and alive[_san_foe]:
+		dir += (pos[_san_foe] - pos[i]).normalized()
+	var coh: Vector2 = _san_c - pos[i]
+	var cl: float = coh.length()
+	if cl > SAN_PACK_R:
+		dir += coh / cl * SAN_COHESION          # reel a straggler back into formation
+	if dir.length() < 1e-4:
+		return Vector2.ZERO
+	return dir.normalized() * sp
+
+
+## The Sanitation pack's shared brain: its centroid (cohesion anchor) + one shared hunt
+## target -- the nearest prey to the centre, kept until it dies or a periodic re-look.
+func _update_san_pack() -> void:
+	_san_c = Vector2.ZERO
+	var n: int = 0
+	for i in count():
+		if alive[i] and team[i] == SANITATION:
+			_san_c += pos[i]
+			n += 1
+	if n == 0:
+		_san_foe = -1
+		return
+	_san_c /= float(n)
+	if _san_foe != -1 and alive[_san_foe] and not extracted[_san_foe] and _tick % 24 != 0:
+		return
+	_san_foe = -1
+	var best: float = INF
+	for j in count():
+		if alive[j] and not extracted[j] and team[j] != SANITATION:
+			var dd: float = _san_c.distance_squared_to(pos[j])
+			if dd < best:
+				best = dd
+				_san_foe = j
 
 
 ## A civilian steers directly away from the nearest thing that would kill it.

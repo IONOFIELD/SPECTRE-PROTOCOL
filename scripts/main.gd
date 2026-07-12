@@ -726,10 +726,10 @@ func _populate_world() -> void:
 	# Tutorial is a calm map to learn on -- a fraction of the ecology, no hordes/gauntlet.
 	# The menu backdrop instead deploys a heavy Sanitation sweep to 'sanitize' the city.
 	var s: float = 0.16 if _tutorial else 1.0
-	# The menu backdrop sweeps with a big Sanitation force; the real game starts with NONE
-	# (they deploy on the kill trigger). populate() takes 0 sanitation fine.
-	var san_n: int = 26 if _menu_sim else 0
-	sim.populate(int(POP_INFECTED * s), int(POP_CIV * s), san_n, city.land)
+	sim.populate(int(POP_INFECTED * s), int(POP_CIV * s), 0, city.land)   # ecology only; san is a cluster
+	if _menu_sim:
+		# the menu sweep: a big Sanitation force spawned as one TIGHT pack, not scattered
+		sim.spawn_cluster(&"san", WorldSim.SANITATION, _random_land_point(rng), 26, 8.0, rng)
 	sim.scatter(&"run", WorldSim.INFECTED, int(POP_RUNNERS * s), city.land, rng)
 	sim.scatter(&"bru", WorldSim.INFECTED, int(POP_BRUTES * s), city.land, rng)
 	if not _tutorial:
@@ -898,8 +898,9 @@ func _deploy_sanitation() -> void:
 	_sani_deployed = true
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 	rng.randomize()
+	var pack: Vector2 = _random_land_point(rng)     # one drop point -- they arrive as a tight pack
 	for _s in POP_SAN:
-		var p: Vector2 = _random_land_point(rng)
+		var p: Vector2 = pack + Vector2(rng.randf_range(-6.0, 6.0), rng.randf_range(-6.0, 6.0))
 		sim.spawn(p, &"san", WorldSim.SANITATION)
 		var v: Node3D = _make_unit_view(WorldSim.SANITATION, &"san", rng)
 		if v != null:
