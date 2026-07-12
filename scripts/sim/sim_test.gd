@@ -34,6 +34,7 @@ func _initialize() -> void:
 	test_eod_grenade()
 	test_sanitation_flame()
 	test_sanitation_flash_evade()
+	test_go_around_wall()
 	test_strike_collateral()
 	test_population_hunts_and_fights()
 	test_elements_and_medic()
@@ -501,6 +502,28 @@ func test_sanitation_flash_evade() -> void:
 			break
 	check("a pinned sanitation elite pops a flash", flashed, "flashed=%s" % flashed)
 	check("it breaks contact after the flash", moved > 3.0, "moved=%.1f m" % moved)
+
+
+## A hunter steers straight at its prey but must SLIDE around a wall in the way --
+## never tunnelling through the footprint.
+func test_go_around_wall() -> void:
+	var s: WorldSim = WorldSim.new()
+	var wall: Rect2 = Rect2(20, 8, 6, 22)
+	s.load_buildings([wall] as Array[Rect2])
+	s.weapons_free = false                       # keep the prey from shooting the hunter first
+	var z: int = s.spawn(Vector2(6, 20), &"zed", WorldSim.INFECTED)
+	var prey: int = s.spawn(Vector2(46, 40), &"cbt", WorldSim.SQUAD)
+	var tunneled: bool = false
+	var reached: bool = false
+	for _t in 900:
+		s.step(1.0 / 60.0)
+		if wall.grow(-0.1).has_point(s.pos[z]):
+			tunneled = true
+		if s.pos[z].distance_to(s.pos[prey]) < 3.0:
+			reached = true
+			break
+	check("a hunter never enters a building footprint", not tunneled, "zed at %s" % s.pos[z])
+	check("a hunter routes AROUND the wall to its prey", reached, "zed at %s" % s.pos[z])
 
 
 ## An AC-130 strike tags its dead by faction so the score can tell a clean kill

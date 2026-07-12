@@ -260,6 +260,21 @@ func _resolve_buildings(p: Vector2, r: float) -> Vector2:
 	return p
 
 
+## Would a unit footprint at p overlap a solid -- a building, a water rect, or off-coast
+## ground that isn't a bridge? Movement rejects any axis step that lands here, so units
+## slide around walls and can never step into the bay (bridges stay walkable).
+func _solid(p: Vector2) -> bool:
+	for bi in bgrid.at(p):
+		if buildings[bi].grow(RADIUS).has_point(p):
+			return true
+	for w in water:
+		if w.grow(RADIUS).has_point(p):
+			return true
+	if not land_poly.is_empty() and not _on_bridge(p) and not Geometry2D.is_point_in_polygon(p, land_poly):
+		return true
+	return false
+
+
 ## Nearest point on the coastline, nudged inland by r so the footprint clears the
 ## water. Shoves a unit that strayed off the coast back onto land.
 func _to_shore(p: Vector2, r: float) -> Vector2:
@@ -363,9 +378,19 @@ func step(dt: float) -> void:
 			desired += push.normalized() * minf(push.length() * sp, MAX_PUSH)
 
 		vel[i] = vel[i].lerp(desired, minf(1.0, dt * 10.0))
-		var np: Vector2 = pos[i] + vel[i] * dt
-		np = _resolve_buildings(np, RADIUS)
-		pos[i] = np
+		# Axis-separated collision: try X then Y, rejecting either step that would put
+		# the footprint into a building or the water. A unit SLIDES along a wall and
+		# never tunnels through it or steps into the bay; a final eject un-sticks
+		# anything already overlapping (a spawn or a separation shove).
+		var np: Vector2 = pos[i]
+		var mv: Vector2 = vel[i] * dt
+		var tx: Vector2 = np + Vector2(mv.x, 0.0)
+		if not _solid(tx):
+			np = tx
+		var ty: Vector2 = np + Vector2(0.0, mv.y)
+		if not _solid(ty):
+			np = ty
+		pos[i] = _resolve_buildings(np, RADIUS)
 
 		if vel[i].length_squared() > 0.04:
 			heading[i] = atan2(vel[i].x, vel[i].y)
