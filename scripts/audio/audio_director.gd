@@ -12,6 +12,8 @@ extends Node
 ##    +- Music   the bed. AudioEffectCompressor sidechained to SFX, so world
 ##    |          sound ducks the music instead of fighting it on the master.
 ##    +- SFX     world sound: gunfire, the channel cut, vehicles.
+##    |   +- Comms   the radio voice, on its own bus (pitched down + trimmed),
+##    |              routed through SFX so it still ducks the music.
 ##    +- UI      menu blips, selection ticks. never ducked.
 ##
 ## Everything the game plays is hot -- music1 masters at 0 dBFS, -5.6 RMS, and
@@ -50,6 +52,14 @@ const AMBIENCE_BED_DB := -12.0
 const BUS_ISR := "ISR"   # gunship-downlink filter; diegetic buses route through it, music bypasses
 const COMMS_DIR := "res://audio/comms/"   # radio callouts, one file per phrase
 
+## The radio voice gets its own bus so it can be pitched + levelled apart from the
+## rest of the SFX. It still routes THROUGH SFX (so it ducks the music and picks up
+## the ISR headset filter) -- the Comms bus only adds the pitch shift + this trim.
+## Two numbers to tune the operator's voice; this is the only place they live.
+const BUS_COMMS := "Comms"
+const COMMS_DB := -0.75             # voice sits 0.75 dB under the rest of the net
+const COMMS_PITCH_CENTS := -400.0   # drop the voice ~4 semitones, tempo preserved
+
 var _music_a: AudioStreamPlayer
 var _music_b: AudioStreamPlayer
 var _music_cur: AudioStreamPlayer
@@ -79,6 +89,10 @@ func _setup_buses() -> void:
 	_ensure_bus(BUS_AMBIENCE, BUS_ISR, AMBIENCE_BED_DB)     # ambience is a "noise" -> ISR
 	_ensure_bus(BUS_SFX, BUS_ISR, 0.0)
 	_ensure_bus(BUS_UI, BUS_ISR, 0.0)
+	# Comms routes INTO SFX (higher index, so it's processed first): the voice still
+	# drives the music duck and rides the ISR filter, this bus just pitches + trims it.
+	_ensure_bus(BUS_COMMS, BUS_SFX, COMMS_DB)
+	_install_comms_pitch(BUS_COMMS)
 	_install_ducking(BUS_MUSIC, BUS_SFX)
 	_install_ducking(BUS_AMBIENCE, BUS_SFX)
 	_install_master_limiter()
@@ -153,6 +167,19 @@ func _install_isr(bus_name: String) -> void:
 	agc.attack_us = 400.0
 	agc.release_ms = 180.0
 	AudioServer.add_bus_effect(idx, agc)
+
+
+## Drop the operator's voice a fixed interval without slowing it down -- a real
+## pitch shifter (phase vocoder), not a resample, so the words keep their tempo.
+## COMMS_PITCH_CENTS cents -> a pitch_scale of 2^(cents/1200).
+func _install_comms_pitch(bus_name: String) -> void:
+	var idx: int = AudioServer.get_bus_index(bus_name)
+	if idx == -1:
+		return
+	_clear_effects(idx)
+	var ps := AudioEffectPitchShift.new()
+	ps.pitch_scale = pow(2.0, COMMS_PITCH_CENTS / 1200.0)
+	AudioServer.add_bus_effect(idx, ps)
 
 
 func _clear_effects(bus_idx: int) -> void:
@@ -241,14 +268,15 @@ func stop_ambience(fade_out := 2.0) -> void:
 
 
 ## A radio callout by file stem under audio/comms/ (e.g. "order_go"). Cooldown-
-## gated so rapid orders don't stack voice lines. Plays on SFX, so it ducks the
-## music + ambience -- the radio cuts through.
+## gated so rapid orders don't stack voice lines. Plays on the Comms bus (pitched +
+## trimmed), which feeds SFX, so it still ducks the music + ambience -- the radio
+## cuts through, just lower and deeper than the rest of the net.
 func comms(stem: String, cooldown_ms := 1200) -> void:
 	var now: int = Time.get_ticks_msec()
 	if now < _comms_next_ms:
 		return
 	_comms_next_ms = now + cooldown_ms
-	sfx(COMMS_DIR + stem + ".wav", 0.0)
+	_one_shot(COMMS_DIR + stem + ".wav", BUS_COMMS, 0.0)
 
 
 ## A random move-order acknowledgement.
