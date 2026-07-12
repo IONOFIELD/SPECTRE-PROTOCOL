@@ -63,13 +63,27 @@ var _menu_layer: CanvasLayer             # the startup menu overlay, freed on st
 # ISR scan: enemy teams (sanitation + rival teams) stay unidentified until a scan pulse
 # paints them for SCAN_REVEAL s; SCAN_COOLDOWN s between scans.
 var _scan_t: float = 999.0               # seconds since the last scan (>= REVEAL = hidden)
+var _scan_pulse_t: float = 99.0          # animation clock for the green scan sweep
+var _sfx_scan: AudioStream
 const SCAN_REVEAL: float = 15.0
 const SCAN_COOLDOWN: float = 25.0
+const SCAN_PULSE: float = 1.3            # seconds the green sweep ring takes to cross the feed
 
 
 ## Is enemy unit i currently painted by a scan? (Sanitation / rival teams hide otherwise.)
 func _identified(_i: int) -> bool:
 	return _scan_t < SCAN_REVEAL
+
+
+## Fire an ISR scan if off cooldown: a green sweep + robotic beeps that paints the enemy
+## teams for SCAN_REVEAL s. SCAN_COOLDOWN s between scans.
+func _request_scan() -> void:
+	if _scan_t < SCAN_COOLDOWN:
+		return
+	_scan_t = 0.0
+	_scan_pulse_t = 0.0
+	if _sfx_scan != null:
+		Audio.sfx(_sfx_scan, 2.0)
 # Insertion edges, spread around the peninsula so no two teams deploy close. Order is
 # W, E, N, S so 2 teams land opposite (W+E), 3 add N, 4 add S.
 const EDGE_BASES: Array = [Vector2(205, 615), Vector2(885, 480), Vector2(500, 215), Vector2(520, 945)]
@@ -276,6 +290,7 @@ func _ready() -> void:
 		var pth: String = "res://audio/sfx/sanvox/" + stem + ".wav"
 		if ResourceLoader.exists(pth):
 			_sfx_sanvox.append(load(pth))
+	_sfx_scan = load("res://audio/sfx/scan.wav")
 	# Captures / dev hooks run the game directly; players get the startup menu (music1 is
 	# already playing) with a slowly-rotating feed behind it.
 	if (_shot_dir != "" or _map_dir != "") and OS.get_environment("SPECTRE_MENU") == "":
@@ -1053,6 +1068,8 @@ func _process(delta: float) -> void:
 	_ambient_combat(delta)
 	_advance_panic(delta)
 	_sanitation_vox(delta)
+	_scan_t += delta
+	_scan_pulse_t += delta
 	if _move_blip.has("pos"):
 		_move_blip["t"] += delta
 		if _move_blip["t"] > 1.2:
@@ -1253,6 +1270,7 @@ func _draw_selection() -> void:
 	_draw_loot()
 	_draw_move_blip()
 	_draw_hud()
+	_draw_scan_pulse()
 	_draw_allegiance()
 	_draw_unit_boxes()
 	_draw_tags(ThemeDB.fallback_font)
@@ -1314,6 +1332,20 @@ func _draw_coast() -> void:
 		if cam.is_position_behind(a3) or cam.is_position_behind(b3):
 			continue
 		sel_layer.draw_line(_screen_point(a3), _screen_point(b3), col, 2.0)
+
+
+## The ISR scan sweep: a green ring expanding from the reticle out past the corners,
+## fading as it goes -- the pulse that paints the enemy teams for the reveal window.
+func _draw_scan_pulse() -> void:
+	if _scan_pulse_t >= SCAN_PULSE:
+		return
+	var win: Vector2 = Vector2(get_viewport().get_visible_rect().size)
+	var c: Vector2 = win * 0.5
+	var k: float = _scan_pulse_t / SCAN_PULSE
+	var rad: float = k * win.length() * 0.6
+	var a: float = (1.0 - k) * 0.8
+	sel_layer.draw_arc(c, rad, 0.0, TAU, 64, Color(0.40, 1.0, 0.55, a), 2.5)
+	sel_layer.draw_arc(c, rad * 0.7, 0.0, TAU, 48, Color(0.40, 1.0, 0.55, a * 0.5), 1.5)
 
 
 ## A move-order blip: an expanding green ring + cross at the last commanded destination,
@@ -1571,6 +1603,14 @@ func _draw_hud() -> void:
 		sel_layer.draw_string(font, Vector2(30.0, win.y - 178.0), "AC-130 GUNSHIP  READY", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, HUD_COL)
 	else:
 		sel_layer.draw_string(font, Vector2(30.0, win.y - 178.0), "AC-130  LOCKED  %d/%d KILLS" % [_zombie_kills, AC_UNLOCK], HORIZONTAL_ALIGNMENT_LEFT, -1, 13, HUD_DIM)
+
+	# ISR scan status, just above the AC-130 line
+	if _scan_t < SCAN_REVEAL:
+		sel_layer.draw_string(font, Vector2(30.0, win.y - 160.0), "SCAN ACTIVE  %ds" % int(ceil(SCAN_REVEAL - _scan_t)), HORIZONTAL_ALIGNMENT_LEFT, -1, 13, HUD_COL)
+	elif _scan_t < SCAN_COOLDOWN:
+		sel_layer.draw_string(font, Vector2(30.0, win.y - 160.0), "SCAN  %ds" % int(ceil(SCAN_COOLDOWN - _scan_t)), HORIZONTAL_ALIGNMENT_LEFT, -1, 13, HUD_DIM)
+	else:
+		sel_layer.draw_string(font, Vector2(30.0, win.y - 160.0), "SCAN READY  [E]", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, HUD_COL)
 
 	_draw_attitude(font, win)
 	_draw_threat(font, win)
@@ -1867,6 +1907,7 @@ func _input(e: InputEvent) -> void:
 					help.visible = show_help
 			KEY_F: _toggle_fire()
 			KEY_V: _request_strike()
+			KEY_E: _request_scan()
 			KEY_TAB: _pick_element((active_element + 1) % ELEMENTS)
 			KEY_Q: _cycle_unit_type()
 			KEY_1: _pick_element(0)
@@ -2089,6 +2130,9 @@ func _build_touch_bar(host: CanvasLayer) -> void:
 	var bs: Button = _hud_button("STRK")
 	bs.pressed.connect(_request_strike)
 	_touch_bar.add_child(bs)
+	var bscan: Button = _hud_button("SCAN")
+	bscan.pressed.connect(_request_scan)
+	_touch_bar.add_child(bscan)
 	var bi: Button = _hud_button("ISR")
 	bi.pressed.connect(_toggle_feed)
 	_touch_bar.add_child(bi)
