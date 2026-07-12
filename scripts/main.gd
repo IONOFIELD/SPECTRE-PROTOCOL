@@ -154,7 +154,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [F] weapons free   [V] AC-1
 const HUD_COL: Color = Color(0.74, 0.95, 0.80, 0.90)   # ISR green-white
 const HUD_DIM: Color = Color(0.74, 0.95, 0.80, 0.42)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 85
+const BUILD_PUSHES: int = 86
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.45, 0.95, 0.70, 0.95)
@@ -231,7 +231,6 @@ var _sani_music_on: bool = false       # the wipe-force theme layer is live (ass
 var _deploy_anim: Dictionary = {}      # {body, rotor, start, rest, t, dur, heli}: your insertion flying in
 var _nuke_fired: bool = false          # hoarding 50 HDDs trips a nuke -- total loss
 const NUKE_HDD: int = 50               # drives that draw the strike that ends everything
-const SANI_DEPLOY_KILLS: int = 45      # your kill count that summons the wipe force
 # The Sanitation theme layer -- drop one of these in and it rides in by proximity on deploy.
 const MUSIC_SANI: Array = ["res://audio/music/musicSANI.ogg", "res://audio/music/musicSANI.wav"]
 const SANI_MUS_NEAR: float = 30.0      # within this many metres the theme is at full presence
@@ -295,7 +294,7 @@ const LC_BIO: int = 3
 # AC-130 fire support -- a kill-charged boresight strike (v0.19's killstreak)
 const AC_UNLOCK: int = 100             # INFECTED kills to unlock a fire mission (killstreak; resets on use)
 const STRIKE_R: float = 16.0           # kill radius, metres
-const STRIKE_DMG: float = 460.0        # one burst flattens even the Sanitation elite
+const STRIKE_DMG: float = 1200.0       # one burst still flattens even the buffed Sanitation elite
 const STRIKE_TOF: float = 3.5          # round time-of-flight, seconds -- a long flight sells the distance
 const STRIKE_BOW: float = 0.26         # arc height of the inbound round, as a fraction of its screen run
 var _zombie_kills: int = 0             # infected killed toward the next AC-130 unlock
@@ -1422,7 +1421,8 @@ func _process(delta: float) -> void:
 		_update_menu(delta)
 	if not _menu_active and not _nuke_fired and _hdd >= NUKE_HDD and mission != null and mission.result == Mission.ONGOING:
 		_fire_nuke()
-	if not _menu_active and not _tutorial and not _sani_deployed and _kills >= SANI_DEPLOY_KILLS:
+	# the Sanitation force lands when the evac helo lifts off (T+EVAC_LEAVE), not on a kill count
+	if not _menu_active and not _tutorial and not _sani_deployed and mission != null and mission.result == Mission.ONGOING and mission.t >= Mission.EVAC_LEAVE:
 		_deploy_sanitation()
 	if mission != null and not _menu_active:
 		_recompute_alliances()          # a rival worn down to its last man begs off
@@ -1564,8 +1564,13 @@ func _mission_line() -> String:
 	var clock: String = "T+%d:%02d" % [int(mission.t) / 60, int(mission.t) % 60]
 	if _sani_deployed:
 		return "SANITATION LOOSE -- REACH A BRIDGE OR WIPE THEM   %s" % clock
-	var obj: String = "ELIMINATE %d TEAMS / EXTRACT / ESCAPE" % mission.rivals_left(sim) if _team_count > 1 else "EXTRACT OR ESCAPE"
-	return "%s   %s" % [obj, clock]
+	if mission.evac_open():
+		var left: int = int(ceil(Mission.EVAC_LEAVE - mission.t))
+		return "EVAC ON STATION -- BOARD THE LZ  (%d:%02d LEFT)   %s" % [left / 60, left % 60, clock]
+	# before the bird arrives: hold out; escape or wipe the rivals if you can
+	var until: int = int(ceil(Mission.EVAC_ARRIVE - mission.t))
+	var obj: String = "ELIMINATE %d TEAMS / ESCAPE" % mission.rivals_left(sim) if _team_count > 1 else "HOLD / ESCAPE"
+	return "%s -- EVAC IN %d:%02d   %s" % [obj, until / 60, until % 60, clock]
 
 
 ## The intel line under the objective: running HDD count, plus the last loot result
@@ -1898,10 +1903,10 @@ func _draw_escapes() -> void:
 		sel_layer.draw_string(ThemeDB.fallback_font, c + Vector2(rad + 5.0, 4.0), "EXIT", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, col)
 
 
-## The evac-helo LZ(s): lift-off extraction, open until the Sanitation force lands (then
-## only a bridge gets you out, so these vanish). A green ring with a spinning rotor cross.
+## The evac-helo LZ(s), drawn only while the bird is on station (T+2:00 .. T+3:00). A green
+## ring with a spinning rotor cross; once it lifts off (Sanitation lands) these vanish.
 func _draw_evac() -> void:
-	if mission == null or mission.result != Mission.ONGOING or _sani_deployed:
+	if mission == null or mission.result != Mission.ONGOING or _sani_deployed or not mission.evac_open():
 		return
 	var col: Color = Color(0.55, 1.0, 0.68, 0.85)
 	for z in mission.evacs:
@@ -3197,7 +3202,14 @@ func _menu_button(text: String) -> Button:
 	b.add_theme_stylebox_override("hover", sbf)
 	b.add_theme_stylebox_override("focus", sbf)
 	b.add_theme_stylebox_override("pressed", sbf)
+	b.pressed.connect(_menu_click)   # every menu selection blips the scanner
 	return b
+
+
+## The scanner blip on any main-menu selection.
+func _menu_click() -> void:
+	if _sfx_scan != null:
+		Audio.ui(_sfx_scan, -1.0)
 
 
 ## Start a run with `count` teams (or the tutorial, count < 0). Respawns at the edges.

@@ -41,6 +41,7 @@ func _initialize() -> void:
 	test_elements_and_medic()
 	test_mission_exfil()
 	test_mission_rivals_and_loss()
+	test_mission_evac_window()
 	test_loot_buffs()
 	perf()
 	print("=== %d failure(s) ===" % failures)
@@ -427,10 +428,10 @@ func test_air_strike() -> void:
 	var s: WorldSim = WorldSim.new()
 	s.set_bounds(Vector2(-40, -40), Vector2(160, 160))
 	var zed: int = s.spawn(Vector2(50, 50), &"zed", WorldSim.INFECTED)
-	var san: int = s.spawn(Vector2(54, 50), &"san", WorldSim.SANITATION)   # 400 hp, still dies
+	var san: int = s.spawn(Vector2(54, 50), &"san", WorldSim.SANITATION)   # 1000 hp, still dies to a full strike
 	var squad: int = s.spawn(Vector2(52, 52), &"cbt", WorldSim.SQUAD)      # friendly fire
 	var far: int = s.spawn(Vector2(92, 50), &"zed", WorldSim.INFECTED)     # outside the ring
-	s.air_strike(Vector2(52, 50), 16.0, 450.0)
+	s.air_strike(Vector2(52, 50), 16.0, 1200.0)   # STRIKE_DMG -- flattens even the buffed elite
 	check("the strike kills the hostiles in the ring", not s.alive[zed] and not s.alive[san],
 		"zed alive=%s, san alive=%s" % [s.alive[zed], s.alive[san]])
 	check("friendly fire is real -- squad in the ring dies too", not s.alive[squad], "squad alive=%s" % s.alive[squad])
@@ -465,7 +466,8 @@ func test_sanitation_flame() -> void:
 	var s: WorldSim = WorldSim.new()
 	s.set_bounds(Vector2(-40, -40), Vector2(160, 160))
 	s.spawn(Vector2(50, 50), &"san", WorldSim.SANITATION)
-	s.spawn(Vector2(50, 56), &"cbt", WorldSim.SQUAD)   # a target in throw/burn range
+	var tgt: int = s.spawn(Vector2(50, 56), &"cbt", WorldSim.SQUAD)   # a target in throw/burn range
+	s.hp[tgt] = 1_000_000.0   # unkillable dummy: the elite keeps firing so a flame roll lands
 	var flame: bool = false
 	var san_gun: bool = false
 	for _t in 900:
@@ -484,7 +486,8 @@ func test_sanitation_flash_evade() -> void:
 	var s: WorldSim = WorldSim.new()
 	s.set_bounds(Vector2(-60, -60), Vector2(200, 200))
 	var san: int = s.spawn(Vector2(100, 100), &"san", WorldSim.SANITATION)
-	s.spawn(Vector2(100, 110), &"cbt", WorldSim.SQUAD)   # holds the elite under fire
+	var foe_id: int = s.spawn(Vector2(100, 110), &"cbt", WorldSim.SQUAD)   # holds the elite under fire
+	s.hp[foe_id] = 1_000_000.0   # unkillable: keeps the elite pinned long enough to flash
 	var flashed: bool = false
 	var flash_pos: Vector2 = Vector2.ZERO
 	var moved: float = 0.0
@@ -669,6 +672,23 @@ func test_mission_rivals_and_loss() -> void:
 	s2.alive[p] = false                      # the player's last unit down
 	m2.update(s2, 0.1, false)
 	check("player team wiped -> LOST", m2.result == MissionScript.LOST, "reason=%s" % m2.reason)
+
+
+## Extraction only counts while the evac helo is on station (T+EVAC_ARRIVE .. T+EVAC_LEAVE).
+func test_mission_evac_window() -> void:
+	var s: WorldSim = WorldSim.new()
+	s.set_bounds(Vector2(-40, -40), Vector2(240, 240))
+	s.player_element = 0
+	var a: int = s.spawn(Vector2(20, 20), &"cdr", WorldSim.SQUAD, 0)
+	var m := MissionScript.new()
+	var evac: Array[Rect2] = [Rect2(100, 100, 20, 20)]
+	m.setup([Rect2(200, -40, 40, 280)] as Array[Rect2], evac, 0, 1)
+	s.pos[a] = Vector2(110, 110)                 # sitting on the LZ, but the bird isn't here yet
+	m.update(s, 1.0, false)
+	check("no extraction before the evac helo arrives", m.result == MissionScript.ONGOING, "result=%d" % m.result)
+	m.t = MissionScript.EVAC_ARRIVE + 1.0        # helo on station now
+	m.update(s, 0.1, false)
+	check("extraction opens once the helo is on station", m.result == MissionScript.WON, "reason=%s" % m.reason)
 
 
 ## The looted-building payouts: hospital heal, police armor, bio-lab resistance, a

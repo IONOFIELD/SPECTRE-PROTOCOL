@@ -57,7 +57,7 @@ const STATS: Dictionary = {
 	&"run": [7.8, 34.0, 38.0, 1.4, 9.0, 0.8],       # runner: OUTRUNS the squad, fragile, quick claw
 	&"bru": [3.4, 150.0, 28.0, 1.9, 26.0, 1.6],     # brute: slow, soaks a magazine, heavy claw
 	&"civ": [3.6, 40.0, 30.0, 0.0, 0.0, 0.0],       # civilian: unarmed, runs but gets caught
-	&"san": [9.2, 400.0, 40.8, 30.0, 25.0, 0.6],    # Sanitation elite: armoured (400 hp), FAST pack, ranged
+	&"san": [9.2, 1000.0, 40.8, 30.0, 50.0, 0.4],   # Sanitation elite: near-unkillable (1000 hp), hits like a truck, fast trigger -- you do NOT win a straight fight
 	&"bnd": [6.8, 75.0, 30.0, 16.0, 14.0, 1.0],     # bandit: aggressive armed hunter, squishy
 	&"svr": [5.4, 95.0, 18.0, 20.0, 16.0, 1.1],     # survivor: dug-in holdout, short sight, hits hard
 }

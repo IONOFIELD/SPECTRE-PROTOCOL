@@ -2,17 +2,21 @@ class_name Mission
 extends RefCounted
 
 ## The mission from the PLAYER's team's point of view (element `player_element`); the
-## other teams are AI rivals. You WIN by any of:
-##   - escaping across a bridge (all your living units in an escape zone), OR
-##   - extracting by evac helo (all your living units on an evac LZ), OR
-##   - eliminating every rival team.
-## But once the SANITATION FORCE is deployed the board changes: extraction + elimination
-## are off -- you can only escape a bridge, OR defeat the whole Sanitation force.
-## You LOSE the moment your team is wiped (another team, the horde, or Sanitation).
+## other teams are AI rivals. The clock drives it:
+##   T+0        deploy (the insertion animation runs)
+##   T+EVAC_ARRIVE  the evac helo ARRIVES -- extraction opens on the LZ
+##   T+EVAC_LEAVE   the evac helo LEAVES and the SANITATION FORCE deploys (main's trigger)
+## You WIN by escaping a bridge (any time), extracting on the LZ (only while the helo is on
+## station), or eliminating every rival team (before Sanitation lands). Once Sanitation is
+## loose only a bridge -- or wiping the whole force -- gets you out, and you will not win a
+## straight fight. You LOSE the moment your team is wiped.
 ##
 ## Pure logic over a WorldSim; main owns the deploy trigger, the markers, the banner.
 
 enum { ONGOING, WON, LOST }
+
+const EVAC_ARRIVE: float = 120.0      # 2:00 -- the evac helo touches down, extraction opens
+const EVAC_LEAVE: float = 180.0       # 3:00 -- it lifts off; Sanitation deploys
 
 var t: float = 0.0                    # survival clock
 var escapes: Array[Rect2] = []        # bridge far ends
@@ -54,7 +58,8 @@ func update(sim: WorldSim, dt: float, sani_deployed: bool) -> void:
 			result = WON
 			reason = "SANITATION DEFEATED"
 		return
-	if not evacs.is_empty() and _all_in(sim, mine, evacs):
+	# extraction only counts while the evac helo is on station (T+EVAC_ARRIVE .. T+EVAC_LEAVE)
+	if evac_open() and not evacs.is_empty() and _all_in(sim, mine, evacs):
 		_board(sim, mine)
 		result = WON
 		reason = "EXTRACTED BY AIR"
@@ -62,6 +67,11 @@ func update(sim: WorldSim, dt: float, sani_deployed: bool) -> void:
 	if n_elements > 1 and rivals_left(sim) == 0:
 		result = WON
 		reason = "ENEMY TEAMS ELIMINATED"
+
+
+## Is the evac helo currently on station (extraction available)?
+func evac_open() -> bool:
+	return t >= EVAC_ARRIVE and t < EVAC_LEAVE
 
 
 func rivals_left(sim: WorldSim) -> int:
