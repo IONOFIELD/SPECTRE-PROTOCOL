@@ -118,6 +118,9 @@ var _ac_charge: int = 0                # kills banked toward the next strike
 var _fire_req: bool = false            # a strike was requested this frame
 var _strike_pos: Vector2 = Vector2.ZERO
 var _strike_t: float = 999.0           # seconds since the last strike, for the impact FX
+var _flashes: Array = []               # muzzle flashes: [{pos: Vector2, t: float}], newest last
+const FLASH_LIFE: float = 0.12         # seconds a muzzle flash stays lit
+const FLASH_MAX: int = 80              # cap, so a big firefight can't flood the overlay
 
 # feeds
 const FEED: Dictionary = {
@@ -678,6 +681,8 @@ func _drain_audio() -> void:
 		match e["kind"]:
 			"gunfire":
 				_sfx_at(at, _sfx_gun)
+				if _flashes.size() < FLASH_MAX:
+					_flashes.append({"pos": e["pos"], "t": 0.0})
 			"claw":
 				_sfx_at(at, _sfx_claw)
 			"zed_death":
@@ -768,6 +773,7 @@ func _process(delta: float) -> void:
 	_sync_visuals(delta)
 	_drain_audio()
 	_strike_t += delta
+	_age_flashes(delta)
 
 	if mission != null:
 		var was: int = mission.result
@@ -928,6 +934,7 @@ func _draw_selection() -> void:
 		return                      # the overlay generator rides the same signal
 	_draw_hud()
 	_draw_allegiance()
+	_draw_flashes()
 	for i in sim.count():
 		if not sim.alive[i] or not sim.selected[i]:
 			continue
@@ -1071,6 +1078,31 @@ func _draw_strike() -> void:
 	var fade: float = 1.0 - k
 	sel_layer.draw_circle(cc, rad * (0.35 + k * 0.2), Color(1.0, 0.95, 0.82, fade * 0.8))
 	sel_layer.draw_arc(cc, rad * (0.5 + k * 0.6), 0.0, TAU, 44, Color(1.0, 0.78, 0.45, fade), 3.0)
+
+
+func _age_flashes(delta: float) -> void:
+	var i: int = _flashes.size() - 1
+	while i >= 0:
+		_flashes[i]["t"] += delta
+		if _flashes[i]["t"] > FLASH_LIFE:
+			_flashes.remove_at(i)
+		i -= 1
+
+
+## Muzzle flashes: a hot pip at each shot for a few frames, so firefights read on
+## the thermal feed instead of being audio-only.
+func _draw_flashes() -> void:
+	for f in _flashes:
+		var wp: Vector2 = f["pos"]
+		var w3: Vector3 = Vector3(wp.x, 1.1, wp.y)
+		if cam.is_position_behind(w3):
+			continue
+		var sp: Vector2 = _screen_point(w3)
+		var fade: float = 1.0 - float(f["t"]) / FLASH_LIFE
+		var r: float = 3.0 + fade * 2.5
+		# warm flash reads on bright land AND dark ocean; hot white core
+		sel_layer.draw_circle(sp, r, Color(1.0, 0.60, 0.18, fade * 0.9))
+		sel_layer.draw_circle(sp, r * 0.42, Color(1.0, 0.96, 0.82, fade))
 
 
 ## Attitude gauge, bottom-left: a heading dial with the optic azimuth pointer, the
