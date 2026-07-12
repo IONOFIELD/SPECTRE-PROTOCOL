@@ -59,10 +59,11 @@ const GAUNTLET_PER_BRIDGE: int = 44   # infected choking each bridge deck
 const ELEMENTS: int = 4                 # max player teams (touch bar 1-4)
 var _team_count: int = 4                 # chosen at the startup menu (solo / 2 / 3 / 4)
 # Your squad's loadout, chosen at the menu -- how many of each unit type deploy (element 0).
-var _loadout: Dictionary = {&"cdr": 1, &"cbt": 2, &"med": 1, &"snp": 1, &"rec": 1, &"eod": 1}
+var _loadout: Dictionary = {&"cdr": 2, &"cbt": 14, &"med": 4, &"snp": 3, &"rec": 2, &"eod": 1}   # sums to REQUIRED_TROOPS
 var _pending_count: int = 1              # team count picked, awaiting the loadout confirm
 var _squad_max: int = 6                  # how many troopers you deployed with (for the SQUAD n/max readout)
-const LOADOUT_MAX: int = 4               # cap per unit type
+const LOADOUT_MAX: int = 20              # cap per unit type
+const REQUIRED_TROOPS: int = 26          # the squad must field exactly this many to deploy
 # Parley: rival teams (SQUAD element != 0) are hostile by default, but some are OPEN to a
 # truce. A truce is MUTUAL -- you offer (PARLEY) and they're open -> allied (both hold fire).
 var _rival_open: Dictionary = {}         # rival element -> true if it would accept a truce
@@ -78,6 +79,8 @@ var _menu_loadout: Control               # the squad-loadout steppers (shown aft
 var _menu_thermal_btn: Button            # menu palette-flip button (WHT/BLK HOT / IRONBOW)
 const MODE_NAMES: Array = ["WHT HOT", "BLK HOT", "IRONBOW"]
 var _loadout_lbls: Dictionary = {}       # unit kind -> its count Label in the loadout panel
+var _loadout_total_lbl: Label            # "TROOPS n/26" readout
+var _deploy_btn: Button                  # DEPLOY -- enabled only when the total hits REQUIRED_TROOPS
 var _menu_ping_age: float = 999.0        # seconds since the last scanner ping (>= show = idle)
 var _menu_ping_next: float = 1.2         # seconds until the next ping (irregular)
 var _menu_resetting: bool = false        # a fade-out / respawn / fade-in cycle is running
@@ -138,7 +141,7 @@ func _request_scan() -> void:
 	_scan_t = 0.0
 	_scan_pulse_t = 0.0
 	if _sfx_scan != null:
-		Audio.sfx(_sfx_scan, 2.0)
+		Audio.sfx(_sfx_scan, 2.0, 0.6)   # the actual scanner: dropped low, sonar-like
 # Insertion edges, spread around the peninsula so no two teams deploy close. Order is
 # W, E, N, S so 2 teams land opposite (W+E), 3 add N, 4 add S.
 const EDGE_BASES: Array = [Vector2(205, 615), Vector2(885, 480), Vector2(500, 215), Vector2(520, 945)]
@@ -154,7 +157,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [F] weapons free   [V] AC-1
 const HUD_COL: Color = Color(0.74, 0.95, 0.80, 0.90)   # ISR green-white
 const HUD_DIM: Color = Color(0.74, 0.95, 0.80, 0.42)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 86
+const BUILD_PUSHES: int = 87
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.45, 0.95, 0.70, 0.95)
@@ -368,7 +371,7 @@ func _ready() -> void:
 	_spawn()
 	get_window().size_changed.connect(_reframe)   # ...and re-frame if it changes / rotates
 	set_process_input(true)
-	Audio.play_music(MUSIC_MENU, 0.0)   # menu theme; abrupt cut-in
+	Audio.play_music(MUSIC_MENU, 0.15)   # menu theme; quick 0.15 s fade in (and out on deploy)
 	Audio.play_ambience(AMBIENCE_BED, 3.0)   # ghost-town ambience swells under the mix
 	_sfx_gun = load("res://audio/sfx/gun_rifle.wav")
 	_sfx_claw = load("res://audio/sfx/zed_attack.wav")
@@ -1643,7 +1646,7 @@ func _update_menu(delta: float) -> void:
 		_menu_ping_age = 0.0
 		_menu_ping_next = _rng.randf_range(5.5, 8.5)   # irregular cadence
 		if _sfx_scan != null:
-			Audio.sfx(_sfx_scan, 1.0)
+			Audio.sfx(_sfx_scan, 1.0, 0.6)   # sonar-low, like the gameplay scan
 	if not _menu_resetting and _menu_prey_left() == 0:
 		_menu_reset_cycle()
 
@@ -2778,6 +2781,7 @@ func _build_touch_bar(host: CanvasLayer) -> void:
 	breg.pressed.connect(_regroup)
 	lbar.add_child(breg)
 	_cyc_btn = _hud_button("TYPE", 118)                 # the big tap-to-cycle unit-type box
+	_cyc_btn.add_theme_font_size_override("font_size", 26)   # bigger -- the most-tapped button, 3-letter labels
 	_cyc_btn.pressed.connect(_cycle_unit_type)
 	lbar.add_child(_cyc_btn)
 	var ball: Button = _hud_button("ALL", 62)
@@ -3116,12 +3120,14 @@ func _build_loadout_panel() -> Control:
 		plus.pressed.connect(_adjust_loadout.bind(k, 1))
 		row.add_child(plus)
 		v.add_child(row)
+	_loadout_total_lbl = _menu_label("", 16, HUD_COL)   # the running "TROOPS n/26" tally
+	v.add_child(_loadout_total_lbl)
 	var g1: Control = Control.new()
-	g1.custom_minimum_size = Vector2(0, 8)
+	g1.custom_minimum_size = Vector2(0, 6)
 	v.add_child(g1)
-	var deploy: Button = _menu_button("DEPLOY")
-	deploy.pressed.connect(_confirm_loadout)
-	v.add_child(deploy)
+	_deploy_btn = _menu_button("DEPLOY")
+	_deploy_btn.pressed.connect(_confirm_loadout)
+	v.add_child(_deploy_btn)
 	var back: Button = _menu_button("BACK")
 	back.pressed.connect(_close_loadout)
 	v.add_child(back)
@@ -3150,11 +3156,26 @@ func _adjust_loadout(k: StringName, d: int) -> void:
 
 
 func _refresh_loadout_labels() -> void:
+	var total: int = 0
 	for k in _loadout_lbls:
 		(_loadout_lbls[k] as Label).text = str(_loadout[k])
+		total += int(_loadout[k])
+	if _loadout_total_lbl != null:
+		var ok: bool = total == REQUIRED_TROOPS
+		_loadout_total_lbl.text = "TROOPS  %d / %d" % [total, REQUIRED_TROOPS]
+		_loadout_total_lbl.add_theme_color_override("font_color", HUD_COL if ok else HUD_RED)
+	if _deploy_btn != null:
+		var ready: bool = total == REQUIRED_TROOPS   # must field exactly the required squad
+		_deploy_btn.disabled = not ready
+		_deploy_btn.modulate = Color(1, 1, 1, 1.0 if ready else 0.35)
 
 
 func _confirm_loadout() -> void:
+	var total: int = 0
+	for k in _loadout:
+		total += int(_loadout[k])
+	if total != REQUIRED_TROOPS:
+		return                       # must field exactly the required squad size
 	_start_game(_pending_count)
 
 

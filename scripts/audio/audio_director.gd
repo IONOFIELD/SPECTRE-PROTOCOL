@@ -212,10 +212,10 @@ func play_music(source, fade_in := 0.8) -> void:
 	incoming.stream = stream
 	var was_playing: bool = _music_cur != null and _music_cur.playing
 	if fade_in <= 0.0:
-		incoming.volume_db = 0.0          # abrupt: no ramp from silence
+		incoming.volume_db = 0.0          # abrupt: full level from the first sample
 		incoming.play()
 		if was_playing:
-			_music_cur.stop()
+			_fade(_music_cur, FADE_FLOOR_DB, 0.15, true)   # old bed fades out over 0.15 s (no click)
 	else:
 		incoming.volume_db = FADE_FLOOR_DB
 		incoming.play()
@@ -243,12 +243,12 @@ func _fade(p: AudioStreamPlayer, to_db: float, dur: float, stop_after := false) 
 
 # ---- one-shots -------------------------------------------------------------
 
-func sfx(source, volume_db := 0.0) -> void:
-	_one_shot(source, BUS_SFX, volume_db)
+func sfx(source, volume_db := 0.0, pitch := 1.0) -> void:
+	_one_shot(source, BUS_SFX, volume_db, pitch)
 
 
-func ui(source, volume_db := 0.0) -> void:
-	_one_shot(source, BUS_UI, volume_db)
+func ui(source, volume_db := 0.0, pitch := 1.0) -> void:
+	_one_shot(source, BUS_UI, volume_db, pitch)
 
 
 # ---- ambience bed + radio comms --------------------------------------------
@@ -328,7 +328,7 @@ func comms_order() -> void:
 	comms(lines[randi() % lines.size()])
 
 
-func _one_shot(source, bus: String, volume_db: float) -> void:
+func _one_shot(source, bus: String, volume_db: float, pitch := 1.0) -> void:
 	var stream: AudioStream = _as_stream(source)
 	if stream == null:
 		return
@@ -336,6 +336,7 @@ func _one_shot(source, bus: String, volume_db: float) -> void:
 	p.bus = bus
 	p.stream = stream
 	p.volume_db = volume_db
+	p.pitch_scale = pitch          # reset each play (pooled players reuse the last value)
 	p.play()
 
 
