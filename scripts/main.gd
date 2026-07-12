@@ -57,6 +57,10 @@ const SURVIVOR_PER_HOLDOUT: int = 3
 const GAUNTLET_PER_BRIDGE: int = 44   # infected choking each bridge deck
 const ELEMENTS: int = 4                 # max player teams (touch bar 1-4)
 var _team_count: int = 4                 # chosen at the startup menu (solo / 2 / 3 / 4)
+# Parley: rival teams (SQUAD element != 0) are hostile by default, but some are OPEN to a
+# truce. A truce is MUTUAL -- you offer (PARLEY) and they're open -> allied (both hold fire).
+var _rival_open: Dictionary = {}         # rival element -> true if it would accept a truce
+var _player_offer: Dictionary = {}       # rival element -> true if YOU have offered one
 var _tutorial: bool = false              # tutorial run: calmer map, control hints
 var _menu_active: bool = true            # true until the player starts from the menu
 var _menu_layer: CanvasLayer             # the startup menu overlay, freed on start
@@ -94,7 +98,7 @@ const ELEMENT_ROSTER: Array = [&"cdr", &"cbt", &"med", &"snp", &"rec", &"eod"]  
 # the role is carried by HEAT + SIZE, not the model. false = minimalist thermal
 # shapes (the rymdkapsel read, matches v0.19); true = the PS1 .glb + idle rigs.
 const USE_MODELS: bool = false
-const HELP_TEXT: String = "[LMB] pick   [RMB] move   [F] weapons free   [V] AC-130 strike\n[TAB]/[1-4] element   [SPACE] AC-130 view   [WASD] pan   [wheel] zoom\n[T] palette   [C] snow   [H] hide      EXFIL: cross a bridge on foot"
+const HELP_TEXT: String = "[LMB] pick   [RMB] move   [F] weapons free   [V] AC-130 strike\n[TAB]/[1-4] element   [E] scan   [P] parley truce   [SPACE] AC-130 view\n[WASD] pan   [wheel] zoom   [T] palette   [C] snow   [H] hide\nEXFIL: cross a bridge, reach an evac LZ, or wipe the rival teams"
 
 # AC-130 gunship ISR HUD palette
 const HUD_COL: Color = Color(0.74, 0.95, 0.80, 0.90)   # ISR green-white
@@ -105,6 +109,8 @@ const TAG_FRIEND: Color = Color(0.45, 0.95, 0.70, 0.95)
 const TAG_ENEMY: Color = Color(1.00, 0.30, 0.30, 0.95)
 const TAG_VEHICLE: Color = Color(0.96, 0.90, 0.32, 0.95)
 const TAG_ZED: Color = Color(0.72, 0.42, 0.95, 0.90)   # the horde, purple
+const TAG_ALLY: Color = Color(0.40, 0.90, 0.95, 0.95)  # rival team at truce with you -- cyan
+const TAG_PASSIVE: Color = Color(0.98, 0.72, 0.28, 0.95) # rival open to a truce -- amber
 const TEAM_CARET_ZOOM: float = 780.0   # above this altitude, one team caret not per-unit boxes
 const TAG_ZOOM_MAX: float = 900.0      # target tags only when zoomed in like the real optic
 
@@ -630,6 +636,7 @@ func _spawn() -> void:
 	mission = Mission.new()
 	mission.setup(city.escapes, _evac_zones(), 0, _team_count)
 	_spawn_hdd_pickups()
+	_init_dispositions()
 	# one visual per sim unit, index-aligned with the sim arrays.
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 	rng.randomize()
@@ -710,6 +717,80 @@ func _evac_zones() -> Array[Rect2]:
 			c = Vector2(400.0, 500.0)
 		zones.append(Rect2(c.x - 9.0, c.y - 9.0, 18.0, 18.0))
 	return zones
+
+
+## Roll each rival team's disposition: about half are OPEN to a truce, the rest fight to
+## the end. You still have to PARLEY to actually stand a truce up (it's mutual).
+func _init_dispositions() -> void:
+	_rival_open.clear()
+	_player_offer.clear()
+	for e in range(1, _team_count):
+		_rival_open[e] = _rng.randf() < 0.5
+	_recompute_alliances()
+
+
+## Fold the two offers into the sim's allied map: a team is allied (mutual hold-fire) only
+## when YOU have offered AND it is open. A battered rival (<=1 unit left) turns open to beg off.
+func _recompute_alliances() -> void:
+	if sim == null:
+		return
+	for e in range(1, _team_count):
+		if sim.element_ids(e).size() <= 1:
+			_rival_open[e] = true
+		sim.allied[e] = _player_offer.get(e, false) and _rival_open.get(e, false)
+
+
+## Offer or withdraw a truce with the rival team nearest the reticle (whoever you're
+## looking at). Mutual: it only stands up if that team is open.
+func _parley() -> void:
+	if sim == null or _team_count <= 1 or _menu_active:
+		return
+	var e: int = _rival_near_reticle()
+	if e < 0:
+		_loot_say("PARLEY  --  NO TEAM IN SIGHT")
+		return
+	_player_offer[e] = not _player_offer.get(e, false)
+	_recompute_alliances()
+	if sim.allied.get(e, false):
+		Audio.comms("ack_affirmative", 800)
+		_loot_say("TEAM %d  --  TRUCE STANDS" % (e + 1))
+	elif not _player_offer[e]:
+		Audio.comms("order_ready", 800)
+		_loot_say("TEAM %d  --  TRUCE WITHDRAWN" % (e + 1))
+	else:
+		Audio.comms("order_ready", 800)
+		_loot_say("TEAM %d  --  HAILED (NO ANSWER)" % (e + 1))
+
+
+## The rival element (SQUAD, not your team) whose nearest unit sits closest to the reticle.
+func _rival_near_reticle() -> int:
+	var look: Vector2 = Vector2(cam_tx, cam_tz)
+	var best: int = -1
+	var bd: float = INF
+	for i in sim.count():
+		if not sim.alive[i] or sim.team[i] != WorldSim.SQUAD:
+			continue
+		var e: int = sim.element[i]
+		if e == 0 or e == sim.player_element:
+			continue
+		var d: float = look.distance_squared_to(sim.pos[i])
+		if d < bd:
+			bd = d
+			best = e
+	return best
+
+
+## Bracket colour for a squad unit by its team's stance toward you: your own green, an
+## allied team cyan, a team open to truce amber, an unrepentant rival red.
+func _squad_col(i: int) -> Color:
+	var e: int = sim.element[i]
+	if e == 0 or e == sim.player_element:
+		return TAG_FRIEND
+	if sim.allied.get(e, false):
+		return TAG_ALLY
+	if _rival_open.get(e, false):
+		return TAG_PASSIVE
+	return TAG_ENEMY
 
 
 ## Call in the Sanitation force: POP_SAN cool elites scattered across the city, with
@@ -1182,6 +1263,7 @@ func _process(delta: float) -> void:
 	if not _menu_active and not _tutorial and not _sani_deployed and _kills >= SANI_DEPLOY_KILLS:
 		_deploy_sanitation()
 	if mission != null and not _menu_active:
+		_recompute_alliances()          # a rival worn down to its last man begs off
 		var was: int = mission.result
 		mission.update(sim, delta, _sani_deployed)
 		if was == Mission.ONGOING and mission.result != Mission.ONGOING:
@@ -1626,8 +1708,10 @@ func _draw_unit_boxes() -> void:
 		if cam.is_position_behind(w):
 			continue
 		var p: Vector2 = _screen_point(w)
-		_corner_box(p, 6.5, TAG_FRIEND)
-		_caret(p - Vector2(0.0, 15.0), 5.0, head, true)   # a caret hovering over the head
+		var mine: bool = sim.element[i] == 0 or sim.element[i] == sim.player_element
+		_corner_box(p, 6.5, _squad_col(i))
+		if mine:
+			_caret(p - Vector2(0.0, 15.0), 5.0, head, true)   # only your team wears the friendly caret
 
 
 ## AC-130 target tags -- ONLY inside the centre reticle box, like the real optic when
@@ -1675,7 +1759,7 @@ func _draw_tags(font: Font) -> void:
 			continue
 		var t: int = sim.team[i]
 		if t == WorldSim.SQUAD:
-			_corner_box(p, 7.0, TAG_FRIEND)
+			_corner_box(p, 7.0, _squad_col(i))
 		elif t == WorldSim.INFECTED:
 			_caret(p - Vector2(0.0, 9.0), 5.0, TAG_ZED, true)
 			sel_layer.draw_string(font, p + Vector2(7.0, -3.0), "%dm" % int(sim.pos[i].distance_to(me)), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, TAG_ZED)
@@ -1777,6 +1861,26 @@ func _draw_hud() -> void:
 		sel_layer.draw_string(font, Vector2(30.0, win.y - 160.0), "SCAN  %ds" % int(ceil(SCAN_COOLDOWN - _scan_t)), HORIZONTAL_ALIGNMENT_LEFT, -1, 13, HUD_DIM)
 	else:
 		sel_layer.draw_string(font, Vector2(30.0, win.y - 160.0), "SCAN READY  [E]", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, HUD_COL)
+
+	# Parley status: the rival team under the reticle and its stance toward you.
+	if not _menu_active and _team_count > 1 and mission != null and mission.result == Mission.ONGOING:
+		var e: int = _rival_near_reticle()
+		if e >= 0:
+			var txt: String
+			var col: Color
+			if sim.allied.get(e, false):
+				txt = "TEAM %d  ALLIED  [P] BREAK" % (e + 1)
+				col = TAG_ALLY
+			elif _player_offer.get(e, false):
+				txt = "TEAM %d  HAILED -- NO ANSWER" % (e + 1)
+				col = TAG_PASSIVE
+			elif _rival_open.get(e, false):
+				txt = "TEAM %d  OPEN  [P] TRUCE" % (e + 1)
+				col = TAG_PASSIVE
+			else:
+				txt = "TEAM %d  HOSTILE  [P] HAIL" % (e + 1)
+				col = HUD_RED
+			sel_layer.draw_string(font, Vector2(30.0, win.y - 142.0), txt, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, col)
 
 	_draw_attitude(font, win)
 	_draw_threat(font, win)
@@ -2074,6 +2178,7 @@ func _input(e: InputEvent) -> void:
 			KEY_F: _toggle_fire()
 			KEY_V: _request_strike()
 			KEY_E: _request_scan()
+			KEY_P: _parley()
 			KEY_TAB: _pick_element((active_element + 1) % ELEMENTS)
 			KEY_Q: _cycle_unit_type()
 			KEY_1: _pick_element(0)
@@ -2389,6 +2494,9 @@ func _build_touch_bar(host: CanvasLayer) -> void:
 	var bscan: Button = _hud_button("SCAN")
 	bscan.pressed.connect(_request_scan)
 	_touch_bar.add_child(bscan)
+	var bpar: Button = _hud_button("PRLY")
+	bpar.pressed.connect(_parley)
+	_touch_bar.add_child(bpar)
 	var bi: Button = _hud_button("ISR")
 	bi.pressed.connect(_toggle_feed)
 	_touch_bar.add_child(bi)
