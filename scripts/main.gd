@@ -106,6 +106,9 @@ var show_help: bool = true
 # AC-130 HUD + touch
 var _touch_bar: Control                # on-screen control bar (mobile); null until built
 var _kills: int = 0                    # confirmed hostile kills, for the threat readout
+var _touches: Dictionary = {}          # active touch index -> position
+var _touch_moved: float = 0.0          # primary-touch travel, to tell a tap from a drag
+var _pinch_prev: float = 0.0           # last two-finger spread, for pinch-zoom
 
 # feeds
 const FEED: Dictionary = {
@@ -289,6 +292,8 @@ func _build_tree() -> void:
 	banner.visible = false
 	layer.add_child(banner)
 
+	_build_touch_bar(layer)
+
 	_push_res()
 	if OS.get_environment("SPECTRE_CLEAN") != "":
 		# A/B rig: kill the detector noise so a diff measures surface detail only
@@ -344,9 +349,7 @@ func _reframe() -> void:
 ## Re-lay the on-screen touch controls for the current window/orientation. The
 ## drawn HUD anchors itself; only the touch bar needs re-placing.
 func _layout_controls() -> void:
-	if _touch_bar == null:
-		return
-	# touch-bar layout is filled in when the control bar is built
+	_place_touch_bar()
 
 
 ## PS1 props, thermal-reskinned.
@@ -690,6 +693,8 @@ func _sfx_at(at: Vector3, stream: AudioStream) -> void:
 
 func _process(delta: float) -> void:
 	frame_n += 1.0
+	if int(frame_n) == 3:
+		_layout_controls()   # re-place the touch bar once the viewport size has settled
 	if _shot_dir != "":
 		_maybe_capture()
 	if not _auto_fired and frame_n > INTRO_HOLD * 60.0:
@@ -1106,9 +1111,7 @@ func _input(e: InputEvent) -> void:
 				show_help = not show_help
 				if help != null:
 					help.visible = show_help
-			KEY_F:
-				sim.weapons_free = not sim.weapons_free
-				Audio.comms("open_fire" if sim.weapons_free else "hold_fire", 0)
+			KEY_F: _toggle_fire()
 			KEY_TAB: _pick_element((active_element + 1) % ELEMENTS)
 			KEY_1: _pick_element(0)
 			KEY_2: _pick_element(1)
@@ -1129,9 +1132,147 @@ func _input(e: InputEvent) -> void:
 				_rebuild_world()
 			KEY_R:
 				res_idx = (res_idx + 1) % RESOLUTIONS.size()
-				snap_res = RESOLUTIONS[res_idx]
+				_init_res()
 				_push_res()
 				_rebuild_world()
+	# --- touch (mobile). One-finger drag pans, two-finger pinch zooms, and a tap
+	# selects your squad's element or moves it to the tapped ground. Buttons on the
+	# control bar swallow their own taps (see _over_ui).
+	elif e is InputEventScreenTouch:
+		if e.pressed:
+			if _over_ui(e.position):
+				return
+			_touches[e.index] = e.position
+			if _touches.size() == 1:
+				_touch_moved = 0.0
+			elif _touches.size() == 2:
+				_pinch_prev = _two_touch_dist()
+		else:
+			if _touches.size() == 1 and _touch_moved < 14.0 and _touches.has(e.index):
+				_tap(e.position)
+			_touches.erase(e.index)
+	elif e is InputEventScreenDrag:
+		if not _touches.has(e.index):
+			return
+		_touches[e.index] = e.position
+		if _touches.size() >= 2:
+			var d: float = _two_touch_dist()
+			if _pinch_prev > 1.0 and d > 1.0:
+				cam_dist = clampf(cam_dist * (_pinch_prev / d), ZOOM_MIN, ZOOM_MAX)
+			_pinch_prev = d
+		else:
+			_touch_moved += e.relative.length()
+			cam_manual = true
+			var ca: float = cos(cam_az)
+			var sa: float = sin(cam_az)
+			var k: float = cam_dist * 0.0022
+			cam_tx += (-e.relative.x * sa - e.relative.y * ca) * k
+			cam_tz += (e.relative.x * ca - e.relative.y * sa) * k
+
+
+func _two_touch_dist() -> float:
+	var pts: Array = _touches.values()
+	if pts.size() < 2:
+		return 0.0
+	return (pts[0] as Vector2).distance_to(pts[1] as Vector2)
+
+
+func _over_ui(pos: Vector2) -> bool:
+	return _touch_bar != null and _touch_bar.get_global_rect().has_point(pos)
+
+
+## A tap: tap your own squad to drive that element; tap open ground to move the
+## element you are driving to that spot.
+func _tap(pos: Vector2) -> void:
+	var g: Vector2 = _ground_pick(pos)
+	var best: int = -1
+	var bd: float = 7.0
+	for i in sim.count():
+		if sim.alive[i] and sim.team[i] == WorldSim.SQUAD:
+			var d: float = sim.pos[i].distance_to(g)
+			if d < bd:
+				bd = d
+				best = i
+	if best >= 0:
+		_pick_element(sim.element[best])
+		Audio.comms("ack_affirmative", 2500)
+	elif not sim.selected_ids().is_empty():
+		sim.order_move(sim.selected_ids(), g)
+		Audio.comms_order()
+
+
+func _toggle_fire() -> void:
+	sim.weapons_free = not sim.weapons_free
+	Audio.comms("open_fire" if sim.weapons_free else "hold_fire", 0)
+
+
+func _toggle_feed() -> void:
+	_channel_change("orbit" if feed == "deploy" else "deploy")
+
+
+func _cycle_palette() -> void:
+	mode = (mode + 1) % 3
+
+
+## Bottom control bar for touch: element picks, weapons-free, ISR view, palette.
+## Styled like the gunship HUD; works with mouse too.
+func _build_touch_bar(host: CanvasLayer) -> void:
+	_touch_bar = HBoxContainer.new()
+	_touch_bar.add_theme_constant_override("separation", 7)
+	for n in ELEMENTS:
+		var b: Button = _hud_button(str(n + 1))
+		b.pressed.connect(_pick_element.bind(n))
+		_touch_bar.add_child(b)
+	var bf: Button = _hud_button("FIRE")
+	bf.pressed.connect(_toggle_fire)
+	_touch_bar.add_child(bf)
+	var bi: Button = _hud_button("ISR")
+	bi.pressed.connect(_toggle_feed)
+	_touch_bar.add_child(bi)
+	var bp: Button = _hud_button("PAL")
+	bp.pressed.connect(_cycle_palette)
+	_touch_bar.add_child(bp)
+	host.add_child(_touch_bar)
+	_place_touch_bar()
+
+
+func _hud_button(text: String) -> Button:
+	var b: Button = Button.new()
+	b.text = text
+	b.custom_minimum_size = Vector2(58, 46)
+	b.focus_mode = Control.FOCUS_NONE
+	b.add_theme_font_override("font", load(HUD_FONT))
+	b.add_theme_font_size_override("font_size", 15)
+	b.add_theme_color_override("font_color", HUD_COL)
+	b.add_theme_color_override("font_hover_color", HUD_COL)
+	b.add_theme_color_override("font_pressed_color", Color(0.08, 0.12, 0.09))
+	var sb: StyleBoxFlat = StyleBoxFlat.new()
+	sb.bg_color = Color(0.05, 0.09, 0.06, 0.5)
+	sb.border_color = Color(HUD_COL.r, HUD_COL.g, HUD_COL.b, 0.7)
+	sb.set_border_width_all(1)
+	sb.set_corner_radius_all(2)
+	b.add_theme_stylebox_override("normal", sb)
+	var sbp: StyleBoxFlat = sb.duplicate()
+	sbp.bg_color = Color(HUD_COL.r, HUD_COL.g, HUD_COL.b, 0.55)
+	b.add_theme_stylebox_override("hover", sbp)
+	b.add_theme_stylebox_override("pressed", sbp)
+	return b
+
+
+func _place_touch_bar() -> void:
+	if _touch_bar == null:
+		return
+	# canvas space, not raw window pixels -- the CanvasLayer lives in the stretched
+	# logical viewport (same space the drawn HUD uses).
+	var win: Vector2 = Vector2(get_viewport().get_visible_rect().size)
+	_touch_bar.reset_size()
+	var sz: Vector2 = _touch_bar.get_combined_minimum_size()
+	_touch_bar.size = sz
+	# bottom-right (thumb reach), clear of the bottom-left keyboard card
+	_touch_bar.position = Vector2(win.x - sz.x - 16.0, win.y - sz.y - 16.0)
+	# the keyboard controls card is desktop-only; drop it on a portrait phone
+	if help != null:
+		help.visible = show_help and win.x >= win.y
 
 
 func _rebuild_world() -> void:
