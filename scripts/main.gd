@@ -998,7 +998,36 @@ func _draw_hud() -> void:
 
 	# slant range by the reticle
 	sel_layer.draw_string(font, c + Vector2(reach + 8.0, 4.0), "%dM" % int(cam_dist), HORIZONTAL_ALIGNMENT_LEFT, -1, 13, HUD_COL)
+
+	# TARGET LOCKED when the element you're driving has a foe acquired
+	var locked: bool = false
+	for i in sim.count():
+		if sim.alive[i] and sim.element[i] == active_element and sim.foe[i] != -1:
+			locked = true
+			break
+	if locked:
+		sel_layer.draw_string(font, c + Vector2(-42.0, reach + 22.0), "TGT LOCKED", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, HUD_RED)
+
+	_draw_attitude(font, win)
 	_draw_threat(font, win)
+
+
+## Attitude gauge, bottom-left: a heading dial with the optic azimuth pointer, the
+## optic elevation, and the pylon-turn state -- the AC-130's bank/attitude circle.
+func _draw_attitude(font: Font, win: Vector2) -> void:
+	var gc: Vector2 = Vector2(66.0, win.y - 132.0)
+	var gr: float = 27.0
+	sel_layer.draw_arc(gc, gr, 0.0, TAU, 40, HUD_DIM, 1.5)
+	for a in range(0, 360, 30):
+		var av: Vector2 = Vector2(sin(deg_to_rad(a)), -cos(deg_to_rad(a)))
+		var inner: float = gr - (8.0 if a % 90 == 0 else 4.0)
+		sel_layer.draw_line(gc + av * inner, gc + av * gr, HUD_DIM, 1.5)
+	var hv: Vector2 = Vector2(sin(-cam_az), -cos(-cam_az))
+	sel_layer.draw_line(gc, gc + hv * (gr - 3.0), HUD_COL, 2.0)
+	sel_layer.draw_circle(gc, 2.5, HUD_COL)
+	var hdg: int = (int(round(rad_to_deg(-cam_az))) % 360 + 360) % 360
+	sel_layer.draw_string(font, gc + Vector2(gr + 8.0, -4.0), "HDG %03d" % hdg, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, HUD_COL)
+	sel_layer.draw_string(font, gc + Vector2(gr + 8.0, 12.0), "EL %02d" % int(rad_to_deg(cam_el)), HORIZONTAL_ALIGNMENT_LEFT, -1, 12, HUD_COL)
 
 
 ## Red threat box (INFESTATION-style): living hostiles + confirmed kills.
