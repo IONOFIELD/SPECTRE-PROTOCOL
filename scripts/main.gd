@@ -152,6 +152,8 @@ var _sfx_death: AudioStream
 var _sfx_strike: AudioStream
 var _sfx_blast: AudioStream
 var _sfx_flash: AudioStream
+var _sfx_flame: AudioStream            # sanitation flamethrower whoosh
+var _flame_sfx_cd: float = 0.0         # throttle so overlapping jets don't machine-gun the whoosh
 var _sfx_expl: AudioStream             # distant explosion, for ambient war
 var _sfx_yell: AudioStream             # civilian panic (drop audio/sfx/civ_panic.wav to enable)
 var _sfx_sanvox: Array[AudioStream] = []   # sanitation vocals: the squad comms, reversed (eerie)
@@ -258,7 +260,7 @@ const FLASH_LIFE: float = 0.12         # seconds a muzzle flash stays lit
 const FLASH_MAX: int = 80              # cap, so a big firefight can't flood the overlay
 # 3D thermal blasts: hot emissive blobs in the feed that bloom + fade -- reused
 # for the AC-130 strike, EOD grenades, the sanitation flamethrower + flash-nades.
-const FLASH3D_POOL: int = 32               # a sanitation flame burns ~3 blobs, so run deep
+const FLASH3D_POOL: int = 56               # a flamethrower burst sprays 11 streaming blobs; run deep
 var _flash3d: Array[MeshInstance3D] = []   # free pool
 var _flash3d_busy: Array = []              # active: [{node, t, life, peak}]
 const FLAME_LEN: float = 11.0              # visible reach of the fire jet, m
@@ -325,6 +327,7 @@ func _ready() -> void:
 	_sfx_strike = load("res://audio/sfx/ac130_strike.wav")
 	_sfx_blast = load("res://audio/sfx/blast.wav")
 	_sfx_flash = load("res://audio/sfx/flashbang.wav")
+	_sfx_flame = load("res://audio/sfx/flamethrower.wav")
 	_sfx_expl = load("res://audio/sfx/dist_explosion.wav")
 	_sfx_yell = load("res://audio/sfx/civ_panic.wav") if ResourceLoader.exists("res://audio/sfx/civ_panic.wav") else null
 	for stem in ["ack_affirmative", "ack_inposition", "hold_fire", "need_backup", "open_fire", "order_go", "order_move_out", "order_push", "order_ready"]:
@@ -1102,7 +1105,10 @@ func _drain_audio() -> void:
 				_sfx_at(at, _sfx_blast)    # EOD grenade / RPG
 				_spawn_flash3d(e["pos"], 4.0, 0.35, 1.6)
 			"flame":
-				_spawn_flame(e["pos"], e["to"])   # sanitation fire jet -- glow only, no report
+				_spawn_flame(e["pos"], e["to"])   # sanitation fire jet
+				if _sfx_flame != null and _flame_sfx_cd <= 0.0:
+					_sfx_at(at, _sfx_flame, -3.0)  # the whoosh -- throttled so jets don't stack
+					_flame_sfx_cd = 0.5
 			"flash":
 				_sfx_at(at, _sfx_flash)            # sanitation flash-bang: bright bloom + ring-out
 				_spawn_flash3d(e["pos"], 6.0, 0.40, 2.0)
@@ -1307,6 +1313,8 @@ func _process(delta: float) -> void:
 	_age_flash3d(delta)
 	_advance_loot(delta)
 	_collect_hdd_pickups()
+	if _flame_sfx_cd > 0.0:
+		_flame_sfx_cd = maxf(0.0, _flame_sfx_cd - delta)
 	if _sani_music_on:
 		_ride_sani_music()
 	if _loot_toast_t > 0.0:
@@ -2152,19 +2160,20 @@ func _build_flash_pool() -> void:
 
 ## Spawn a hot thermal blast at a world point: a fire-hot blob that blooms to
 ## `peak` metres and fades over `life` s. Pooled -- no-ops if all are busy.
-func _spawn_flash3d(pos: Vector2, peak: float, life: float, h: float = 2.0) -> void:
+func _spawn_flash3d(pos: Vector2, peak: float, life: float, h: float = 2.0, vel: Vector3 = Vector3.ZERO) -> void:
 	if _flash3d.is_empty():
 		return
 	var mi: MeshInstance3D = _flash3d.pop_back()
 	mi.position = Vector3(pos.x, h, pos.y)
 	mi.scale = Vector3.ONE * 0.02
 	mi.visible = true
-	_flash3d_busy.append({"node": mi, "t": 0.0, "life": life, "peak": peak})
+	_flash3d_busy.append({"node": mi, "t": 0.0, "life": life, "peak": peak, "vel": vel})
 
 
-## Sanitation flamethrower: a hot plume that reads on thermal as an elongated
-## glow -- overlapping fire-blobs from the nozzle toward the target, fattest and
-## hottest at the muzzle, tapering to the tip. Bloom smears them into one tongue.
+## Sanitation flamethrower: a streaming jet of hot particles. A single burst sprays a
+## cone of fire-blobs from the nozzle that FLY outward along the aim and drift upward as
+## they fade, so the tongue licks and rolls (vs. the old four static blobs). The thermal
+## `fire` material (writhe + shimmer) + the sensor bloom smear them into one live flame.
 func _spawn_flame(from: Vector2, to: Vector2) -> void:
 	var dir: Vector2 = to - from
 	var dist: float = dir.length()
@@ -2172,11 +2181,21 @@ func _spawn_flame(from: Vector2, to: Vector2) -> void:
 		return
 	dir /= dist
 	var reach: float = minf(dist, FLAME_LEN)
-	var steps: Array = [0.07, 0.28, 0.52, 0.80]   # fraction of reach for each blob
-	var sizes: Array = [1.7, 1.35, 0.95, 0.55]    # bloom radius, m -- fat hot root, tapering tip
-	for k in steps.size():
-		var p: Vector2 = from + dir * (reach * float(steps[k]))
-		_spawn_flash3d(p, float(sizes[k]), 0.32, FLAME_H)
+	var perp: Vector2 = Vector2(-dir.y, dir.x)
+	var dir3: Vector3 = Vector3(dir.x, 0.0, dir.y)
+	var n: int = 11
+	for k in n:
+		var f: float = float(k) / float(n - 1)                     # 0 root .. 1 tip
+		# seed each blob along the jet so the tongue is fully drawn from the first frame,
+		# then give it outward speed (faster toward the tip) + a rising drift.
+		var spread: float = (0.5 + f * 1.7) * _rng.randf_range(-1.0, 1.0)
+		var p: Vector2 = from + dir * (reach * f) + perp * spread
+		var size: float = lerpf(2.0, 0.45, f)                      # fat hot root, thin tip
+		var speed: float = 7.0 + f * 12.0
+		var v3: Vector3 = dir3 * speed \
+			+ Vector3(perp.x, 0.0, perp.y) * (spread * 3.0) \
+			+ Vector3(0.0, 2.2 + f * 2.0, 0.0)                     # heat rises, tips roll up
+		_spawn_flash3d(p, size, 0.30 + f * 0.16, FLAME_H + f * 0.6, v3)
 
 
 func _age_flash3d(delta: float) -> void:
@@ -2191,6 +2210,7 @@ func _age_flash3d(delta: float) -> void:
 			_flash3d_busy.remove_at(i)
 		else:
 			f["node"].scale = Vector3.ONE * maxf(0.02, float(f["peak"]) * sin(k * PI))   # 0 -> peak -> 0
+			f["node"].position += (f["vel"] as Vector3) * delta                          # stream + rise
 		i -= 1
 
 

@@ -23,6 +23,13 @@ Attribution is not required by CC0. It is here because knowing where a file came
 from is worth more than the licence obligation.
 
 
+AUDIO
+=====
+Flamethrower whoosh (res://audio/sfx/flamethrower.wav) — "magic flame thrower"
+by qubodup (Iwan Gabovitch) on Freesound, sound #740029, CC0 1.0 Public Domain.
+https://freesound.org/s/740029/  — transcoded FLAC → WAV for the Godot importer.
+
+
 FONT
 ====
 Inversionz — Darrell Flood (aka Dadiomouse), dadiomouse@gmail.com. Donationware,
