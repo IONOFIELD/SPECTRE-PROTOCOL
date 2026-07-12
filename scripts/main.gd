@@ -203,9 +203,22 @@ var _press_pos: Vector2 = Vector2.ZERO # where the hold began (drag past this ca
 var _looted: Dictionary = {}           # building index -> true (cleared, can't re-loot)
 var _loot_count: int = 0               # buildings looted this mission
 var _hdd: int = 0                       # HDD drives recovered -> end-of-mission score multiplier
+var _hdd_pickups: Array[Vector2] = []  # dedicated intel drops scattered on the map
+var _loot_rng: RandomNumberGenerator = RandomNumberGenerator.new()
+var _loot_toast: String = ""           # transient readout: what the last building held
+var _loot_toast_t: float = 0.0         # seconds of toast left
 const LOOT_TIME: float = 1.5           # hold seconds to clear a building
-const LOOT_PTS: int = 60               # score per building looted
+const LOOT_PTS: int = 60               # score per building cleared (before its payout)
 const LOOT_CANCEL_PX: float = 42.0     # drag past this and it's a pan, not a loot
+const LOOT_TOAST_TIME: float = 3.2     # how long a loot result stays on the HUD
+const LOOT_AMBUSH_CHANCE: float = 0.16 # odds a cleared building was a nest that bites back
+const HDD_PICKUPS: int = 10            # dedicated drives seeded on the map
+const HDD_GRAB_M: float = 5.0          # a unit this close scoops a drive
+# building payout classes (stable per building index)
+const LC_HDD: int = 0
+const LC_HOSP: int = 1
+const LC_POLICE: int = 2
+const LC_BIO: int = 3
 
 # AC-130 fire support -- a kill-charged boresight strike (v0.19's killstreak)
 const AC_UNLOCK: int = 100             # INFECTED kills to unlock a fire mission (killstreak; resets on use)
@@ -616,6 +629,7 @@ func _spawn() -> void:
 	# win by escaping a bridge, extracting via an evac LZ, or eliminating the rival teams.
 	mission = Mission.new()
 	mission.setup(city.escapes, _evac_zones(), 0, _team_count)
+	_spawn_hdd_pickups()
 	# one visual per sim unit, index-aligned with the sim arrays.
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 	rng.randomize()
@@ -727,6 +741,42 @@ func _random_land_point(rng: RandomNumberGenerator) -> Vector2:
 		if Geometry2D.is_point_in_polygon(p, city.land_poly):
 			return p
 	return Vector2(400.0, 500.0)   # central-land fallback
+
+
+## Seed the dedicated HDD drives across the city -- intel to scoop by walking a unit
+## over one. Kept out of buildings/water so they're always reachable on foot.
+func _spawn_hdd_pickups() -> void:
+	_hdd_pickups.clear()
+	if city == null or _menu_sim:
+		return
+	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
+	rng.randomize()
+	for _k in HDD_PICKUPS:
+		for _try in 24:
+			var p: Vector2 = _random_land_point(rng)
+			if _building_at(p) < 0:
+				_hdd_pickups.append(p)
+				break
+
+
+## A living player-element trooper standing on a drive scoops it: +1 HDD, gone from the map.
+func _collect_hdd_pickups() -> void:
+	if _hdd_pickups.is_empty():
+		return
+	var grab2: float = HDD_GRAB_M * HDD_GRAB_M
+	for k in range(_hdd_pickups.size() - 1, -1, -1):
+		var g: Vector2 = _hdd_pickups[k]
+		for i in sim.count():
+			if not sim.alive[i] or sim.extracted[i]:
+				continue
+			if sim.team[i] != WorldSim.SQUAD or sim.element[i] != 0:
+				continue
+			if sim.pos[i].distance_squared_to(g) <= grab2:
+				_hdd += 1
+				_hdd_pickups.remove_at(k)
+				_loot_say("HDD RECOVERED   x%d" % _hdd)
+				Audio.comms("ack_affirmative", 1500)
+				break
 
 
 ## Build the visual for one sim unit. Returns null for an unknown team (still kept
@@ -1116,6 +1166,9 @@ func _process(delta: float) -> void:
 	_age_flashes(delta)
 	_age_flash3d(delta)
 	_advance_loot(delta)
+	_collect_hdd_pickups()
+	if _loot_toast_t > 0.0:
+		_loot_toast_t = maxf(0.0, _loot_toast_t - delta)
 	_ambient_combat(delta)
 	_advance_panic(delta)
 	_sanitation_vox(delta)
@@ -1201,8 +1254,9 @@ func _process(delta: float) -> void:
 	if p >= 0.0 and p < 0.46:
 		hud.text = "" if int(frame_n) % 16 < 8 else "SIGNAL ACQ"
 	else:
-		hud.text = "%s\n\nFEED  %s\nELMT  %d/%d   WPN %s\nMODE  %s\nRES   %dx%d\nALT   %d M   SLANT %d M\nAGC   %s %.3f/%.3f\nFPS   %d" % [
+		hud.text = "%s\n%s\n\nFEED  %s\nELMT  %d/%d   WPN %s\nMODE  %s\nRES   %dx%d\nALT   %d M   SLANT %d M\nAGC   %s %.3f/%.3f\nFPS   %d" % [
 			_mission_line(),
+			_intel_line(),
 			"AC-130 / PYLON TURN" if feed == "orbit" else "ELEMENT / GROUND",
 			active_element + 1, ELEMENTS, ("FREE" if sim.weapons_free else "HOLD"),
 			names[mode], snap_res.x, snap_res.y,
@@ -1269,6 +1323,15 @@ func _mission_line() -> String:
 	return "%s   %s" % [obj, clock]
 
 
+## The intel line under the objective: running HDD count, plus the last loot result
+## while its toast is still up.
+func _intel_line() -> String:
+	var s: String = "INTEL  HDD %d" % _hdd
+	if _loot_toast_t > 0.0 and _loot_toast != "":
+		s += "   //  " + _loot_toast
+	return s
+
+
 ## Post-mission debrief: finalise the score (extractions + full-squad bonus + a
 ## point per second held out), then print the tally as a sensor-feed readout.
 func _show_banner(won: bool) -> void:
@@ -1319,6 +1382,7 @@ func _draw_selection() -> void:
 	_draw_streets()
 	_draw_coast()
 	_draw_loot()
+	_draw_hdd_pickups()
 	_draw_move_blip()
 	_draw_hud()
 	_draw_scan_pulse()
@@ -1346,6 +1410,7 @@ func _draw_selection() -> void:
 		var m: Vector2 = get_viewport().get_mouse_position()
 		sel_layer.draw_rect(Rect2(drag_start, m - drag_start), SEL_COL, false, 1.0)
 	_draw_escapes()
+	_draw_evac()
 
 
 ## Streets as simple map lines (Google-Maps style), drawn under the HUD. Faded in
@@ -1439,6 +1504,35 @@ func _draw_loot() -> void:
 			sel_layer.draw_arc(p, 15.0, -PI * 0.5, -PI * 0.5 + TAU * k, 28, HUD_COL, 2.5)
 
 
+## Dedicated HDD drives: a small rotating diamond wherever one waits, faint across the
+## map and captioned "HDD" once it's inside the centre reticle box (AC-130 tag rules).
+func _draw_hdd_pickups() -> void:
+	if _hdd_pickups.is_empty():
+		return
+	var win: Vector2 = Vector2(get_viewport().get_visible_rect().size)
+	var ctr: Vector2 = win * 0.5
+	var rb: float = minf(win.x, win.y) * 0.24
+	var box: Rect2 = Rect2(ctr.x - rb, ctr.y - rb, rb * 2.0, rb * 2.0)
+	var spin: float = frame_n * 0.05
+	var font: Font = ThemeDB.fallback_font
+	for g in _hdd_pickups:
+		var w3: Vector3 = Vector3(g.x, 0.5, g.y)
+		if cam.is_position_behind(w3):
+			continue
+		var p: Vector2 = _screen_point(w3)
+		var inside: bool = box.has_point(p)
+		var col: Color = Color(0.55, 1.0, 0.72, 0.9 if inside else 0.34)
+		var r: float = 5.0
+		var pts: PackedVector2Array = PackedVector2Array()
+		for a in 4:
+			var ang: float = spin + float(a) * PI * 0.5
+			pts.append(p + Vector2(cos(ang), sin(ang)) * r)
+		pts.append(pts[0])
+		sel_layer.draw_polyline(pts, col, 1.5)
+		if inside:
+			sel_layer.draw_string(font, p + Vector2(9.0, 3.0), "HDD", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, col)
+
+
 ## The two bridge escape zones, ringed on the deck -- the only ways out. Green,
 ## labelled EXIT, wherever they fall on screen so you can steer for one.
 func _draw_escapes() -> void:
@@ -1454,6 +1548,27 @@ func _draw_escapes() -> void:
 		var rad: float = clampf(c.distance_to(edge), 8.0, 70.0)
 		sel_layer.draw_arc(c, rad, 0.0, TAU, 40, col, 2.0)
 		sel_layer.draw_string(ThemeDB.fallback_font, c + Vector2(rad + 5.0, 4.0), "EXIT", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, col)
+
+
+## The evac-helo LZ(s): lift-off extraction, open until the Sanitation force lands (then
+## only a bridge gets you out, so these vanish). A green ring with a spinning rotor cross.
+func _draw_evac() -> void:
+	if mission == null or mission.result != Mission.ONGOING or _sani_deployed:
+		return
+	var col: Color = Color(0.55, 1.0, 0.68, 0.85)
+	for z in mission.evacs:
+		var centre: Vector3 = Vector3(z.position.x + z.size.x * 0.5, 0.6, z.position.y + z.size.y * 0.5)
+		if cam.is_position_behind(centre):
+			continue
+		var c: Vector2 = _screen_point(centre)
+		var edge: Vector2 = _screen_point(centre + Vector3(maxf(z.size.x, z.size.y) * 0.5, 0.0, 0.0))
+		var rad: float = clampf(c.distance_to(edge), 10.0, 80.0)
+		sel_layer.draw_arc(c, rad, 0.0, TAU, 40, col, 2.0)
+		var a: float = frame_n * 0.14
+		for s in 2:
+			var d: Vector2 = Vector2(cos(a + float(s) * PI * 0.5), sin(a + float(s) * PI * 0.5)) * rad * 0.72
+			sel_layer.draw_line(c - d, c + d, Color(col.r, col.g, col.b, 0.5), 1.5)
+		sel_layer.draw_string(ThemeDB.fallback_font, c + Vector2(rad + 5.0, 4.0), "EVAC", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, col)
 
 
 ## A tiny allegiance pip over every living unit -- the v0.19 coloured-unit read, so
@@ -2142,11 +2257,101 @@ func _advance_loot(delta: float) -> void:
 		return
 	_loot_t += delta
 	if _loot_t >= LOOT_TIME:
-		_looted[_loot_idx] = true
-		_score += LOOT_PTS
-		_loot_count += 1
-		Audio.comms("ack_inposition", 1500)   # "in position" -- building cleared
+		_resolve_loot(_loot_idx)
 		_end_loot()
+
+
+## What a cleared building held. Every clear pays its base points; on top of that it
+## drops an HDD, or a specialist payout (field hospital / police armory / bio-lab), and
+## may have been a nest that mauls whoever breached it. Payout class is stable per index.
+func _resolve_loot(bidx: int) -> void:
+	_looted[bidx] = true
+	_loot_count += 1
+	_score += LOOT_PTS
+	var b: Dictionary = city.buildings[bidx]
+	var c: Vector2 = Vector2(b["x"] + b["w"] * 0.5, b["z"] + b["d"] * 0.5)
+	var unit: int = _nearest_player_unit(c, 120.0)   # who breached (nearest of your team)
+	match _loot_class(bidx):
+		LC_HOSP:
+			if unit >= 0:
+				sim.heal_frac(unit, 0.45)
+			_loot_say("FIELD HOSPITAL   +45% HP")
+		LC_POLICE:
+			if _loot_rng.randf() < 0.5:
+				if unit >= 0:
+					sim.add_armor(unit, 0.22)
+				_loot_say("POLICE ARMORY   +ARMOR")
+			else:
+				if unit >= 0:
+					sim.grant_buff(unit, 24.0, 1.5, 0.0)
+				_loot_say("POLICE ARMORY   DMG +50% 24s")
+		LC_BIO:
+			if unit >= 0:
+				sim.grant_buff(unit, 24.0, 1.0, 0.4)
+			_loot_say("BIO-LAB   DMG RESIST 24s")
+		_:
+			_hdd += 1
+			_score += LOOT_PTS
+			_loot_say("HDD RECOVERED   x%d" % _hdd)
+	# any building can turn out to be a nest -- a bite for whoever went in.
+	if _loot_rng.randf() < LOOT_AMBUSH_CHANCE:
+		_loot_ambush(c, unit)
+	else:
+		Audio.comms("ack_inposition", 1500)   # "in position" -- clean clear
+
+
+## Payout class for a building, stable across the mission (a cheap index hash). HDD is
+## the common drop; the specialist sites are rarer.
+func _loot_class(bidx: int) -> int:
+	var r: int = int(abs(bidx * 2654435761)) % 100
+	if r < 60:
+		return LC_HDD
+	if r < 74:
+		return LC_HOSP
+	if r < 88:
+		return LC_POLICE
+	return LC_BIO
+
+
+## Nearest living player-element trooper to a ground point, within `max_m`; -1 if none.
+func _nearest_player_unit(g: Vector2, max_m: float) -> int:
+	var best: int = -1
+	var bd: float = max_m * max_m
+	for i in sim.count():
+		if not sim.alive[i] or sim.extracted[i]:
+			continue
+		if sim.team[i] != WorldSim.SQUAD or sim.element[i] != 0:
+			continue
+		var d: float = g.distance_squared_to(sim.pos[i])
+		if d < bd:
+			bd = d
+			best = i
+	return best
+
+
+## The building was occupied: 1-2 infected boil out at the door, and whoever breached
+## takes a bite that can drop them. Spawns keep views/_anim index-aligned with the sim.
+func _loot_ambush(c: Vector2, unit: int) -> void:
+	var n: int = 1 + (_loot_rng.randi() % 2)
+	for _z in n:
+		var p: Vector2 = c + Vector2(_loot_rng.randf_range(-6.0, 6.0), _loot_rng.randf_range(-6.0, 6.0))
+		sim.spawn(p, &"zed", WorldSim.INFECTED)
+		var v: Node3D = _make_unit_view(WorldSim.INFECTED, &"zed", _rng)
+		if v != null:
+			v.position = Vector3(p.x, 0.0, p.y)
+			vp.add_child(v)
+		views.append(v)
+		_anim.append(Animator.new(v, _rng) if v != null else null)
+	Audio.comms("need_backup", 0)           # distress on the net (the zeds' claws cue themselves)
+	if unit >= 0 and sim.injure(unit, _loot_rng.randf_range(18.0, 58.0)):
+		_loot_say(_loot_toast + "   [!] MAN DOWN")
+	else:
+		_loot_say(_loot_toast + "   [!] CONTACT")
+
+
+func _loot_say(s: String) -> void:
+	_loot_toast = s
+	_loot_toast_t = LOOT_TOAST_TIME
 
 
 func _toggle_fire() -> void:
@@ -2311,6 +2516,10 @@ func _start_game(count: int) -> void:
 	_score = 0
 	_san_kills = 0
 	_collateral = 0
+	_hdd = 0
+	_hdd_pickups.clear()
+	_loot_toast = ""
+	_loot_toast_t = 0.0
 	if _menu_layer != null:
 		_menu_layer.queue_free()
 		_menu_layer = null

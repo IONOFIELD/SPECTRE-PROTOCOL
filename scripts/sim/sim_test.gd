@@ -41,6 +41,7 @@ func _initialize() -> void:
 	test_elements_and_medic()
 	test_mission_exfil()
 	test_mission_rivals_and_loss()
+	test_loot_buffs()
 	perf()
 	print("=== %d failure(s) ===" % failures)
 	quit(1 if failures > 0 else 0)
@@ -668,6 +669,58 @@ func test_mission_rivals_and_loss() -> void:
 	s2.alive[p] = false                      # the player's last unit down
 	m2.update(s2, 0.1, false)
 	check("player team wiped -> LOST", m2.result == MissionScript.LOST, "reason=%s" % m2.reason)
+
+
+## The looted-building payouts: hospital heal, police armor, bio-lab resistance, a
+## damage buff on outgoing fire, and the ambush injury path -- all on the sim side.
+func test_loot_buffs() -> void:
+	var s: WorldSim = WorldSim.new()
+	s.set_bounds(Vector2(-20, -20), Vector2(220, 220))
+
+	# hospital: heal a fraction of MAX hp, capped at the cap.
+	var h: int = s.spawn(Vector2(20, 20), &"cbt", WorldSim.SQUAD, 0)
+	var maxhp: float = WorldSim.STATS[&"cbt"][1]
+	s.hp[h] = 10.0
+	s.heal_frac(h, 0.5)
+	check("hospital heals a fraction of max HP", is_equal_approx(s.hp[h], 10.0 + 0.5 * maxhp),
+			"hp 10 -> %.0f (max %.0f)" % [s.hp[h], maxhp])
+	s.heal_frac(h, 5.0)
+	check("a heal never overfills past the cap", is_equal_approx(s.hp[h], maxhp), "hp=%.0f" % s.hp[h])
+
+	# police armor: a permanent cut on incoming damage.
+	var a: int = s.spawn(Vector2(30, 20), &"cbt", WorldSim.SQUAD, 0)
+	s.add_armor(a, 0.5)
+	s.injure(a, 40.0)
+	check("armor halves an incoming hit", is_equal_approx(s.hp[a], maxhp - 20.0), "took %.0f of 40" % (maxhp - s.hp[a]))
+
+	# bio-lab resistance: a TIMED incoming cut that lapses.
+	var r: int = s.spawn(Vector2(40, 20), &"cbt", WorldSim.SQUAD, 0)
+	s.grant_buff(r, 1.0, 1.0, 0.5)
+	s.injure(r, 40.0)
+	check("resistance buff softens a hit while active", is_equal_approx(s.hp[r], maxhp - 20.0), "hp=%.0f" % s.hp[r])
+	for tick in 90:                          # 1.5 s: the 1.0 s buff has lapsed
+		s.step(1.0 / 60.0)
+	var before: float = s.hp[r]
+	s.injure(r, 40.0)
+	check("resistance lapses and the next hit lands full", is_equal_approx(s.hp[r], before - 40.0),
+			"took %.0f of 40" % (before - s.hp[r]))
+
+	# police damage buff: multiplies THIS unit's outgoing fire.
+	var sh: int = s.spawn(Vector2(60, 60), &"cbt", WorldSim.SQUAD, 0)
+	var tg: int = s.spawn(Vector2(61, 60), &"zed", WorldSim.INFECTED)
+	s._dmg.clear()
+	s._strike(sh, tg)
+	var base_dmg: float = float(s._dmg.get(tg, 0.0))
+	s._dmg.clear()
+	s.grant_buff(sh, 5.0, 2.0, 0.0)
+	s._strike(sh, tg)
+	check("a damage buff doubles outgoing fire", is_equal_approx(float(s._dmg.get(tg, 0.0)), base_dmg * 2.0),
+			"%.1f -> %.1f" % [base_dmg, float(s._dmg.get(tg, 0.0))])
+
+	# ambush injury: lethal drops the unit and reports it; a graze does not.
+	var v: int = s.spawn(Vector2(80, 80), &"cbt", WorldSim.SQUAD, 0)
+	check("a survivable injury keeps the unit up", not s.injure(v, 5.0) and s.alive[v], "hp=%.0f" % s.hp[v])
+	check("a lethal injury drops the unit and reports it", s.injure(v, 999.0) and not s.alive[v], "alive=%s" % s.alive[v])
 
 
 func perf() -> void:

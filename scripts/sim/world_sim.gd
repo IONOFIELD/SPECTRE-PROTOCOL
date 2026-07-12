@@ -98,6 +98,11 @@ var hurt: Array[float] = []           # seconds of "just took a hit" left (pinne
 var flash_cd: Array[float] = []       # sanitation: seconds until it may flash-evade again
 var evade: Array[float] = []          # sanitation: seconds of break-contact left, 0 = fighting
 var evade_to: Array[Vector2] = []     # sanitation: the flank point it's sliding to
+# Looted-buff modifiers (the player's building rewards; neutral by default, AI never loots).
+var armor: Array[float] = []          # permanent incoming-damage cut 0..1 (police vests)
+var buff_t: Array[float] = []         # seconds left on the two TIMED buffs below
+var buff_dmg: Array[float] = []       # outgoing-damage x-mult while buff_t > 0 (police damage buff)
+var buff_res: Array[float] = []       # extra incoming cut 0..1 while buff_t > 0 (bio-lab resistance)
 
 ## Combat discipline + output. weapons_free gates squad auto-fire (the hold-fire /
 ## open-fire toggle). events is the per-tick log main drains for positional audio:
@@ -162,6 +167,10 @@ func spawn(p: Vector2, t: StringName, tm: int = 0, elem: int = -1) -> int:
 	flash_cd.append(0.0)
 	evade.append(0.0)
 	evade_to.append(p)
+	armor.append(0.0)
+	buff_t.append(0.0)
+	buff_dmg.append(1.0)
+	buff_res.append(0.0)
 	return pos.size() - 1
 
 
@@ -341,6 +350,7 @@ func step(dt: float) -> void:
 		hurt[i] = maxf(0.0, hurt[i] - dt)
 		flash_cd[i] = maxf(0.0, flash_cd[i] - dt)
 		evade[i] = maxf(0.0, evade[i] - dt)
+		buff_t[i] = maxf(0.0, buff_t[i] - dt)
 		# Perception scans the SIGHT radius -- the sim's most expensive query -- so
 		# each unit re-acquires only every 20th tick (~0.33 s to notice a NEW foe),
 		# staggered by index so the cost spreads evenly. A unit already locked onto
@@ -622,12 +632,14 @@ func _strike(i: int, f: int) -> void:
 		# grenade / RPG: area damage on the target, hostiles only (no friendly fire
 		# -- the sim auto-aims it, so it can't punish the player for the AI's throw).
 		var r2: float = EOD_BLAST_R * EOD_BLAST_R
+		var blast: float = EOD_BLAST_DMG * (buff_dmg[i] if buff_t[i] > 0.0 else 1.0)
 		for j in count():
 			if alive[j] and _hostile_units(i, j) and pos[j].distance_squared_to(pos[f]) <= r2:
-				_dmg[j] = float(_dmg.get(j, 0.0)) + EOD_BLAST_DMG
+				_dmg[j] = float(_dmg.get(j, 0.0)) + blast
 		events.append({"kind": "blast", "pos": pos[f], "to": pos[f], "team": team[i], "unit": kind[i]})
 		return
-	_dmg[f] = float(_dmg.get(f, 0.0)) + STATS[kind[i]][4]
+	var out: float = STATS[kind[i]][4] * (buff_dmg[i] if buff_t[i] > 0.0 else 1.0)
+	_dmg[f] = float(_dmg.get(f, 0.0)) + out
 	# Sanitation projects fire -- a hot plume on thermal, no muzzle report. Everyone
 	# else claws (infected) or fires a round (armed teams).
 	var what: String = "gunfire"
@@ -638,13 +650,65 @@ func _strike(i: int, f: int) -> void:
 	events.append({"kind": what, "pos": pos[i], "to": pos[f], "team": team[i], "unit": kind[i]})
 
 
+## Incoming damage after this unit's armor + any timed resistance (capped at 90% cut,
+## so nothing is ever fully invulnerable).
+func _incoming(k: int, raw: float) -> float:
+	var red: float = armor[k]
+	if buff_t[k] > 0.0:
+		red += buff_res[k]
+	return raw * (1.0 - clampf(red, 0.0, 0.9))
+
+
+## --- Looted-buff grants (called by main when a building pays out) ---------------
+
+## Hospital: instant top-up of `frac` of max HP (0..1), never past the cap.
+func heal_frac(i: int, frac: float) -> void:
+	if i < 0 or i >= count() or not alive[i]:
+		return
+	var maxhp: float = STATS[kind[i]][1]
+	hp[i] = minf(maxhp, hp[i] + frac * maxhp)
+
+## Police vests: permanent `amt` (0..1) added to this unit's damage cut.
+func add_armor(i: int, amt: float) -> void:
+	if i < 0 or i >= count():
+		return
+	armor[i] = clampf(armor[i] + amt, 0.0, 0.9)
+
+## Timed buff: for `secs`, multiply this unit's outgoing damage by `dmg_mult` and add
+## `resist` (0..1) to its incoming cut. Overwrites any running timed buff on that unit.
+func grant_buff(i: int, secs: float, dmg_mult: float, resist: float) -> void:
+	if i < 0 or i >= count():
+		return
+	buff_t[i] = secs
+	buff_dmg[i] = dmg_mult
+	buff_res[i] = resist
+
+## An off-combat injury (a looted building's ambush). Applies `dmg` NOW through armor and
+## runs the full death path itself -- callers outside step() can't lean on the event drain,
+## so this returns true if it killed the unit and lets the caller cue the audio.
+func injure(i: int, dmg: float) -> bool:
+	if i < 0 or i >= count() or not alive[i]:
+		return false
+	hurt[i] = HURT_MEMORY
+	hp[i] -= _incoming(i, dmg)
+	if hp[i] > 0.0:
+		return false
+	hp[i] = 0.0
+	alive[i] = false
+	vel[i] = Vector2.ZERO
+	has_order[i] = false
+	selected[i] = false
+	foe[i] = -1
+	return true
+
+
 ## Apply the tick's queued damage; anything that drops dies and is logged.
 func _reap() -> void:
 	for k in _dmg:
 		if not alive[k]:
 			continue
 		hurt[k] = HURT_MEMORY          # took fire: pinned for a moment (drives the flash-evade)
-		hp[k] -= _dmg[k]
+		hp[k] -= _incoming(k, _dmg[k])
 		if hp[k] <= 0.0:
 			alive[k] = false
 			vel[k] = Vector2.ZERO
@@ -665,7 +729,7 @@ func air_strike(center: Vector2, radius: float, dmg: float) -> void:
 	for i in count():
 		if not alive[i] or pos[i].distance_squared_to(center) > r2:
 			continue
-		hp[i] -= dmg
+		hp[i] -= _incoming(i, dmg)
 		if hp[i] <= 0.0:
 			alive[i] = false
 			vel[i] = Vector2.ZERO
