@@ -137,6 +137,11 @@ func generate(snap_res: Vector2i) -> void:
 	var nx: int = int(ceil((poly_hi.x - poly_lo.x) / pitch)) + 1
 	var nz: int = int(ceil((poly_hi.y - poly_lo.y) / pitch)) + 1
 	var downtown: Vector2 = Vector2(880.0, 430.0)     # Financial District, by the Bay Bridge
+	# Market Street: SF's signature diagonal, cutting the grid from the Embarcadero
+	# (NE) down to Twin Peaks (SW). Blocks on the line are cleared for the avenue.
+	var mkt_a: Vector2 = Vector2(915.0, 375.0)
+	var mkt_b: Vector2 = Vector2(435.0, 765.0)
+	var mkt_half: float = 11.0
 	for gx in nx:
 		for gz in nz:
 			var bx: float = poly_lo.x + float(gx) * pitch + HALF_ST
@@ -155,9 +160,39 @@ func generate(snap_res: Vector2i) -> void:
 			if _in_park(c):
 				_tile(Rect2(bx, bz, BLOCK, BLOCK), "park")
 				continue
+			if _dist_to_seg(c, mkt_a, mkt_b) < mkt_half + BLOCK * 0.12:
+				continue     # Market St avenue -- no building on the line
 			_block(rng, bx, bz, c.distance_to(downtown) / pitch)
 
 	_emit_surfaces()
+	_diag_road(mkt_a, mkt_b, mkt_half * 2.0)     # the avenue deck, over the cleared blocks
+
+
+## Perpendicular distance from p to segment a-b.
+func _dist_to_seg(p: Vector2, a: Vector2, b: Vector2) -> float:
+	var ab: Vector2 = b - a
+	var t: float = clampf((p - a).dot(ab) / maxf(1e-4, ab.length_squared()), 0.0, 1.0)
+	return p.distance_to(a + ab * t)
+
+
+## A rotated road quad from a to b (width w), for the diagonal avenue. Emitted
+## double-sided so winding never culls it from the top-down optic.
+func _diag_road(a: Vector2, b: Vector2, w: float) -> void:
+	var perp: Vector2 = (b - a).orthogonal().normalized() * (w * 0.5)
+	var y: float = 0.03
+	var c0: Vector3 = Vector3(a.x + perp.x, y, a.y + perp.y)
+	var c1: Vector3 = Vector3(b.x + perp.x, y, b.y + perp.y)
+	var c2: Vector3 = Vector3(b.x - perp.x, y, b.y - perp.y)
+	var c3: Vector3 = Vector3(a.x - perp.x, y, a.y - perp.y)
+	var st: SurfaceTool = SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for v in [c0, c1, c2, c0, c2, c3, c0, c2, c1, c0, c3, c2]:   # both windings
+		st.set_normal(Vector3.UP)
+		st.add_vertex(v)
+	var mi: MeshInstance3D = MeshInstance3D.new()
+	mi.mesh = st.commit()
+	mi.material_override = ThermalLib.get_material("road", _snap_res)
+	add_child(mi)
 
 
 ## The San Francisco coastline, ~1,150 m across, clockwise from the Lands End tip.
