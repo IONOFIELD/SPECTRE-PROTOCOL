@@ -68,6 +68,13 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [F] weapons free   [V] AC-1
 const HUD_COL: Color = Color(0.74, 0.95, 0.80, 0.90)   # ISR green-white
 const HUD_DIM: Color = Color(0.74, 0.95, 0.80, 0.42)
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
+# target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
+const TAG_FRIEND: Color = Color(0.45, 0.95, 0.70, 0.95)
+const TAG_ENEMY: Color = Color(1.00, 0.30, 0.30, 0.95)
+const TAG_VEHICLE: Color = Color(0.96, 0.90, 0.32, 0.95)
+const TAG_ZED: Color = Color(1.00, 0.38, 0.38, 0.90)
+const TEAM_CARET_ZOOM: float = 780.0   # above this altitude, one team caret not per-unit boxes
+const TAG_ZOOM_MAX: float = 900.0      # target tags only when zoomed in like the real optic
 
 var res_idx := 1
 var snap_res: Vector2i = RESOLUTIONS[1]
@@ -88,6 +95,8 @@ var agc := AGC.new()
 var sim: WorldSim = WorldSim.new()
 var views: Array[Node3D] = []          # one visual per sim unit, index-aligned
 var active_element: int = 0            # which of the four teams the player is driving
+var _type_idx: int = -1                # unit-type cycle position within the active element
+var _cyc_btn: Button                   # the TYP button (shows the current type)
 var _anim: Array = []                  # an Animator per view (or null), index-aligned
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 var _sfx_pool: Array[AudioStreamPlayer3D] = []
@@ -1078,6 +1087,8 @@ func _draw_selection() -> void:
 	_draw_loot()
 	_draw_hud()
 	_draw_allegiance()
+	_draw_unit_boxes()
+	_draw_tags(ThemeDB.fallback_font)
 	_draw_flashes()
 	_draw_incoming()
 	for i in sim.count():
@@ -1178,9 +1189,11 @@ func _draw_escapes() -> void:
 
 ## A tiny allegiance pip over every living unit -- the v0.19 coloured-unit read, so
 ## warm human shapes (squad / bandit / survivor) don't all look alike on FLIR.
+## Distant contacts as coloured dots. The squad gets boxes + carets instead (below),
+## so it's skipped here. Zombies read as red dots per the brief.
 func _draw_allegiance() -> void:
 	for i in sim.count():
-		if not sim.alive[i]:
+		if not sim.alive[i] or sim.team[i] == WorldSim.SQUAD:
 			continue
 		var col: Color = _alleg_color(sim.team[i])
 		if col.a <= 0.0:
@@ -1197,9 +1210,106 @@ func _alleg_color(t: int) -> Color:
 		WorldSim.SANITATION: return Color(1.00, 0.28, 0.28, 0.95) # apex threat, hard red
 		WorldSim.BANDIT: return Color(1.00, 0.55, 0.20, 0.90)     # hostile, orange
 		WorldSim.SURVIVOR: return Color(1.00, 0.85, 0.35, 0.90)   # wary, amber
-		WorldSim.INFECTED: return Color(0.65, 0.45, 0.80, 0.70)   # horde, dim violet
+		WorldSim.INFECTED: return Color(1.00, 0.32, 0.32, 0.80)   # the horde, red dots
 		WorldSim.CIVILIAN: return Color(0.85, 0.88, 0.95, 0.55)   # neutral, pale
 	return Color(0, 0, 0, 0)
+
+
+## My squad, always on: a small green corner-box + a caret over each head. Zoomed way
+## out, drop the per-unit clutter for ONE big caret over the active element.
+func _draw_unit_boxes() -> void:
+	if sim == null:
+		return
+	if cam_dist > TEAM_CARET_ZOOM:
+		var ctr: Vector3 = _follow_point()
+		var wc: Vector3 = Vector3(ctr.x, 6.0, ctr.z)
+		if not cam.is_position_behind(wc):
+			_caret(_screen_point(wc), 15.0, TAG_FRIEND, true)
+		return
+	var head: Color = Color(TAG_FRIEND.r, TAG_FRIEND.g, TAG_FRIEND.b, 0.7)
+	for i in sim.count():
+		if not sim.alive[i] or sim.team[i] != WorldSim.SQUAD:
+			continue
+		var w: Vector3 = Vector3(sim.pos[i].x, 0.9, sim.pos[i].y)
+		if cam.is_position_behind(w):
+			continue
+		var p: Vector2 = _screen_point(w)
+		_corner_box(p, 6.5, TAG_FRIEND)
+		_caret(p - Vector2(0.0, 15.0), 5.0, head, true)   # a caret hovering over the head
+
+
+## AC-130 target tags -- ONLY inside the centre reticle box, like the real optic when
+## it's slewed onto a target. Yellow vehicles, green friendlies, red hostiles, red
+## carets + range on the horde. Gated to zoomed-in views + capped so it never clutters.
+func _draw_tags(font: Font) -> void:
+	if sim == null or cam_dist > TAG_ZOOM_MAX:
+		return
+	var win: Vector2 = Vector2(get_viewport().get_visible_rect().size)
+	var c: Vector2 = win * 0.5
+	var rb: float = minf(win.x, win.y) * 0.24
+	var box: Rect2 = Rect2(c.x - rb, c.y - rb, rb * 2.0, rb * 2.0)
+	var me3: Vector3 = _follow_point()
+	var me: Vector2 = Vector2(me3.x, me3.z)
+	var look: Vector2 = Vector2(cam_tx, cam_tz)
+	var r2: float = pow(cam_dist * 0.4, 2.0)   # skip anything too far from the reticle to be in the box
+	var drawn: int = 0
+	# vehicles first -- yellow, like the reference gunship footage
+	if cars != null:
+		for r in cars.rects:
+			if drawn > 40:
+				break
+			var cc: Vector2 = r.get_center()
+			if cc.distance_squared_to(look) > r2:
+				continue
+			var wv: Vector3 = Vector3(cc.x, 0.9, cc.y)
+			if cam.is_position_behind(wv):
+				continue
+			var pv: Vector2 = _screen_point(wv)
+			if box.has_point(pv):
+				_corner_box(pv, 8.0, TAG_VEHICLE)
+				drawn += 1
+	for i in sim.count():
+		if drawn > 60:
+			break
+		if not sim.alive[i] or sim.team[i] == WorldSim.CIVILIAN:
+			continue
+		if sim.pos[i].distance_squared_to(look) > r2:
+			continue
+		var w: Vector3 = Vector3(sim.pos[i].x, 0.9, sim.pos[i].y)
+		if cam.is_position_behind(w):
+			continue
+		var p: Vector2 = _screen_point(w)
+		if not box.has_point(p):
+			continue
+		var t: int = sim.team[i]
+		if t == WorldSim.SQUAD:
+			_corner_box(p, 7.0, TAG_FRIEND)
+		elif t == WorldSim.INFECTED:
+			_caret(p - Vector2(0.0, 9.0), 5.0, TAG_ZED, true)
+			sel_layer.draw_string(font, p + Vector2(7.0, -3.0), "%dm" % int(sim.pos[i].distance_to(me)), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, TAG_ZED)
+		else:
+			_corner_box(p, 7.0, TAG_ENEMY)   # sanitation / bandit / survivor
+		drawn += 1
+
+
+## An AC-130 corner-bracket box around p (half-size h): four L-shaped corners.
+func _corner_box(p: Vector2, h: float, col: Color) -> void:
+	var a: float = h * 0.55
+	for k in [Vector2(-1, -1), Vector2(1, -1), Vector2(-1, 1), Vector2(1, 1)]:
+		var cn: Vector2 = p + Vector2(k.x * h, k.y * h)
+		sel_layer.draw_line(cn, cn - Vector2(k.x * a, 0.0), col, 1.5)
+		sel_layer.draw_line(cn, cn - Vector2(0.0, k.y * a), col, 1.5)
+
+
+## A hollow triangle (outline) centred at p. down=true points the apex down (at a unit).
+func _caret(p: Vector2, size: float, col: Color, down: bool) -> void:
+	var s: float = 1.0 if down else -1.0
+	var a: Vector2 = p + Vector2(-size, -size * s)
+	var b: Vector2 = p + Vector2(size, -size * s)
+	var apex: Vector2 = p + Vector2(0.0, size * s)
+	sel_layer.draw_line(a, b, col, 1.5)
+	sel_layer.draw_line(b, apex, col, 1.5)
+	sel_layer.draw_line(apex, a, col, 1.5)
 
 
 ## The AC-130 gunship ISR HUD: corner targeting brackets, a gapped centre reticle
@@ -1550,6 +1660,7 @@ func _input(e: InputEvent) -> void:
 			KEY_F: _toggle_fire()
 			KEY_V: _request_strike()
 			KEY_TAB: _pick_element((active_element + 1) % ELEMENTS)
+			KEY_Q: _cycle_unit_type()
 			KEY_1: _pick_element(0)
 			KEY_2: _pick_element(1)
 			KEY_3: _pick_element(2)
@@ -1666,10 +1777,22 @@ func _squad_at(g: Vector2) -> int:
 	return best
 
 
-## Advance to the next squad element -- the touch "cycle through units" control (TAB on desktop).
-func _cycle_element() -> void:
-	_pick_element((active_element + 1) % ELEMENTS)
-	Audio.comms("ack_affirmative", 2500)
+## Cycle the selection through the unit TYPES of the active element (cdr -> cbt -> med
+## -> snp -> rec -> eod). 1-4 still pick a whole element; this drills into one role so
+## you can peel off, say, the sniper. Empty types (dead) are skipped over on the next tap.
+func _cycle_unit_type() -> void:
+	_type_idx = (_type_idx + 1) % ELEMENT_ROSTER.size()
+	var want: StringName = ELEMENT_ROSTER[_type_idx]
+	var found: bool = false
+	for i in sim.count():
+		var hit: bool = sim.alive[i] and sim.team[i] == WorldSim.SQUAD and sim.element[i] == active_element and sim.kind[i] == want
+		sim.selected[i] = hit
+		if hit:
+			found = true
+	if _cyc_btn != null:
+		_cyc_btn.text = String(want).to_upper()
+	if found:
+		Audio.comms("ack_affirmative", 2500)
 
 
 ## The building under a ground point (AABB test), or -1. O(buildings), press-time only.
@@ -1743,9 +1866,10 @@ func _build_touch_bar(host: CanvasLayer) -> void:
 		var b: Button = _hud_button(str(n + 1))
 		b.pressed.connect(_pick_element.bind(n))
 		_touch_bar.add_child(b)
-	var bc: Button = _hud_button("CYC")
-	bc.pressed.connect(_cycle_element)
+	var bc: Button = _hud_button("TYP")
+	bc.pressed.connect(_cycle_unit_type)
 	_touch_bar.add_child(bc)
+	_cyc_btn = bc
 	var bf: Button = _hud_button("WPN")
 	bf.pressed.connect(_toggle_fire)
 	_touch_bar.add_child(bf)
