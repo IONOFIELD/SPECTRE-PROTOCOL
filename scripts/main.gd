@@ -55,7 +55,14 @@ const BANDIT_PER_CREW: int = 5
 const SURVIVOR_HOLDOUTS: int = 6   # dug-in armed holdouts...
 const SURVIVOR_PER_HOLDOUT: int = 3
 const GAUNTLET_PER_BRIDGE: int = 44   # infected choking each bridge deck
-const ELEMENTS: int = 4
+const ELEMENTS: int = 4                 # max player teams (touch bar 1-4)
+var _team_count: int = 4                 # chosen at the startup menu (solo / 2 / 3 / 4)
+var _tutorial: bool = false              # tutorial run: calmer map, control hints
+var _menu_active: bool = true            # true until the player starts from the menu
+var _menu_layer: CanvasLayer             # the startup menu overlay, freed on start
+# Insertion edges, spread around the peninsula so no two teams deploy close. Order is
+# W, E, N, S so 2 teams land opposite (W+E), 3 add N, 4 add S.
+const EDGE_BASES: Array = [Vector2(205, 615), Vector2(885, 480), Vector2(500, 215), Vector2(520, 945)]
 const ELEMENT_ROSTER: Array = [&"cdr", &"cbt", &"med", &"snp", &"rec", &"eod"]   # per team; CMD leads, EOD lobs grenades
 
 # --- Read of the units. FLIR flattens PS1 mesh detail to a blob at this range, so
@@ -251,6 +258,14 @@ func _ready() -> void:
 	_sfx_flash = load("res://audio/sfx/flashbang.wav")
 	_sfx_expl = load("res://audio/sfx/dist_explosion.wav")
 	_sfx_yell = load("res://audio/sfx/civ_panic.wav") if ResourceLoader.exists("res://audio/sfx/civ_panic.wav") else null
+	# Captures / dev hooks run the game directly; players get the startup menu (music1 is
+	# already playing) with a slowly-rotating feed behind it.
+	if (_shot_dir != "" or _map_dir != "") and OS.get_environment("SPECTRE_MENU") == "":
+		_menu_active = false
+	else:
+		feed = "orbit"
+		_apply_feed()
+		_build_menu()
 
 
 func _build_tree() -> void:
@@ -544,17 +559,20 @@ func _spawn() -> void:
 	# walls block LOS + nav; the land polygon is the coastline (ocean outside);
 	# bridge decks are slowed gaps the nav carves through the water.
 	sim.load_map(walls, city.water, city.bridges, city.map_lo, city.map_hi, city.land_poly)
-	# four elements, staged in a 2x2 in the west-central city (Ocean Beach side);
-	# the exfil bridges are north (Golden Gate) and east (Bay) -- a real traverse.
-	for e in ELEMENTS:
-		var base: Vector2 = Vector2(300.0 + float(e % 2) * 16.0, 470.0 + float(e / 2) * 16.0)
+	# Each team inserts from a different edge (EDGE_BASES) so no two deploy close; an
+	# insertion vehicle marks the drop. The exfil bridges are N (Golden Gate) and E (Bay).
+	for e in _team_count:
+		var base: Vector2 = EDGE_BASES[e % EDGE_BASES.size()]
+		if not Geometry2D.is_point_in_polygon(base, city.land_poly):
+			base = Vector2(300.0, 470.0)
+		_deploy_vehicle(base, e)
 		for j in ELEMENT_ROSTER.size():
 			var p: Vector2 = base + Vector2(float(j % 3) * 1.4, float(j / 3) * 1.4)
 			sim.spawn(p, ELEMENT_ROSTER[j], WorldSim.SQUAD, e)
 	_populate_world()
 	# the only way off the peninsula is on foot across a bridge (city.escapes).
 	mission = Mission.new()
-	mission.setup(city.escapes, ELEMENTS)
+	mission.setup(city.escapes, _team_count)
 	# one visual per sim unit, index-aligned with the sim arrays.
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 	rng.randomize()
@@ -574,17 +592,47 @@ func _spawn() -> void:
 func _populate_world() -> void:
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 	rng.randomize()
-	sim.populate(POP_INFECTED, POP_CIV, POP_SAN, city.land)   # ambient zed/civ/san on land
-	sim.scatter(&"run", WorldSim.INFECTED, POP_RUNNERS, city.land, rng)
-	sim.scatter(&"bru", WorldSim.INFECTED, POP_BRUTES, city.land, rng)
-	for _z in ZED_HORDES:
-		sim.spawn_cluster(&"zed", WorldSim.INFECTED, _random_land_point(rng), ZED_PER_HORDE, 15.0, rng)
-	for _c in BANDIT_CREWS:
-		sim.spawn_cluster(&"bnd", WorldSim.BANDIT, _random_land_point(rng), BANDIT_PER_CREW, 6.0, rng)
-	for _h in SURVIVOR_HOLDOUTS:
-		sim.spawn_cluster(&"svr", WorldSim.SURVIVOR, _random_land_point(rng), SURVIVOR_PER_HOLDOUT, 4.0, rng)
-	for b in city.bridges:
-		sim.spawn_line(&"zed", WorldSim.INFECTED, b, GAUNTLET_PER_BRIDGE, rng)   # the choked deck
+	# Tutorial is a calm map to learn on -- a fraction of the ecology, no hordes/gauntlet.
+	var s: float = 0.16 if _tutorial else 1.0
+	sim.populate(int(POP_INFECTED * s), int(POP_CIV * s), maxi(1, int(POP_SAN * s)), city.land)
+	sim.scatter(&"run", WorldSim.INFECTED, int(POP_RUNNERS * s), city.land, rng)
+	sim.scatter(&"bru", WorldSim.INFECTED, int(POP_BRUTES * s), city.land, rng)
+	if not _tutorial:
+		for _z in ZED_HORDES:
+			sim.spawn_cluster(&"zed", WorldSim.INFECTED, _random_land_point(rng), ZED_PER_HORDE, 15.0, rng)
+		for _c in BANDIT_CREWS:
+			sim.spawn_cluster(&"bnd", WorldSim.BANDIT, _random_land_point(rng), BANDIT_PER_CREW, 6.0, rng)
+		for _h in SURVIVOR_HOLDOUTS:
+			sim.spawn_cluster(&"svr", WorldSim.SURVIVOR, _random_land_point(rng), SURVIVOR_PER_HOLDOUT, 4.0, rng)
+		for b in city.bridges:
+			sim.spawn_line(&"zed", WorldSim.INFECTED, b, GAUNTLET_PER_BRIDGE, rng)   # the choked deck
+
+
+## The insertion vehicle marking a team's deployment edge -- a helo (with rotor), a
+## truck, or a boat, cycled per team. Scenery, parented to the city so a rebuild frees
+## it. A warm hull that reads on FLIR beside the freshly-dropped squad.
+func _deploy_vehicle(base: Vector2, e: int) -> void:
+	var kind: int = e % 3
+	var bm: BoxMesh = BoxMesh.new()
+	if kind == 0:
+		bm.size = Vector3(3.0, 2.4, 8.0)      # helo
+	elif kind == 1:
+		bm.size = Vector3(3.0, 3.0, 7.0)      # truck
+	else:
+		bm.size = Vector3(4.0, 2.2, 10.0)     # boat
+	var body: MeshInstance3D = MeshInstance3D.new()
+	body.mesh = bm
+	body.position = Vector3(base.x - 5.0, bm.size.y * 0.5, base.y - 5.0)
+	body.material_override = ThermalLib.get_material("hood_warm", snap_res)
+	city.add_child(body)
+	if kind == 0:
+		var rm: BoxMesh = BoxMesh.new()
+		rm.size = Vector3(14.0, 0.2, 0.7)
+		var rotor: MeshInstance3D = MeshInstance3D.new()
+		rotor.mesh = rm
+		rotor.position = Vector3(base.x - 5.0, 3.1, base.y - 5.0)
+		rotor.material_override = ThermalLib.get_material("parapet", snap_res)
+		city.add_child(rotor)
 
 
 func _random_land_point(rng: RandomNumberGenerator) -> Vector2:
@@ -916,7 +964,7 @@ func _process(delta: float) -> void:
 		_layout_controls()   # re-place the touch bar once the viewport size has settled
 	if _shot_dir != "":
 		_maybe_capture()
-	if not _auto_fired and frame_n > INTRO_HOLD * 60.0:
+	if not _menu_active and not _auto_fired and frame_n > INTRO_HOLD * 60.0:
 		_auto_fired = true
 		_channel_change("orbit")
 	if _shot_dir != "" and OS.get_environment("SPECTRE_PROBE") != "" and int(frame_n) == 55:
@@ -990,7 +1038,7 @@ func _process(delta: float) -> void:
 	var mv: Vector2 = Vector2(
 		float(Input.is_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT)) - float(Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT)),
 		float(Input.is_key_pressed(KEY_W) or Input.is_key_pressed(KEY_UP)) - float(Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN)))
-	if mv != Vector2.ZERO:
+	if mv != Vector2.ZERO and not _menu_active:
 		cam_manual = true
 		var s: float = cam_dist * 0.9 * delta
 		var fwd: Vector2 = Vector2(cos(cam_az), sin(cam_az))    # into the screen
@@ -1680,6 +1728,8 @@ func _apply_feed() -> void:
 
 
 func _input(e: InputEvent) -> void:
+	if _menu_active:
+		return                     # the menu buttons handle their own clicks; no gameplay input
 	if e is InputEventMouseMotion and (e.button_mask & MOUSE_BUTTON_MASK_MIDDLE or (e.button_mask & MOUSE_BUTTON_MASK_LEFT and Input.is_key_pressed(KEY_SHIFT))):
 		if Input.is_key_pressed(KEY_CTRL):
 			cam_manual = true
@@ -1995,6 +2045,96 @@ func _place_touch_bar() -> void:
 	# the keyboard controls card is desktop-only; drop it on a portrait phone
 	if help != null:
 		help.visible = show_help and win.x >= win.y
+
+
+## The startup menu: TUTORIAL (default-highlighted) / SOLO / 2-4 TEAMS, over the slowly
+## rotating feed with music1 playing. Picking one deploys that many teams from spread edges.
+func _build_menu() -> void:
+	_menu_layer = CanvasLayer.new()
+	_menu_layer.layer = 20
+	var dim: ColorRect = ColorRect.new()
+	dim.color = Color(0.0, 0.02, 0.0, 0.66)
+	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	dim.mouse_filter = Control.MOUSE_FILTER_STOP
+	_menu_layer.add_child(dim)
+	var box: VBoxContainer = VBoxContainer.new()
+	box.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	box.add_theme_constant_override("separation", 9)
+	box.alignment = BoxContainer.ALIGNMENT_CENTER
+	_menu_layer.add_child(box)
+	box.add_child(_menu_label("SPECTRE PROTOCOL", 40, HUD_COL))
+	box.add_child(_menu_label("SELECT DEPLOYMENT", 15, HUD_DIM))
+	var gap: Control = Control.new()
+	gap.custom_minimum_size = Vector2(0, 12)
+	box.add_child(gap)
+	var first: Button = null
+	for o in [["TUTORIAL", -1], ["SOLO", 1], ["2 TEAMS", 2], ["3 TEAMS", 3], ["4 TEAMS", 4]]:
+		var b: Button = _menu_button(String(o[0]))
+		b.pressed.connect(_start_game.bind(int(o[1])))
+		box.add_child(b)
+		if first == null:
+			first = b
+	add_child(_menu_layer)
+	if first != null:
+		first.grab_focus()   # Tutorial default-highlighted
+
+
+func _menu_label(text: String, size: int, col: Color) -> Label:
+	var l: Label = Label.new()
+	l.text = text
+	l.add_theme_font_override("font", load(HUD_FONT))
+	l.add_theme_font_size_override("font_size", size)
+	l.add_theme_color_override("font_color", col)
+	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	return l
+
+
+func _menu_button(text: String) -> Button:
+	var b: Button = Button.new()
+	b.text = text
+	b.custom_minimum_size = Vector2(250, 42)
+	b.focus_mode = Control.FOCUS_ALL
+	b.add_theme_font_override("font", load(HUD_FONT))
+	b.add_theme_font_size_override("font_size", 19)
+	b.add_theme_color_override("font_color", HUD_COL)
+	b.add_theme_color_override("font_hover_color", Color(0.08, 0.12, 0.09))
+	b.add_theme_color_override("font_focus_color", Color(0.08, 0.12, 0.09))
+	b.add_theme_color_override("font_pressed_color", Color(0.08, 0.12, 0.09))
+	var sb: StyleBoxFlat = StyleBoxFlat.new()
+	sb.bg_color = Color(0.05, 0.09, 0.06, 0.6)
+	sb.border_color = Color(HUD_COL.r, HUD_COL.g, HUD_COL.b, 0.6)
+	sb.set_border_width_all(1)
+	sb.set_corner_radius_all(2)
+	b.add_theme_stylebox_override("normal", sb)
+	var sbf: StyleBoxFlat = sb.duplicate()
+	sbf.bg_color = Color(HUD_COL.r, HUD_COL.g, HUD_COL.b, 0.6)
+	b.add_theme_stylebox_override("hover", sbf)
+	b.add_theme_stylebox_override("focus", sbf)
+	b.add_theme_stylebox_override("pressed", sbf)
+	return b
+
+
+## Start a run with `count` teams (or the tutorial, count < 0). Respawns at the edges.
+func _start_game(count: int) -> void:
+	_tutorial = count < 0
+	_team_count = clampi(1 if _tutorial else count, 1, ELEMENTS)
+	active_element = 0
+	_kills = 0
+	_zombie_kills = 0
+	_score = 0
+	_san_kills = 0
+	_collateral = 0
+	if _menu_layer != null:
+		_menu_layer.queue_free()
+		_menu_layer = null
+	_menu_active = false
+	await _rebuild_world()          # respawn with the chosen team count at the edges
+	feed = "deploy"
+	_apply_feed()
+	_auto_fired = true              # skip the intro auto-orbit -- we're deploying now
+	if _tutorial and help != null:
+		show_help = true
+		help.visible = true
 
 
 func _rebuild_world() -> void:
