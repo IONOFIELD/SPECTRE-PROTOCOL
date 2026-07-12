@@ -153,6 +153,8 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [F] weapons free   [V] AC-1
 # AC-130 gunship ISR HUD palette
 const HUD_COL: Color = Color(0.74, 0.95, 0.80, 0.90)   # ISR green-white
 const HUD_DIM: Color = Color(0.74, 0.95, 0.80, 0.42)
+# Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
+const BUILD_PUSHES: int = 85
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.45, 0.95, 0.70, 0.95)
@@ -363,6 +365,7 @@ func _ready() -> void:
 		_menu_sim = false          # captures/dev hooks show the real game, not the menu sweep
 	_init_res()                    # frame the feed to the window we were opened with
 	_build_tree()
+	_build_version_stamp()         # the build number, top-right, always on top
 	_spawn()
 	get_window().size_changed.connect(_reframe)   # ...and re-frame if it changes / rotates
 	set_process_input(true)
@@ -2980,6 +2983,28 @@ func _place_touch_bar() -> void:
 
 ## The startup menu: TUTORIAL (default-highlighted) / SOLO / 2-4 TEAMS, over the slowly
 ## rotating feed with music1 playing. Picking one deploys that many teams from spread edges.
+## The build stamp -- v0.19 (the prototype) + one v0.01 per push -- small in the HUD font,
+## top-right, on its own top layer so it shows over the menu AND gameplay at all times.
+func _build_version_stamp() -> void:
+	var vh: int = 19 + BUILD_PUSHES              # version in hundredths, from the v0.19 base
+	var layer: CanvasLayer = CanvasLayer.new()
+	layer.layer = 40                             # above the menu (20) and the HUD
+	var lbl: Label = Label.new()
+	lbl.text = "v%d.%02d" % [vh / 100, vh % 100]
+	lbl.add_theme_font_override("font", load(HUD_FONT))
+	lbl.add_theme_font_size_override("font_size", 12)
+	lbl.add_theme_color_override("font_color", HUD_COL)
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	lbl.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	lbl.offset_left = -96.0
+	lbl.offset_right = -10.0
+	lbl.offset_top = 3.0
+	lbl.offset_bottom = 19.0
+	layer.add_child(lbl)
+	add_child(layer)
+
+
 func _build_menu() -> void:
 	_menu_layer = CanvasLayer.new()
 	_menu_layer.layer = 20
