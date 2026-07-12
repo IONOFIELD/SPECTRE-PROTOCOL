@@ -118,7 +118,7 @@ const STRIKE_DMG: float = 460.0        # one burst flattens even the Sanitation 
 const STRIKE_TOF: float = 1.8          # round time-of-flight, seconds (tuned for feel)
 const STRIKE_ALT: float = 280.0        # visible descent altitude of the round, metres
 var _ac_charge: int = 0                # kills banked toward the next strike
-var _fire_req: bool = false            # a strike was requested this frame
+var _strike_arming: bool = false       # armed: the next tap designates the strike point
 var _strike_pending: bool = false      # a round is inbound (in flight)
 var _strike_target: Vector2 = Vector2.ZERO
 var _strike_tof: float = 0.0           # seconds since the round left the gun
@@ -719,19 +719,23 @@ func _score_kill() -> void:
 	_ac_charge = mini(AC_COST, _ac_charge + 1)
 
 
-## Request an AC-130 fire mission (if armed). Fired next frame, on the boresight.
+## STRK / V: arm (or cancel) target designation, if a fire mission is charged.
+## While armed, the next tap/click on the ground calls the strike there.
 func _request_strike() -> void:
 	if _ac_charge >= AC_COST:
-		_fire_req = true
+		_strike_arming = not _strike_arming
+	else:
+		_strike_arming = false
 
 
-## Call the strike on the optic boresight (the camera target). Everything in the
-## ring dies -- friendly fire included, so slew off your own squad first.
-func _fire_ac130() -> void:
+## Call the strike at a designated ground point. Everything in the ring dies --
+## friendly fire included, so mind your own squad.
+func _fire_ac130_at(target: Vector2) -> void:
 	if _ac_charge < AC_COST or _strike_pending:
 		return
 	_ac_charge = 0
-	_strike_target = Vector2(cam_tx, cam_tz)     # boresight -- slew off your own squad
+	_strike_arming = false
+	_strike_target = target
 	_strike_tof = 0.0
 	_strike_pending = true                        # round in flight; impact after STRIKE_TOF
 	Audio.comms("open_fire", 0)                   # fire-mission callout
@@ -774,9 +778,6 @@ func _process(delta: float) -> void:
 		sim.order_move(sim.selected_ids(), Vector2(150, 132))   # scripted order, for capture
 
 	sim.step(delta)
-	if _fire_req:
-		_fire_req = false
-		_fire_ac130()          # launches the fire mission; round now in flight
 	if _strike_pending:
 		_strike_tof += delta
 		if _strike_tof >= STRIKE_TOF:
@@ -1069,7 +1070,10 @@ func _draw_hud() -> void:
 		sel_layer.draw_string(font, c + Vector2(-42.0, reach + 22.0), "TGT LOCKED", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, HUD_RED)
 
 	# AC-130 fire-mission status, bottom-left above the attitude gauge
-	if _ac_charge >= AC_COST:
+	if _strike_arming:
+		sel_layer.draw_string(font, Vector2(30.0, win.y - 178.0), "AC-130  DESIGNATE TARGET", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, HUD_RED)
+		sel_layer.draw_string(font, Vector2(0.0, 94.0), "DESIGNATE STRIKE  --  TAP TARGET", HORIZONTAL_ALIGNMENT_CENTER, win.x, 15, HUD_RED)
+	elif _ac_charge >= AC_COST:
 		sel_layer.draw_string(font, Vector2(30.0, win.y - 178.0), "AC-130 GUNSHIP  READY", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, HUD_COL)
 	else:
 		sel_layer.draw_string(font, Vector2(30.0, win.y - 178.0), "AC-130  ARMING  %d/%d" % [_ac_charge, AC_COST], HORIZONTAL_ALIGNMENT_LEFT, -1, 13, HUD_DIM)
@@ -1253,12 +1257,15 @@ func _input(e: InputEvent) -> void:
 				drag_start = e.position
 			else:
 				dragging = false
-				if e.position.distance_to(drag_start) < 6.0:
-					_select_nearest(_ground_pick(e.position))
+				if _strike_arming:
+					_fire_ac130_at(_ground_pick(e.position))   # armed: click calls the strike
 				else:
-					_select_in_rect(Rect2(drag_start, e.position - drag_start))
-				if not sim.selected_ids().is_empty():
-					Audio.comms("ack_affirmative", 2500)   # "affirmative" on select
+					if e.position.distance_to(drag_start) < 6.0:
+						_select_nearest(_ground_pick(e.position))
+					else:
+						_select_in_rect(Rect2(drag_start, e.position - drag_start))
+					if not sim.selected_ids().is_empty():
+						Audio.comms("ack_affirmative", 2500)   # "affirmative" on select
 		elif e.button_index == MOUSE_BUTTON_RIGHT and e.pressed:
 			var ids: Array = sim.selected_ids()
 			if not ids.is_empty():
@@ -1350,6 +1357,9 @@ func _over_ui(pos: Vector2) -> bool:
 ## element you are driving to that spot.
 func _tap(pos: Vector2) -> void:
 	var g: Vector2 = _ground_pick(pos)
+	if _strike_arming:
+		_fire_ac130_at(g)      # armed: the tap calls the strike here
+		return
 	var best: int = -1
 	var bd: float = 7.0
 	for i in sim.count():
