@@ -22,6 +22,7 @@ const BRIDGE_SLOW: float = 0.55       # a shove through the horde: every metre o
 const EOD_BLAST_R: float = 4.5        # EOD grenade / RPG area radius
 const EOD_BLAST_DMG: float = 30.0     # damage per hostile in the ring
 const SAN_FLAME_CHANCE: float = 0.14  # a Sanitation attack projects fire this often; else a round
+const PANIC_CHANCE: float = 0.0015    # per-tick odds a fleeing civilian yells (audio hook)
 
 # Sanitation flash-grenade evasion: when pinned (recently hit), a Sanitation elite
 # will RARELY pop a flash -- a bright thermal bloom -- break contact, and slide to a
@@ -557,6 +558,8 @@ func _flee(i: int, sp: float) -> Vector2:
 		if dist > 1e-3 and dist < sight:
 			away += off / dist * (1.0 - dist / sight)
 	if away.length() > 0.0:
+		if _rng.randf() < PANIC_CHANCE:
+			events.append({"kind": "panic", "pos": pos[i], "to": pos[i], "team": CIVILIAN, "unit": kind[i]})
 		return away.normalized() * sp
 	return Vector2.ZERO
 

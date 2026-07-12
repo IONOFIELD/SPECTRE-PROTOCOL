@@ -98,6 +98,10 @@ var _sfx_death: AudioStream
 var _sfx_strike: AudioStream
 var _sfx_blast: AudioStream
 var _sfx_flash: AudioStream
+var _sfx_expl: AudioStream             # distant explosion, for ambient war
+var _sfx_yell: AudioStream             # civilian panic (drop audio/sfx/civ_panic.wav to enable)
+var _ambient_t: float = 0.0            # ambient-combat timer: war rumbling around the map
+var _ambient_next: float = 3.0
 var sel_layer: Control
 var drag_start: Vector2 = Vector2.ZERO
 var dragging: bool = false
@@ -225,6 +229,8 @@ func _ready() -> void:
 	_sfx_strike = load("res://audio/sfx/ac130_strike.wav")
 	_sfx_blast = load("res://audio/sfx/blast.wav")
 	_sfx_flash = load("res://audio/sfx/flashbang.wav")
+	_sfx_expl = load("res://audio/sfx/dist_explosion.wav")
+	_sfx_yell = load("res://audio/sfx/civ_panic.wav") if ResourceLoader.exists("res://audio/sfx/civ_panic.wav") else null
 
 
 func _build_tree() -> void:
@@ -730,9 +736,12 @@ func _drain_audio() -> void:
 		var at: Vector3 = Vector3(e["pos"].x, 1.0, e["pos"].y)
 		match e["kind"]:
 			"gunfire":
-				_sfx_at(at, _sfx_gun)
+				# your squad's fire cuts loudest; other teams / NPCs are quieter but audible
+				_sfx_at(at, _sfx_gun, 3.0 if e["team"] == WorldSim.SQUAD else -2.5)
 				if _flashes.size() < FLASH_MAX:
 					_flashes.append({"pos": e["pos"], "to": e["to"], "t": 0.0})
+			"panic":
+				_sfx_at(at, _sfx_yell)   # civilian scream -- no-op until audio/sfx/civ_panic.wav exists
 			"claw":
 				_sfx_at(at, _sfx_claw)
 			"zed_death":
@@ -759,13 +768,33 @@ func _drain_audio() -> void:
 				Audio.comms("need_backup", 2500)
 
 
-func _sfx_at(at: Vector3, stream: AudioStream) -> void:
+## Ambient war: every few seconds, a distant blast or a burst of gunfire somewhere on
+## the map -- positional (3D), so it pans + attenuates. Other teams and NPCs are always
+## fighting the horde out there; you hear it happening around you.
+func _ambient_combat(delta: float) -> void:
+	if city == null:
+		return
+	_ambient_t += delta
+	if _ambient_t < _ambient_next:
+		return
+	_ambient_t = 0.0
+	_ambient_next = _rng.randf_range(3.5, 8.0)
+	var g: Vector2 = _random_land_point(_rng)
+	var at: Vector3 = Vector3(g.x, 1.0, g.y)
+	if _rng.randf() < 0.4:
+		_sfx_at(at, _sfx_expl, -5.0)     # a distant blast
+	else:
+		_sfx_at(at, _sfx_gun, -8.0)      # a distant burst of fire
+
+
+func _sfx_at(at: Vector3, stream: AudioStream, vol_db: float = 0.0) -> void:
 	if stream == null or _sfx_pool.is_empty():
 		return
 	var p: AudioStreamPlayer3D = _sfx_pool[_sfx_next]
 	_sfx_next = (_sfx_next + 1) % _sfx_pool.size()
 	p.stream = stream
 	p.position = at
+	p.volume_db = vol_db
 	p.play()
 
 
@@ -852,6 +881,7 @@ func _process(delta: float) -> void:
 	_age_flashes(delta)
 	_age_flash3d(delta)
 	_advance_loot(delta)
+	_ambient_combat(delta)
 
 	if mission != null:
 		var was: int = mission.result
