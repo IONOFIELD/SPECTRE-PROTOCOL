@@ -60,6 +60,7 @@ var _team_count: int = 4                 # chosen at the startup menu (solo / 2 
 var _tutorial: bool = false              # tutorial run: calmer map, control hints
 var _menu_active: bool = true            # true until the player starts from the menu
 var _menu_layer: CanvasLayer             # the startup menu overlay, freed on start
+var _menu_sim: bool = true               # menu backdrop: a heavy Sanitation force sweeping the city
 # ISR scan: enemy teams (sanitation + rival teams) stay unidentified until a scan pulse
 # paints them for SCAN_REVEAL s; SCAN_COOLDOWN s between scans.
 var _scan_t: float = 999.0               # seconds since the last scan (>= REVEAL = hidden)
@@ -271,6 +272,8 @@ func _ready() -> void:
 		ThermalLib.maps_on = false
 	if OS.get_environment("SPECTRE_NOSNAP") != "":
 		ThermalLib.snap_default = false
+	if (_shot_dir != "" or _map_dir != "") and OS.get_environment("SPECTRE_MENU") == "":
+		_menu_sim = false          # captures/dev hooks show the real game, not the menu sweep
 	_init_res()                    # frame the feed to the window we were opened with
 	_build_tree()
 	_spawn()
@@ -626,8 +629,10 @@ func _populate_world() -> void:
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 	rng.randomize()
 	# Tutorial is a calm map to learn on -- a fraction of the ecology, no hordes/gauntlet.
+	# The menu backdrop instead deploys a heavy Sanitation sweep to 'sanitize' the city.
 	var s: float = 0.16 if _tutorial else 1.0
-	sim.populate(int(POP_INFECTED * s), int(POP_CIV * s), maxi(1, int(POP_SAN * s)), city.land)
+	var san_n: int = 26 if _menu_sim else POP_SAN
+	sim.populate(int(POP_INFECTED * s), int(POP_CIV * s), maxi(1, int(san_n * s)), city.land)
 	sim.scatter(&"run", WorldSim.INFECTED, int(POP_RUNNERS * s), city.land, rng)
 	sim.scatter(&"bru", WorldSim.INFECTED, int(POP_BRUTES * s), city.land, rng)
 	if not _tutorial:
@@ -2252,6 +2257,7 @@ func _menu_button(text: String) -> Button:
 ## Start a run with `count` teams (or the tutorial, count < 0). Respawns at the edges.
 func _start_game(count: int) -> void:
 	_tutorial = count < 0
+	_menu_sim = false
 	_team_count = clampi(1 if _tutorial else count, 1, ELEMENTS)
 	active_element = 0
 	_kills = 0
