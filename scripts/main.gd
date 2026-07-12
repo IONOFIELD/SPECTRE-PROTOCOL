@@ -243,12 +243,8 @@ const FULLSQUAD_PTS: int = 750         # bonus if every element gets clear
 var _touches: Dictionary = {}          # active touch index -> position
 var _touch_moved: float = 0.0          # primary-touch travel, to tell a tap from a drag
 var _pinch_prev: float = 0.0           # last two-finger spread, for pinch-zoom
-var _last_tap_ms: int = 0              # for double-tap detection (move order)
-var _last_tap_pos: Vector2 = Vector2.ZERO
 var _move_marker: Dictionary = {}      # {pos, ids}: a spinning triangle at the move destination, up until the commanded units arrive
 const MOVE_ARRIVE_M: float = 9.0       # commanded units within this of the mark = arrived, mark vanishes
-const DOUBLE_TAP_MS: int = 320         # a second tap within this window = a move order
-const DOUBLE_TAP_PX: float = 46.0      # ...and within this distance of the first
 
 # Loot: press-and-HOLD on a building fills a ring; releasing or dragging cancels.
 var _loot_idx: int = -1                # building being looted, -1 = none
@@ -1445,11 +1441,11 @@ func _process(delta: float) -> void:
 	elif p >= 0.0 and p < 0.46:
 		hud.text = "" if int(frame_n) % 16 < 8 else "SIGNAL ACQ"
 	else:
-		hud.text = "%s\n%s\n\nFEED  %s\nELMT  %d/%d   WPN %s\nMODE  %s\nRES   %dx%d\nALT   %d M   SLANT %d M\nAGC   %s %.3f/%.3f\nFPS   %d" % [
+		hud.text = "%s\n%s\n\nFEED  %s\nSQUAD %d/%d   WPN %s\nMODE  %s\nRES   %dx%d\nALT   %d M   SLANT %d M\nAGC   %s %.3f/%.3f\nFPS   %d" % [
 			_mission_line(),
 			_intel_line(),
 			"AC-130 / PYLON TURN" if feed == "orbit" else "ELEMENT / GROUND",
-			active_element + 1, ELEMENTS, ("FREE" if sim.weapons_free else "HOLD"),
+			sim.element_ids(0).size(), ELEMENT_ROSTER.size(), ("FREE" if sim.weapons_free else "HOLD"),
 			names[mode], snap_res.x, snap_res.y,
 			int(cam.position.y), int(cam_dist),
 			"FROZEN" if agc.frozen else "AUTO", agc.lo, agc.hi,
@@ -2339,28 +2335,6 @@ func _select_in_rect(r: Rect2) -> void:
 		sim.selected[i] = sim.alive[i] and r.abs().has_point(_screen_of(i))
 
 
-func _select_nearest(g: Vector2) -> void:
-	var best: int = -1
-	var bd: float = 2.5
-	for i in sim.count():
-		if not sim.alive[i]:
-			continue
-		var d: float = sim.pos[i].distance_to(g)
-		if d < bd:
-			bd = d
-			best = i
-	for i in sim.count():
-		sim.selected[i] = (i == best)
-
-
-## Element command: pick which of the four teams you're driving -- selection and
-## the follow-cam both track it.
-func _pick_element(e: int) -> void:
-	active_element = clampi(e, 0, ELEMENTS - 1)
-	_select_element(active_element)
-	cam_manual = false                  # snap the follow-cam back onto the picked team
-
-
 func _select_element(e: int) -> void:
 	for i in sim.count():
 		sim.selected[i] = sim.alive[i] and sim.element[i] == e
@@ -2555,19 +2529,6 @@ func _fire_reticle() -> void:
 		return
 	var win: Vector2 = Vector2(get_viewport().get_visible_rect().size)
 	_fire_ac130_at(_ground_pick(win * 0.5))
-
-
-## Nearest living squad member to a ground point, within a finger-sized radius, or -1.
-func _squad_at(g: Vector2) -> int:
-	var best: int = -1
-	var bd: float = 7.0
-	for i in sim.count():
-		if sim.alive[i] and sim.team[i] == WorldSim.SQUAD:
-			var d: float = sim.pos[i].distance_to(g)
-			if d < bd:
-				bd = d
-				best = i
-	return best
 
 
 ## Cycle the selection through the unit TYPES of the active element (cdr -> cbt -> med
