@@ -35,6 +35,7 @@ uniform float detail_temp   = 0.0;    // degrees C, peak to peak
 uniform float detail_emis   = 0.0;
 uniform float storey_h      = 3.4;
 uniform float flicker       = 0.0;    // 1.0 for fire: a live swell/shrink pulse in radiance
+uniform float writhe        = 0.0;    // 1.0 for a fire PLUME: the mesh licks/dances (not wreck hulls)
 
 // Optional photographic detail. NOT albedo: the map holds the high-pass residual
 // of a real texture, which is structure (mortar, gaps, rivets) rather than colour.
@@ -85,6 +86,15 @@ float seam(float x, float pitch) {
 }
 
 void vertex() {
+    // Fire plume: writhe the mesh so the flame licks and dances (silhouette moves even
+    // when the hot core saturates white). Upward-biased -- the tips whip, the base holds.
+    if (writhe > 0.0) {
+        float t = TIME;
+        float up = clamp(VERTEX.y * 0.5 + 0.55, 0.0, 1.4);
+        VERTEX.x += (sin(t * 3.3 + VERTEX.y * 2.3) * 0.20 + sin(t * 5.9 + VERTEX.z * 3.1) * 0.10) * up * writhe;
+        VERTEX.z += (cos(t * 3.0 + VERTEX.z * 2.0) * 0.16 + sin(t * 6.4 + VERTEX.x * 3.0) * 0.09) * up * writhe;
+        VERTEX.y += (sin(t * 4.2 + VERTEX.x * 2.6 + VERTEX.z * 2.6) * 0.12 + 0.09 * sin(t * 7.0)) * up * writhe;
+    }
     v_world_normal = normalize((MODEL_MATRIX * vec4(NORMAL, 0.0)).xyz);
     v_world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 
@@ -196,11 +206,17 @@ void fragment() {
     float em    = clamp(emissivity + dE, 0.05, 1.0) * fall;
 
     float r = radiance(temp_c - sky + solar + dT) * em * (1.0 + fpn);
-    // fire flicker: a swell/shrink pulse (position-phased) so flames breathe. The bloom
-    // in the sensor pass turns the brightness swell into a soft, growing/shrinking glow.
+    // Flame: bands of shimmer rising through the body + a breathing pulse. The shimmer
+    // carves moving DARK tongues (visible even when the hot core saturates to white) and
+    // brightens the cores, so the sensor bloom reads them as licking, growing glow.
     if (flicker > 0.0) {
-        float ph = TIME * 5.5 + v_world_pos.x * 0.4 + v_world_pos.z * 0.4;
-        r *= 1.0 + flicker * (0.22 * sin(ph) + 0.10 * sin(ph * 2.3 + 1.7));
+        float t = TIME;
+        vec2 fp = vec2((v_world_pos.x + v_world_pos.z) * 0.7, v_world_pos.y * 1.1 - t * 2.6);
+        float shim = fbm(fp);                                    // 0..1 rising structure
+        float pulse = 0.5 + 0.5 * sin(t * 5.2 + v_world_pos.x * 0.5 + v_world_pos.z * 0.5);
+        float m = mix(0.42, 1.28, shim) * (0.82 + 0.18 * pulse);
+        r *= mix(1.0, m, flicker);
+        r = max(r, 0.0);
     }
     ALBEDO = vec3(r * radiance_scale);
 }

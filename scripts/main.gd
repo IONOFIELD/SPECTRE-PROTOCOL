@@ -65,6 +65,13 @@ var _tutorial: bool = false              # tutorial run: calmer map, control hin
 var _menu_active: bool = true            # true until the player starts from the menu
 var _menu_layer: CanvasLayer             # the startup menu overlay, freed on start
 var _menu_sim: bool = true               # menu backdrop: a heavy Sanitation force sweeping the city
+var _menu_title: Label                   # the SPECTRE PROTOCOL title -- scanner rays fire from it
+var _menu_fade: ColorRect                # black wash over the feed for the sim-reset transition
+var _menu_ping_age: float = 999.0        # seconds since the last scanner ping (>= show = idle)
+var _menu_ping_next: float = 1.2         # seconds until the next ping (irregular)
+var _menu_resetting: bool = false        # a fade-out / respawn / fade-in cycle is running
+const MENU_PING_SHOW: float = 5.0        # a ping's markers live this long, then fade for the next
+const MENU_RAY_MAX: int = 48             # cap the contacts a ping paints, so the fan stays legible
 # ISR scan: enemy teams (sanitation + rival teams) stay unidentified until a scan pulse
 # paints them for SCAN_REVEAL s; SCAN_COOLDOWN s between scans.
 var _scan_t: float = 999.0               # seconds since the last scan (>= REVEAL = hidden)
@@ -173,6 +180,8 @@ var mission: Mission
 # heat (kills). Once deployed, the only way out is a bridge or wiping the whole force.
 var _sani_deployed: bool = false
 var _sani_music_on: bool = false       # the wipe-force theme layer is live (asset present)
+var _nuke_fired: bool = false          # hoarding 50 HDDs trips a nuke -- total loss
+const NUKE_HDD: int = 50               # drives that draw the strike that ends everything
 const SANI_DEPLOY_KILLS: int = 45      # your kill count that summons the wipe force
 # The Sanitation theme layer -- drop one of these in and it rides in by proximity on deploy.
 const MUSIC_SANI: Array = ["res://audio/music/musicSANI.ogg", "res://audio/music/musicSANI.wav"]
@@ -842,6 +851,28 @@ func _ride_sani_music() -> void:
 	Audio.set_sani_db(lerpf(-40.0, -5.0, t))
 
 
+## Greed's end: recover NUKE_HDD drives and a nuclear strike levels the whole map. Nothing
+## survives -- your team included -- so it's a total loss, by your own hand.
+func _fire_nuke() -> void:
+	if _nuke_fired or sim == null or city == null:
+		return
+	_nuke_fired = true
+	var c: Vector2 = (city.map_lo + city.map_hi) * 0.5
+	var reach: float = c.distance_to(city.map_hi) + 400.0
+	sim.air_strike(c, reach, 99999.0)          # flatten everything, no survivors
+	_spawn_flash3d(c, 80.0, 1.5, 45.0)         # a blinding thermal white-out at ground zero
+	for a in 10:
+		var ang: float = float(a) * TAU / 10.0
+		_spawn_flash3d(c + Vector2(cos(ang), sin(ang)) * reach * 0.33, 44.0, 1.3, 22.0)
+	if _sfx_strike != null:
+		Audio.sfx(_sfx_strike, 8.0)
+	if _sfx_expl != null:
+		Audio.sfx(_sfx_expl, 8.0)
+	mission.result = Mission.LOST
+	mission.reason = "NUCLEAR DETONATION"
+	_show_banner(false)
+
+
 func _random_land_point(rng: RandomNumberGenerator) -> Vector2:
 	for _try in 48:
 		var p: Vector2 = Vector2(
@@ -1290,6 +1321,10 @@ func _process(delta: float) -> void:
 		if _move_blip["t"] > 1.2:
 			_move_blip.clear()
 
+	if _menu_active:
+		_update_menu(delta)
+	if not _menu_active and not _nuke_fired and _hdd >= NUKE_HDD and mission != null and mission.result == Mission.ONGOING:
+		_fire_nuke()
 	if not _menu_active and not _tutorial and not _sani_deployed and _kills >= SANI_DEPLOY_KILLS:
 		_deploy_sanitation()
 	if mission != null and not _menu_active:
@@ -1363,7 +1398,9 @@ func _process(delta: float) -> void:
 		sel_layer.queue_redraw()
 
 	var names: Array = ["WHT HOT", "BLK HOT", "IRONBOW"]
-	if p >= 0.0 and p < 0.46:
+	if _menu_active:
+		hud.text = ""                       # the menu stays clean -- just the sweep + the ping
+	elif p >= 0.0 and p < 0.46:
 		hud.text = "" if int(frame_n) % 16 < 8 else "SIGNAL ACQ"
 	else:
 		hud.text = "%s\n%s\n\nFEED  %s\nELMT  %d/%d   WPN %s\nMODE  %s\nRES   %dx%d\nALT   %d M   SLANT %d M\nAGC   %s %.3f/%.3f\nFPS   %d" % [
@@ -1439,6 +1476,8 @@ func _mission_line() -> String:
 ## while its toast is still up.
 func _intel_line() -> String:
 	var s: String = "INTEL  HDD %d" % _hdd
+	if _hdd >= 40:
+		s += "  [!] CRITICAL MASS %d/%d" % [_hdd, NUKE_HDD]   # a nuke waits at NUKE_HDD
 	if _loot_toast_t > 0.0 and _loot_toast != "":
 		s += "   //  " + _loot_toast
 	return s
@@ -1462,8 +1501,9 @@ func _show_banner(won: bool) -> void:
 
 	var mm: int = int(mission.t) / 60
 	var ss: int = int(mission.t) % 60
+	var headline: String = mission.reason if won else ("NUCLEAR DETONATION -- TOTAL LOSS" if _nuke_fired else "OVERRUN")
 	var rows: PackedStringArray = [
-		mission.reason if won else "OVERRUN",
+		headline,
 		"",
 		"YOUR TEAM EXTRACTED   %d" % extracted,
 		"HOSTILES DOWN         %d" % _kills,
@@ -1486,9 +1526,89 @@ func _show_banner(won: bool) -> void:
 
 const SEL_COL: Color = Color(0.62, 0.88, 0.70, 0.85)
 
+## Menu backdrop bookkeeping: fire the scanner ping on an irregular beat (its own SFX),
+## and when the Sanitation force has cleared every other entity, roll the sim over.
+func _update_menu(delta: float) -> void:
+	if sim == null:
+		return
+	_menu_ping_age += delta
+	if _menu_ping_age >= _menu_ping_next:
+		_menu_ping_age = 0.0
+		_menu_ping_next = _rng.randf_range(5.5, 8.5)   # irregular cadence
+		if _sfx_scan != null:
+			Audio.sfx(_sfx_scan, 1.0)
+	if not _menu_resetting and _menu_prey_left() == 0:
+		_menu_reset_cycle()
+
+
+## Living entities that AREN'T the Sanitation force -- the sweep's remaining prey.
+func _menu_prey_left() -> int:
+	var n: int = 0
+	for i in sim.count():
+		if sim.alive[i] and sim.team[i] != WorldSim.SANITATION:
+			n += 1
+	return n
+
+
+## The Sanitation force is all that's left: fade the feed to black, respawn a fresh city
+## + population, then fade back in for a new sweep. Menu options stay up throughout.
+func _menu_reset_cycle() -> void:
+	if _menu_resetting or _menu_fade == null:
+		return
+	_menu_resetting = true
+	var tw: Tween = create_tween()
+	tw.tween_property(_menu_fade, "color:a", 1.0, 1.2)
+	await tw.finished
+	await _rebuild_world()                 # fresh menu sim (still _menu_sim, so Sanitation reseeds)
+	_menu_ping_age = MENU_PING_SHOW        # let a ping fire soon after the reveal
+	var tw2: Tween = create_tween()
+	tw2.tween_property(_menu_fade, "color:a", 0.0, 1.2)
+	await tw2.finished
+	_menu_resetting = false
+
+
+## The menu's ISR scanner ping: on each beat, rays lance from the SPECTRE PROTOCOL title
+## out to every contact and drop a bracket on it, then the whole paint fades over 5 s.
+## Nothing else draws in the menu -- no reticle, no persistent tags.
+func _draw_menu_scan() -> void:
+	if sim == null or _menu_title == null:
+		return
+	var t: float = _menu_ping_age
+	if t >= MENU_PING_SHOW:
+		return
+	var origin: Vector2 = _menu_title.get_global_rect().get_center()
+	var reach: float = clampf(t / 0.5, 0.0, 1.0)                       # rays lance out over 0.5 s
+	var fade: float = 1.0 if t < 1.0 else clampf(1.0 - (t - 1.0) / (MENU_PING_SHOW - 1.0), 0.0, 1.0)
+	var strobe: float = 1.0
+	if t < 0.6:
+		strobe = 0.3 + 0.7 * (0.5 + 0.5 * sin(t * 47.0))              # irregular flicker as it fires
+	var a: float = fade * strobe
+	if a <= 0.01:
+		return
+	var green: Color = Color(0.40, 1.0, 0.55, a)
+	var ray: Color = Color(0.40, 1.0, 0.55, a * 0.45)
+	var drawn: int = 0
+	for i in sim.count():
+		if drawn >= MENU_RAY_MAX:
+			break
+		if not sim.alive[i]:
+			continue
+		var w: Vector3 = Vector3(sim.pos[i].x, 0.9, sim.pos[i].y)
+		if cam.is_position_behind(w):
+			continue
+		var tp: Vector2 = _screen_point(w)
+		sel_layer.draw_line(origin, origin.lerp(tp, reach), ray, 1.0)
+		if reach >= 1.0:
+			_corner_box(tp, 5.0, green)
+		drawn += 1
+
+
 func _draw_selection() -> void:
 	if cut_t >= 0.0:
 		return                      # the overlay generator rides the same signal
+	if _menu_active:
+		_draw_menu_scan()           # menu: only the scanner-ping paints the feed, nothing else
+		return
 	if mission != null and mission.result != Mission.ONGOING:
 		return                      # mission over: clear the sensor clutter for the debrief
 	_draw_streets()
@@ -1702,6 +1822,7 @@ func _draw_allegiance() -> void:
 				continue                                                    # hidden until a scan finds them
 			sel_layer.draw_circle(p, 2.7, Color(0.05, 0.05, 0.06, 0.95))   # black hull
 			_corner_box(p, 5.5, TAG_ENEMY)                                 # red brackets
+			_unit_glyph(&"san", p - Vector2(0.0, 13.0), 5.0, TAG_ENEMY)    # radiation trefoil
 		else:
 			var col: Color = _alleg_color(t)
 			if col.a > 0.0:
@@ -1730,7 +1851,6 @@ func _draw_unit_boxes() -> void:
 		if not cam.is_position_behind(wc):
 			_caret(_screen_point(wc), 15.0, TAG_FRIEND, true)
 		return
-	var head: Color = Color(TAG_FRIEND.r, TAG_FRIEND.g, TAG_FRIEND.b, 0.7)
 	for i in sim.count():
 		if not sim.alive[i] or sim.team[i] != WorldSim.SQUAD:
 			continue
@@ -1738,10 +1858,10 @@ func _draw_unit_boxes() -> void:
 		if cam.is_position_behind(w):
 			continue
 		var p: Vector2 = _screen_point(w)
-		var mine: bool = sim.element[i] == 0 or sim.element[i] == sim.player_element
-		_corner_box(p, 6.5, _squad_col(i))
-		if mine:
-			_caret(p - Vector2(0.0, 15.0), 5.0, head, true)   # only your team wears the friendly caret
+		var col: Color = _squad_col(i)
+		_corner_box(p, 6.5, col)
+		# the role glyph over the head -- your team + any rival team you can see
+		_unit_glyph(sim.kind[i], p - Vector2(0.0, 15.0), 5.0, col)
 
 
 ## AC-130 target tags -- ONLY inside the centre reticle box, like the real optic when
@@ -1819,6 +1939,43 @@ func _caret(p: Vector2, size: float, col: Color, down: bool) -> void:
 	sel_layer.draw_line(a, b, col, 1.5)
 	sel_layer.draw_line(b, apex, col, 1.5)
 	sel_layer.draw_line(apex, a, col, 1.5)
+
+
+## The role glyph that sits over a unit's head -- one distinct shape per unit type so
+## you can read a team's composition at a glance (all teams, incl. scanned enemies):
+## combat down-triangle, commander diamond, medic cross, sniper turned-Y, recon bullseye,
+## EOD pentagon, sanitation radiation trefoil.
+func _unit_glyph(kind: StringName, p: Vector2, s: float, col: Color) -> void:
+	match kind:
+		&"cdr":                                  # commander -- diamond
+			sel_layer.draw_polyline(PackedVector2Array([
+				p + Vector2(0, -s), p + Vector2(s, 0), p + Vector2(0, s), p + Vector2(-s, 0), p + Vector2(0, -s)]), col, 1.5)
+		&"med":                                  # medic -- cross
+			sel_layer.draw_line(p + Vector2(0, -s), p + Vector2(0, s), col, 2.0)
+			sel_layer.draw_line(p + Vector2(-s, 0), p + Vector2(s, 0), col, 2.0)
+		&"snp":                                  # sniper -- turned Y (fork up, stem down)
+			sel_layer.draw_line(p, p + Vector2(0, s), col, 1.5)
+			sel_layer.draw_line(p, p + Vector2(-s * 0.85, -s), col, 1.5)
+			sel_layer.draw_line(p, p + Vector2(s * 0.85, -s), col, 1.5)
+		&"rec":                                  # recon -- bullseye
+			sel_layer.draw_arc(p, s, 0.0, TAU, 16, col, 1.5)
+			sel_layer.draw_circle(p, s * 0.34, col)
+		&"eod":                                  # EOD -- pentagon
+			var pent: PackedVector2Array = PackedVector2Array()
+			for a in 6:
+				var ang: float = -PI * 0.5 + float(a) * TAU / 5.0
+				pent.append(p + Vector2(cos(ang), sin(ang)) * s)
+			sel_layer.draw_polyline(pent, col, 1.5)
+		&"san":                                  # sanitation -- radiation trefoil
+			sel_layer.draw_circle(p, s * 0.3, col)
+			for a in 3:
+				var ang: float = -PI * 0.5 + float(a) * TAU / 3.0
+				sel_layer.draw_colored_polygon(PackedVector2Array([
+					p + Vector2(cos(ang - 0.42), sin(ang - 0.42)) * s * 0.55,
+					p + Vector2(cos(ang), sin(ang)) * s,
+					p + Vector2(cos(ang + 0.42), sin(ang + 0.42)) * s * 0.55]), col)
+		_:                                       # combat + fallback -- down triangle
+			_caret(p, s, col, true)
 
 
 ## The AC-130 gunship ISR HUD: corner targeting brackets, a gapped centre reticle
@@ -2582,16 +2739,24 @@ func _build_menu() -> void:
 	_menu_layer = CanvasLayer.new()
 	_menu_layer.layer = 20
 	var dim: ColorRect = ColorRect.new()
-	dim.color = Color(0.0, 0.02, 0.0, 0.66)
+	dim.color = Color(0.0, 0.02, 0.0, 0.34)   # lighter now -- watch the Sanitation sweep behind it
 	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	dim.mouse_filter = Control.MOUSE_FILTER_STOP
 	_menu_layer.add_child(dim)
+	# a black wash that rises to reset the sim (last entity standing) then clears -- sits over
+	# the feed but UNDER the menu box, so the options stay visible through the transition.
+	_menu_fade = ColorRect.new()
+	_menu_fade.color = Color(0.0, 0.0, 0.0, 0.0)
+	_menu_fade.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_menu_fade.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_menu_layer.add_child(_menu_fade)
 	var box: VBoxContainer = VBoxContainer.new()
 	box.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
 	box.add_theme_constant_override("separation", 9)
 	box.alignment = BoxContainer.ALIGNMENT_CENTER
 	_menu_layer.add_child(box)
-	box.add_child(_menu_label("SPECTRE PROTOCOL", 40, HUD_COL))
+	_menu_title = _menu_label("SPECTRE PROTOCOL", 40, HUD_COL)
+	box.add_child(_menu_title)
 	box.add_child(_menu_label("SELECT DEPLOYMENT", 15, HUD_DIM))
 	var gap: Control = Control.new()
 	gap.custom_minimum_size = Vector2(0, 12)
@@ -2658,6 +2823,7 @@ func _start_game(count: int) -> void:
 	_hdd_pickups.clear()
 	_loot_toast = ""
 	_loot_toast_t = 0.0
+	_nuke_fired = false
 	_sani_music_on = false
 	Audio.stop_sani(0.3)
 	if _menu_layer != null:
