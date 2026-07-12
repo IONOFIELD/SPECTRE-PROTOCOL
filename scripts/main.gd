@@ -127,12 +127,12 @@ var _touch_moved: float = 0.0          # primary-touch travel, to tell a tap fro
 var _pinch_prev: float = 0.0           # last two-finger spread, for pinch-zoom
 
 # AC-130 fire support -- a kill-charged boresight strike (v0.19's killstreak)
-const AC_COST: int = 14                # kills to arm one fire mission
+const AC_UNLOCK: int = 100             # INFECTED kills to unlock a fire mission (killstreak; resets on use)
 const STRIKE_R: float = 16.0           # kill radius, metres
 const STRIKE_DMG: float = 460.0        # one burst flattens even the Sanitation elite
 const STRIKE_TOF: float = 1.8          # round time-of-flight, seconds (tuned for feel)
-const STRIKE_ALT: float = 280.0        # visible descent altitude of the round, metres
-var _ac_charge: int = 0                # kills banked toward the next strike
+const STRIKE_BOW: float = 0.26         # arc height of the inbound round, as a fraction of its screen run
+var _zombie_kills: int = 0             # infected killed toward the next AC-130 unlock
 var _strike_arming: bool = false       # armed: the next tap designates the strike point
 var _strike_pending: bool = false      # a round is inbound (in flight)
 var _strike_target: Vector2 = Vector2.ZERO
@@ -153,7 +153,7 @@ const FLAME_H: float = 1.3                 # nozzle height, m
 # feeds
 const FEED: Dictionary = {
 	"deploy": {"dist": 240.0, "el": 0.90, "fov": 40.0, "follow": true, "orbit": 0.0},
-	"orbit":  {"dist": 1500.0, "el": 1.25, "fov": 40.0, "follow": false, "orbit": 0.015},
+	"orbit":  {"dist": 1350.0, "el": 1.25, "fov": 40.0, "follow": false, "orbit": 0.015},
 }
 var feed := "deploy"
 var cam_tx := 300.0
@@ -755,14 +755,16 @@ func _score_kill(unit: StringName) -> void:
 	_kills += 1
 	if unit == &"san":
 		_san_kills += 1
-	_ac_charge = mini(AC_COST, _ac_charge + 1)
+	# Only the infected charge the AC-130 killstreak (the zombie kill counter).
+	if unit == &"zed" or unit == &"run" or unit == &"bru":
+		_zombie_kills += 1
 	_score += int(KILL_PTS.get(unit, 10))
 
 
 ## STRK / V: arm (or cancel) target designation, if a fire mission is charged.
 ## While armed, the next tap/click on the ground calls the strike there.
 func _request_strike() -> void:
-	if _ac_charge >= AC_COST:
+	if _zombie_kills >= AC_UNLOCK:
 		_strike_arming = not _strike_arming
 	else:
 		_strike_arming = false
@@ -771,9 +773,9 @@ func _request_strike() -> void:
 ## Call the strike at a designated ground point. Everything in the ring dies --
 ## friendly fire included, so mind your own squad.
 func _fire_ac130_at(target: Vector2) -> void:
-	if _ac_charge < AC_COST or _strike_pending:
+	if _zombie_kills < AC_UNLOCK or _strike_pending:
 		return
-	_ac_charge = 0
+	_zombie_kills = 0          # spend the killstreak; earn the next 100
 	_strike_arming = false
 	_strike_target = target
 	_strike_tof = 0.0
@@ -1022,6 +1024,8 @@ func _draw_selection() -> void:
 		return                      # the overlay generator rides the same signal
 	if mission != null and mission.result != Mission.ONGOING:
 		return                      # mission over: clear the sensor clutter for the debrief
+	_draw_streets()
+	_draw_coast()
 	_draw_hud()
 	_draw_allegiance()
 	_draw_flashes()
@@ -1045,6 +1049,41 @@ func _draw_selection() -> void:
 		var m: Vector2 = get_viewport().get_mouse_position()
 		sel_layer.draw_rect(Rect2(drag_start, m - drag_start), SEL_COL, false, 1.0)
 	_draw_escapes()
+
+
+## Streets as simple map lines (Google-Maps style), drawn under the HUD. Faded in
+## by altitude so the tactical close-up stays clean and the wide map reads its grid.
+func _draw_streets() -> void:
+	if city == null:
+		return
+	var a: float = clampf((cam_dist - 380.0) / 700.0, 0.0, 1.0) * 0.30
+	if a <= 0.01:
+		return
+	var col: Color = Color(0.55, 0.86, 0.70, a)
+	for seg in city.road_lines:
+		var a3: Vector3 = Vector3(seg[0].x, 0.15, seg[0].y)
+		var b3: Vector3 = Vector3(seg[1].x, 0.15, seg[1].y)
+		if cam.is_position_behind(a3) or cam.is_position_behind(b3):
+			continue
+		sel_layer.draw_line(_screen_point(a3), _screen_point(b3), col, 1.0)
+
+
+## The shoreline: the land polygon stroked in cool cyan so the coast -- the boundary
+## between the warm city and the cold bay -- reads at a glance at any zoom.
+func _draw_coast() -> void:
+	if city == null or city.land_poly.is_empty():
+		return
+	var col: Color = Color(0.36, 0.76, 0.96, 0.75)
+	var poly: PackedVector2Array = city.land_poly
+	var n: int = poly.size()
+	for i in n:
+		var a2: Vector2 = poly[i]
+		var b2: Vector2 = poly[(i + 1) % n]
+		var a3: Vector3 = Vector3(a2.x, 0.3, a2.y)
+		var b3: Vector3 = Vector3(b2.x, 0.3, b2.y)
+		if cam.is_position_behind(a3) or cam.is_position_behind(b3):
+			continue
+		sel_layer.draw_line(_screen_point(a3), _screen_point(b3), col, 2.0)
 
 
 ## The two bridge escape zones, ringed on the deck -- the only ways out. Green,
@@ -1148,10 +1187,10 @@ func _draw_hud() -> void:
 	if _strike_arming:
 		sel_layer.draw_string(font, Vector2(30.0, win.y - 178.0), "AC-130  DESIGNATE TARGET", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, HUD_RED)
 		sel_layer.draw_string(font, Vector2(0.0, 94.0), "DESIGNATE STRIKE  --  TAP TARGET", HORIZONTAL_ALIGNMENT_CENTER, win.x, 15, HUD_RED)
-	elif _ac_charge >= AC_COST:
+	elif _zombie_kills >= AC_UNLOCK:
 		sel_layer.draw_string(font, Vector2(30.0, win.y - 178.0), "AC-130 GUNSHIP  READY", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, HUD_COL)
 	else:
-		sel_layer.draw_string(font, Vector2(30.0, win.y - 178.0), "AC-130  ARMING  %d/%d" % [_ac_charge, AC_COST], HORIZONTAL_ALIGNMENT_LEFT, -1, 13, HUD_DIM)
+		sel_layer.draw_string(font, Vector2(30.0, win.y - 178.0), "AC-130  LOCKED  %d/%d KILLS" % [_zombie_kills, AC_UNLOCK], HORIZONTAL_ALIGNMENT_LEFT, -1, 13, HUD_DIM)
 
 	_draw_attitude(font, win)
 	_draw_threat(font, win)
@@ -1176,24 +1215,36 @@ func _draw_strike() -> void:
 
 ## The inbound round: a hot dot descending from altitude onto the boresight over
 ## the TOF, a trail behind it, and a danger-close ring where it will land.
+## The inbound AC-130 round: it flies IN from off the bottom-right of the screen
+## (the orbiting gunship's quarter) and arcs over to the designated point, arriving
+## as the strike lands. A danger-close ring marks the impact the whole way in.
 func _draw_incoming() -> void:
 	if not _strike_pending:
 		return
+	var win: Vector2 = Vector2(get_viewport().get_visible_rect().size)
 	var k: float = clampf(_strike_tof / STRIKE_TOF, 0.0, 1.0)
 	var g3: Vector3 = Vector3(_strike_target.x, 0.3, _strike_target.y)
-	if not cam.is_position_behind(g3):
-		var gc: Vector2 = _screen_point(g3)
-		var edge: Vector2 = _screen_point(Vector3(_strike_target.x + STRIKE_R, 0.3, _strike_target.y))
-		var rad: float = maxf(6.0, gc.distance_to(edge))
-		sel_layer.draw_arc(gc, rad, 0.0, TAU, 36, Color(1.0, 0.42, 0.30, 0.55), 1.5)
-	var y: float = STRIKE_ALT * (1.0 - k * k)     # accelerating fall onto the target
-	var w3: Vector3 = Vector3(_strike_target.x, y + 0.5, _strike_target.y)
-	if cam.is_position_behind(w3):
+	if cam.is_position_behind(g3):
 		return
-	var sp: Vector2 = _screen_point(w3)
-	var trail: Vector3 = Vector3(_strike_target.x, minf(STRIKE_ALT, y + 26.0) + 0.5, _strike_target.y)
-	sel_layer.draw_line(_screen_point(trail), sp, Color(1.0, 0.9, 0.62, 0.85), 2.0)
-	sel_layer.draw_circle(sp, 3.5, Color(1.0, 0.97, 0.86, 1.0))
+	var end: Vector2 = _screen_point(g3)
+	var edge: Vector2 = _screen_point(Vector3(_strike_target.x + STRIKE_R, 0.3, _strike_target.y))
+	sel_layer.draw_arc(end, maxf(6.0, end.distance_to(edge)), 0.0, TAU, 36, Color(1.0, 0.42, 0.30, 0.55), 1.5)
+	var start: Vector2 = Vector2(win.x + 60.0, win.y + 60.0)   # off the bottom-right corner
+	# a curved contrail trailing the round along the arc
+	var prev: Vector2 = _arc_point(start, end, maxf(0.0, k - 0.22))
+	for s in range(1, 6):
+		var q: Vector2 = _arc_point(start, end, maxf(0.0, k - 0.22 + 0.22 * float(s) / 5.0))
+		sel_layer.draw_line(prev, q, Color(1.0, 0.9, 0.62, 0.22 + 0.6 * float(s) / 5.0), 2.0)
+		prev = q
+	sel_layer.draw_circle(_arc_point(start, end, k), 3.6, Color(1.0, 0.97, 0.86, 1.0))
+
+
+## A ballistic screen-space arc from a to b: a straight run bowed upward by
+## STRIKE_BOW of its length (0 at both ends, peak at the midpoint).
+func _arc_point(a: Vector2, b: Vector2, t: float) -> Vector2:
+	var base: Vector2 = a.lerp(b, t)
+	base.y -= sin(t * PI) * a.distance_to(b) * STRIKE_BOW
+	return base
 
 
 func _age_flashes(delta: float) -> void:
@@ -1369,6 +1420,8 @@ func _apply_feed() -> void:
 		cam_tx = city.land.get_center().x
 		cam_tz = city.land.get_center().y
 		cam_az = -1.05
+		cam_manual = false     # re-take the view
+		orbit_auto = true      # the wide/ISR view always keeps its pylon turn going
 
 
 func _input(e: InputEvent) -> void:
