@@ -103,6 +103,8 @@ var evade_to: Array[Vector2] = []     # sanitation: the flank point it's sliding
 ## open-fire toggle). events is the per-tick log main drains for positional audio:
 ## [{kind, pos, team, unit}]. Both cleared at the top of every step().
 var weapons_free: bool = true
+var player_element: int = 0            # the element the human commands; the rest are AI rivals
+var allied: Dictionary = {}           # element -> true if that rival is allied (passive) with you
 var events: Array = []
 var _dmg: Dictionary = {}             # target index -> damage queued this tick
 var _tick: int = 0
@@ -463,9 +465,34 @@ func _targets(a: int, b: int) -> bool:
 	return a != b and (HOSTILE[a] as Array).has(b)
 
 
-## Roamers sense the nearest warm body anywhere; holders wait to see one.
+## Unit-level hostility, so the SQUAD faction can hold RIVAL teams: two SQUAD units of
+## different elements are enemies (free-for-all) unless one is the player and that rival
+## is allied (passive). Everything else is the plain team matrix.
+func _hostile_units(i: int, j: int) -> bool:
+	var ti: int = team[i]
+	var tj: int = team[j]
+	if ti == SQUAD and tj == SQUAD:
+		var ei: int = element[i]
+		var ej: int = element[j]
+		if ei == ej:
+			return false
+		if ei == player_element or ej == player_element:
+			var other: int = ej if ei == player_element else ei
+			return not allied.get(other, false)   # hostile unless allied with the player
+		return true                                 # two rivals always fight each other
+	return _targets(ti, tj)
+
+
+## Roamers sense the nearest warm body anywhere; holders wait to see one. Rival player
+## teams (any SQUAD element that isn't the player's) roam + fight like a hostile faction.
 func _hunts(t: int) -> bool:
 	return HUNTERS.has(t)
+
+
+func _unit_hunts(i: int) -> bool:
+	if team[i] == SQUAD:
+		return element[i] != player_element
+	return HUNTERS.has(team[i])
 
 
 ## Refresh foe[i]: keep a live target still in sight, else acquire the nearest
@@ -478,11 +505,11 @@ func _acquire(i: int) -> void:
 	# HUNTERS (infected, sanitation, bandits) sense the nearest warm body anywhere
 	# on the map, no line of sight -- they close on you rather than standing idle.
 	# The scan is O(n) but staggered (see step), so it costs a fraction of a tick.
-	if _hunts(t):
+	if _unit_hunts(i):
 		var best: int = -1
 		var bestd: float = INF
 		for j in count():
-			if j == i or not alive[j] or not _targets(t, team[j]):
+			if j == i or not alive[j] or not _hostile_units(i, j):
 				continue
 			var dd: float = pos[i].distance_squared_to(pos[j])
 			if dd < bestd:
@@ -499,7 +526,7 @@ func _acquire(i: int) -> void:
 	var best2: int = -1
 	var bestd2: float = sight * sight
 	for j in _near:
-		if j == i or not alive[j] or not _targets(team[i], team[j]):
+		if j == i or not alive[j] or not _hostile_units(i, j):
 			continue
 		var dd: float = pos[i].distance_squared_to(pos[j])
 		if dd < bestd2 and _los(pos[i], pos[j]):
@@ -537,12 +564,13 @@ func _combat(i: int, sp: float) -> Vector2:
 	# shooters: squad, sanitation, bandits, survivors. Fire in range, clear line.
 	# Only the squad's trigger is disciplined (weapons_free); the rest fire at will.
 	if d <= reach and _los(pos[i], pos[f]):
-		if cd[i] <= 0.0 and (t != SQUAD or weapons_free):
+		# your squad's trigger is disciplined (weapons_free); rivals + the rest fire at will
+		if cd[i] <= 0.0 and (t != SQUAD or weapons_free or element[i] != player_element):
 			_strike(i, f)
 		return Vector2.ZERO          # in range: stand and shoot
-	if _hunts(t):
-		return (pos[f] - pos[i]) / maxf(d, 1e-5) * sp   # sanitation + bandits close in
-	return Vector2.ZERO              # squad + survivors hold (squad = player-ordered; survivor digs in)
+	if _unit_hunts(i):
+		return (pos[f] - pos[i]) / maxf(d, 1e-5) * sp   # rivals, sanitation, bandits close in
+	return Vector2.ZERO              # your squad + survivors hold (player-ordered; survivor digs in)
 
 
 ## A civilian steers directly away from the nearest thing that would kill it.
@@ -595,7 +623,7 @@ func _strike(i: int, f: int) -> void:
 		# -- the sim auto-aims it, so it can't punish the player for the AI's throw).
 		var r2: float = EOD_BLAST_R * EOD_BLAST_R
 		for j in count():
-			if alive[j] and _targets(team[i], team[j]) and pos[j].distance_squared_to(pos[f]) <= r2:
+			if alive[j] and _hostile_units(i, j) and pos[j].distance_squared_to(pos[f]) <= r2:
 				_dmg[j] = float(_dmg.get(j, 0.0)) + EOD_BLAST_DMG
 		events.append({"kind": "blast", "pos": pos[f], "to": pos[f], "team": team[i], "unit": kind[i]})
 		return

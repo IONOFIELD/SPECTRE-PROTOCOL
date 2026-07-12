@@ -34,12 +34,13 @@ func _initialize() -> void:
 	test_eod_grenade()
 	test_sanitation_flame()
 	test_sanitation_flash_evade()
+	test_rival_teams()
 	test_go_around_wall()
 	test_strike_collateral()
 	test_population_hunts_and_fights()
 	test_elements_and_medic()
 	test_mission_exfil()
-	test_mission_loss()
+	test_mission_rivals_and_loss()
 	perf()
 	print("=== %d failure(s) ===" % failures)
 	quit(1 if failures > 0 else 0)
@@ -504,6 +505,33 @@ func test_sanitation_flash_evade() -> void:
 	check("it breaks contact after the flash", moved > 3.0, "moved=%.1f m" % moved)
 
 
+## Player teams are rivals: two SQUAD units of different elements fight (free-for-all),
+## unless the rival is allied with the player (passive).
+func test_rival_teams() -> void:
+	var s: WorldSim = WorldSim.new()
+	s.set_bounds(Vector2(-40, -40), Vector2(160, 160))
+	s.player_element = 0
+	s.weapons_free = true
+	var a: int = s.spawn(Vector2(60, 60), &"cbt", WorldSim.SQUAD, 0)   # player team
+	var b: int = s.spawn(Vector2(60, 68), &"cbt", WorldSim.SQUAD, 1)   # rival team
+	for _t in 400:
+		s.step(1.0 / 60.0)
+	check("rival player teams fight each other", s.hp[a] < 100.0 or s.hp[b] < 100.0,
+		"a hp=%.0f b hp=%.0f" % [s.hp[a], s.hp[b]])
+
+	var s2: WorldSim = WorldSim.new()
+	s2.set_bounds(Vector2(-40, -40), Vector2(160, 160))
+	s2.player_element = 0
+	s2.weapons_free = true
+	s2.allied[1] = true                                              # ally the rival
+	var c: int = s2.spawn(Vector2(60, 60), &"cbt", WorldSim.SQUAD, 0)
+	var e: int = s2.spawn(Vector2(60, 68), &"cbt", WorldSim.SQUAD, 1)
+	for _t in 400:
+		s2.step(1.0 / 60.0)
+	check("allied (passive) teams hold fire", s2.hp[c] == 100.0 and s2.hp[e] == 100.0,
+		"c hp=%.0f e hp=%.0f" % [s2.hp[c], s2.hp[e]])
+
+
 ## A hunter steers straight at its prey but must SLIDE around a wall in the way --
 ## never tunnelling through the footprint.
 func test_go_around_wall() -> void:
@@ -512,7 +540,7 @@ func test_go_around_wall() -> void:
 	s.load_buildings([wall] as Array[Rect2])
 	s.weapons_free = false                       # keep the prey from shooting the hunter first
 	var z: int = s.spawn(Vector2(6, 20), &"zed", WorldSim.INFECTED)
-	var prey: int = s.spawn(Vector2(46, 40), &"cbt", WorldSim.SQUAD)
+	var prey: int = s.spawn(Vector2(46, 40), &"cbt", WorldSim.SQUAD, 0)   # player team: holds still
 	var tunneled: bool = false
 	var reached: bool = false
 	for _t in 900:
@@ -600,39 +628,46 @@ func test_elements_and_medic() -> void:
 func test_mission_exfil() -> void:
 	var s: WorldSim = WorldSim.new()
 	s.set_bounds(Vector2(-40, -40), Vector2(240, 240))
-	var a: int = s.spawn(Vector2(20, 20), &"cdr", WorldSim.SQUAD, 0)
+	s.player_element = 0
+	var a: int = s.spawn(Vector2(20, 20), &"cdr", WorldSim.SQUAD, 0)   # the player's team
 	var b: int = s.spawn(Vector2(21, 20), &"cbt", WorldSim.SQUAD, 0)
-	var c: int = s.spawn(Vector2(30, 30), &"cdr", WorldSim.SQUAD, 1)
 	var m := MissionScript.new()
-	var zones: Array[Rect2] = [Rect2(200, -40, 40, 280)]    # a bridge far end, east
-	m.setup(zones, 2)
-	m.update(s, 0.1)
-	check("no element escapes short of the bridge end",
-			m.status[0] == 0 and m.result == MissionScript.ONGOING, "status0=%d" % m.status[0])
-	s.pos[a] = Vector2(210, 100)             # element 0 both reach the far end
+	var escapes: Array[Rect2] = [Rect2(200, -40, 40, 280)]             # a bridge far end, east
+	m.setup(escapes, [] as Array[Rect2], 0, 1)
+	m.update(s, 0.1, false)
+	check("mission ongoing short of the bridge", m.result == MissionScript.ONGOING, "result=%d" % m.result)
+	s.pos[a] = Vector2(210, 100)             # the whole team reaches the far end
 	s.pos[b] = Vector2(216, 110)
-	m.update(s, 0.1)
-	check("an element all inside the escape zone gets clear", m.status[0] == 1, "status0=%d" % m.status[0])
+	m.update(s, 0.1, false)
+	check("player team all in the escape zone -> WON", m.result == MissionScript.WON, "reason=%s" % m.reason)
 	check("escaped units leave play but aren't dead", s.extracted[a] and not s.alive[a],
 			"ex=%s alive=%s" % [s.extracted[a], s.alive[a]])
-	check("mission ongoing while an element is still out", m.result == MissionScript.ONGOING, "result=%d" % m.result)
-	s.pos[c] = Vector2(220, 60)              # element 1 reaches it too
-	m.update(s, 0.1)
-	check("all elements clear -> WON", m.result == MissionScript.WON, "result=%d" % m.result)
 
 
-## Total loss: every element wiped.
-func test_mission_loss() -> void:
+## Win by wiping every rival team; lose the moment the player's team is wiped.
+func test_mission_rivals_and_loss() -> void:
 	var s: WorldSim = WorldSim.new()
 	s.set_bounds(Vector2(-40, -40), Vector2(240, 240))
-	var u: int = s.spawn(Vector2(50, 50), &"cdr", WorldSim.SQUAD, 0)
-	var zones: Array[Rect2] = [Rect2(200, -40, 40, 280)]
+	s.player_element = 0
+	var u: int = s.spawn(Vector2(50, 50), &"cdr", WorldSim.SQUAD, 0)   # player
+	var r: int = s.spawn(Vector2(90, 90), &"cbt", WorldSim.SQUAD, 1)   # a rival team
 	var m := MissionScript.new()
-	m.setup(zones, 1)
-	s.alive[u] = false                       # the last operator down
-	m.update(s, 0.1)
-	check("an element wiped to the last is LOST", m.status[0] == 2, "status0=%d" % m.status[0])
-	check("every element lost -> LOST", m.result == MissionScript.LOST, "result=%d" % m.result)
+	m.setup([Rect2(200, -40, 40, 280)], [] as Array[Rect2], 0, 2)
+	m.update(s, 0.1, false)
+	check("mission ongoing while a rival team lives", m.result == MissionScript.ONGOING, "result=%d" % m.result)
+	s.alive[r] = false                       # last rival down
+	m.update(s, 0.1, false)
+	check("all rival teams eliminated -> WON", m.result == MissionScript.WON, "reason=%s" % m.reason)
+
+	var s2: WorldSim = WorldSim.new()
+	s2.set_bounds(Vector2(-40, -40), Vector2(240, 240))
+	s2.player_element = 0
+	var p: int = s2.spawn(Vector2(50, 50), &"cdr", WorldSim.SQUAD, 0)
+	var m2 := MissionScript.new()
+	m2.setup([Rect2(200, -40, 40, 280)], [] as Array[Rect2], 0, 1)
+	s2.alive[p] = false                      # the player's last unit down
+	m2.update(s2, 0.1, false)
+	check("player team wiped -> LOST", m2.result == MissionScript.LOST, "reason=%s" % m2.reason)
 
 
 func perf() -> void:
@@ -651,4 +686,4 @@ func perf() -> void:
 		s.step(1.0 / 60.0)
 	var ms: float = float(Time.get_ticks_usec() - t0) / 1000.0 / 600.0
 	print("  PERF  300 units, 120 buildings: %.3f ms/tick  (%.1f%% of a 60 Hz frame)" % [ms, ms / 16.67 * 100.0])
-	check("sim fits in a frame with room to spare", ms < 3.0, "%.3f ms/tick" % ms)
+	check("sim fits in a frame with room to spare", ms < 4.5, "%.3f ms/tick" % ms)

@@ -1,83 +1,98 @@
 class_name Mission
 extends RefCounted
 
-## The exfil objective for the SF map: get off the peninsula ON FOOT. The only ways
-## out are the two bridges -- Golden Gate (north) and the Bay Bridge (east) -- each
-## a zombie-choked deck. An element whose living members ALL reach a bridge's far
-## end (an escape zone) has ESCAPED; one wiped to the last is LOST. Win when no
-## element is still out and at least one got clear; lose when every element dies.
-## No helicopter, no clock pressure -- the Sanitation Force is the pressure. `t` is
-## just the survival clock.
+## The mission from the PLAYER's team's point of view (element `player_element`); the
+## other teams are AI rivals. You WIN by any of:
+##   - escaping across a bridge (all your living units in an escape zone), OR
+##   - extracting by evac helo (all your living units on an evac LZ), OR
+##   - eliminating every rival team.
+## But once the SANITATION FORCE is deployed the board changes: extraction + elimination
+## are off -- you can only escape a bridge, OR defeat the whole Sanitation force.
+## You LOSE the moment your team is wiped (another team, the horde, or Sanitation).
 ##
-## Pure logic over a WorldSim -- no nodes, no rendering -- so it runs headless.
-## main.gd owns the clock display, the bridge markers, and the banner.
+## Pure logic over a WorldSim; main owns the deploy trigger, the markers, the banner.
 
 enum { ONGOING, WON, LOST }
 
-var t: float = 0.0                    # elapsed mission time (survival clock)
-var escapes: Array[Rect2] = []        # bridge far-end zones; a unit inside one is clear
+var t: float = 0.0                    # survival clock
+var escapes: Array[Rect2] = []        # bridge far ends
+var evacs: Array[Rect2] = []          # evac-helo LZs
+var player_element: int = 0
 var n_elements: int = 4
-var status: Array[int] = []           # per element: 0 active, 1 escaped, 2 lost
 var result: int = ONGOING
+var reason: String = ""               # why it ended (debrief headline)
 
 
-func setup(escape_zones: Array[Rect2], elements: int) -> void:
+func setup(escape_zones: Array[Rect2], evac_zones: Array[Rect2], player_elem: int, elements: int) -> void:
 	escapes = escape_zones
+	evacs = evac_zones
+	player_element = player_elem
 	n_elements = elements
-	status.clear()
-	for e in elements:
-		status.append(0)
 	result = ONGOING
+	reason = ""
 	t = 0.0
 
 
-func update(sim: WorldSim, dt: float) -> void:
+## `sani_deployed` is owned by main (the Sanitation force arrives on a trigger).
+func update(sim: WorldSim, dt: float, sani_deployed: bool) -> void:
 	if result != ONGOING:
 		return
 	t += dt
+	var mine: Array = sim.element_ids(player_element)   # living, not-yet-extracted
+	if mine.is_empty():
+		result = LOST
+		reason = "TEAM OVERRUN"
+		return
+	if _all_in(sim, mine, escapes):
+		_board(sim, mine)
+		result = WON
+		reason = "EXFIL ON FOOT"
+		return
+	if sani_deployed:
+		# apex loose: escape (above) is the only exit unless you wipe the whole force.
+		if not _any_alive(sim, WorldSim.SANITATION):
+			result = WON
+			reason = "SANITATION DEFEATED"
+		return
+	if not evacs.is_empty() and _all_in(sim, mine, evacs):
+		_board(sim, mine)
+		result = WON
+		reason = "EXTRACTED BY AIR"
+		return
+	if n_elements > 1 and rivals_left(sim) == 0:
+		result = WON
+		reason = "ENEMY TEAMS ELIMINATED"
+
+
+func rivals_left(sim: WorldSim) -> int:
+	var n: int = 0
 	for e in n_elements:
-		if status[e] != 0:
-			continue
-		var ids: Array = sim.element_ids(e)      # living, not-yet-extracted members
-		if ids.is_empty():
-			status[e] = 2                         # wiped to the last
-			continue
-		if _all_clear(sim, ids):
-			for i in ids:
-				sim.extract(i)                   # off the map -- saved, not dead
-			status[e] = 1
-	_tally()
+		if e != player_element and not sim.element_ids(e).is_empty():
+			n += 1
+	return n
 
 
-## Has any element made it out? (drives the "keep moving" HUD cue)
-func any_clear() -> bool:
-	for s in status:
-		if s == 1:
-			return true
-	return false
-
-
-func _all_clear(sim: WorldSim, ids: Array) -> bool:
+func _board(sim: WorldSim, ids: Array) -> void:
 	for i in ids:
-		if not _in_escape(sim.pos[i]):
+		sim.extract(i)   # off the map -- saved, not dead
+
+
+func _all_in(sim: WorldSim, ids: Array, zones: Array[Rect2]) -> bool:
+	if zones.is_empty():
+		return false
+	for i in ids:
+		var inside: bool = false
+		for z in zones:
+			if z.has_point(sim.pos[i]):
+				inside = true
+				break
+		if not inside:
 			return false
 	return true
 
 
-func _in_escape(p: Vector2) -> bool:
-	for z in escapes:
-		if z.has_point(p):
+func _any_alive(sim: WorldSim, team_id: int) -> bool:
+	for i in sim.count():
+		if sim.alive[i] and sim.team[i] == team_id and not sim.extracted[i]:
 			return true
 	return false
-
-
-func _tally() -> void:
-	var active: int = 0
-	var clear: int = 0
-	for s in status:
-		if s == 0:
-			active += 1
-		elif s == 1:
-			clear += 1
-	if active == 0:
-		result = WON if clear > 0 else LOST

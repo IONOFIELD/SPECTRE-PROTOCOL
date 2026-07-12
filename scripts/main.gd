@@ -163,6 +163,10 @@ var dragging: bool = false
 
 # mission / exfil
 var mission: Mission
+# The Sanitation force isn't on the board at deploy -- it's called in once you draw enough
+# heat (kills). Once deployed, the only way out is a bridge or wiping the whole force.
+var _sani_deployed: bool = false
+const SANI_DEPLOY_KILLS: int = 45      # your kill count that summons the wipe force
 var banner: Label                      # win / lose card, hidden until the mission ends
 var help: Label
 var show_help: bool = true
@@ -198,6 +202,7 @@ var _loot_t: float = 0.0               # seconds held on it
 var _press_pos: Vector2 = Vector2.ZERO # where the hold began (drag past this cancels)
 var _looted: Dictionary = {}           # building index -> true (cleared, can't re-loot)
 var _loot_count: int = 0               # buildings looted this mission
+var _hdd: int = 0                       # HDD drives recovered -> end-of-mission score multiplier
 const LOOT_TIME: float = 1.5           # hold seconds to clear a building
 const LOOT_PTS: int = 60               # score per building looted
 const LOOT_CANCEL_PX: float = 42.0     # drag past this and it's a pan, not a loot
@@ -589,6 +594,8 @@ func _scatter_roof_props() -> void:
 
 func _spawn() -> void:
 	sim = WorldSim.new()
+	sim.player_element = 0                  # you command team 0; the rest are AI rivals
+	_sani_deployed = false
 	var walls: Array[Rect2] = city.building_rects()
 	if cars != null:
 		walls.append_array(cars.rects)     # semis block; the rest you walk around
@@ -606,9 +613,9 @@ func _spawn() -> void:
 			var p: Vector2 = base + Vector2(float(j % 3) * 1.4, float(j / 3) * 1.4)
 			sim.spawn(p, ELEMENT_ROSTER[j], WorldSim.SQUAD, e)
 	_populate_world()
-	# the only way off the peninsula is on foot across a bridge (city.escapes).
+	# win by escaping a bridge, extracting via an evac LZ, or eliminating the rival teams.
 	mission = Mission.new()
-	mission.setup(city.escapes, _team_count)
+	mission.setup(city.escapes, _evac_zones(), 0, _team_count)
 	# one visual per sim unit, index-aligned with the sim arrays.
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 	rng.randomize()
@@ -631,8 +638,10 @@ func _populate_world() -> void:
 	# Tutorial is a calm map to learn on -- a fraction of the ecology, no hordes/gauntlet.
 	# The menu backdrop instead deploys a heavy Sanitation sweep to 'sanitize' the city.
 	var s: float = 0.16 if _tutorial else 1.0
-	var san_n: int = 26 if _menu_sim else POP_SAN
-	sim.populate(int(POP_INFECTED * s), int(POP_CIV * s), maxi(1, int(san_n * s)), city.land)
+	# The menu backdrop sweeps with a big Sanitation force; the real game starts with NONE
+	# (they deploy on the kill trigger). populate() takes 0 sanitation fine.
+	var san_n: int = 26 if _menu_sim else 0
+	sim.populate(int(POP_INFECTED * s), int(POP_CIV * s), san_n, city.land)
 	sim.scatter(&"run", WorldSim.INFECTED, int(POP_RUNNERS * s), city.land, rng)
 	sim.scatter(&"bru", WorldSim.INFECTED, int(POP_BRUTES * s), city.land, rng)
 	if not _tutorial:
@@ -671,6 +680,43 @@ func _deploy_vehicle(base: Vector2, e: int) -> void:
 		rotor.position = Vector3(base.x - 5.0, 3.1, base.y - 5.0)
 		rotor.material_override = ThermalLib.get_material("parapet", snap_res)
 		city.add_child(rotor)
+
+
+## Evac-helo LZs: one for solo/2/3 teams, two for 4. Marked on the HUD; reaching one
+## with the whole team extracts you (when no Sanitation force is loose).
+func _evac_zones() -> Array[Rect2]:
+	var zones: Array[Rect2] = []
+	if city == null:
+		return zones
+	var pads: Array = [Vector2(560.0, 470.0), Vector2(410.0, 720.0)]
+	var n: int = 2 if _team_count >= 4 else 1
+	for i in n:
+		var c: Vector2 = pads[i]
+		if not Geometry2D.is_point_in_polygon(c, city.land_poly):
+			c = Vector2(400.0, 500.0)
+		zones.append(Rect2(c.x - 9.0, c.y - 9.0, 18.0, 18.0))
+	return zones
+
+
+## Call in the Sanitation force: POP_SAN cool elites scattered across the city, with
+## their views built + appended so the arrays stay index-aligned. Once they're loose the
+## board changes -- extraction/elimination close, only a bridge or wiping them wins.
+func _deploy_sanitation() -> void:
+	if _sani_deployed or sim == null:
+		return
+	_sani_deployed = true
+	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
+	rng.randomize()
+	for _s in POP_SAN:
+		var p: Vector2 = _random_land_point(rng)
+		sim.spawn(p, &"san", WorldSim.SANITATION)
+		var v: Node3D = _make_unit_view(WorldSim.SANITATION, &"san", rng)
+		if v != null:
+			v.position = Vector3(p.x, 0.0, p.y)
+			vp.add_child(v)
+		views.append(v)
+		_anim.append(Animator.new(v, _rng) if v != null else null)
+	Audio.comms("need_backup", 0)   # a callout on deploy (placeholder for musicSANI)
 
 
 func _random_land_point(rng: RandomNumberGenerator) -> Vector2:
@@ -1080,9 +1126,11 @@ func _process(delta: float) -> void:
 		if _move_blip["t"] > 1.2:
 			_move_blip.clear()
 
-	if mission != null:
+	if not _menu_active and not _tutorial and not _sani_deployed and _kills >= SANI_DEPLOY_KILLS:
+		_deploy_sanitation()
+	if mission != null and not _menu_active:
 		var was: int = mission.result
-		mission.update(sim, delta)
+		mission.update(sim, delta, _sani_deployed)
 		if was == Mission.ONGOING and mission.result != Mission.ONGOING:
 			_show_banner(mission.result == Mission.WON)
 
@@ -1210,18 +1258,15 @@ func _grab_map(path: String) -> void:
 func _mission_line() -> String:
 	if mission == null:
 		return ""
-	var head: String
 	if mission.result == Mission.WON:
-		head = "EXFIL COMPLETE  //  ELEMENTS CLEAR"
-	elif mission.result == Mission.LOST:
-		head = "OVERRUN  //  ALL ELEMENTS LOST"
-	else:
-		head = "EXFIL ON FOOT -- CROSS A BRIDGE   T+%d:%02d" % [int(mission.t) / 60, int(mission.t) % 60]
-	var tags: Array = ["OUT", "CLEAR", "LOST"]
-	var tally: String = ""
-	for e in mission.n_elements:
-		tally += "  %d:%s" % [e + 1, tags[mission.status[e]]]
-	return head + "\nTEAMS" + tally
+		return mission.reason + "  //  WIN"
+	if mission.result == Mission.LOST:
+		return "OVERRUN  //  TEAM LOST"
+	var clock: String = "T+%d:%02d" % [int(mission.t) / 60, int(mission.t) % 60]
+	if _sani_deployed:
+		return "SANITATION LOOSE -- REACH A BRIDGE OR WIPE THEM   %s" % clock
+	var obj: String = "ELIMINATE %d TEAMS / EXTRACT / ESCAPE" % mission.rivals_left(sim) if _team_count > 1 else "EXTRACT OR ESCAPE"
+	return "%s   %s" % [obj, clock]
 
 
 ## Post-mission debrief: finalise the score (extractions + full-squad bonus + a
@@ -1229,27 +1274,28 @@ func _mission_line() -> String:
 func _show_banner(won: bool) -> void:
 	if banner == null:
 		return
-	var clear: int = 0
-	for s in mission.status:
-		if s == 1:                       # 1 = element walked off the peninsula
-			clear += 1
-	var n: int = mission.n_elements
-	_score += clear * EXTRACT_PTS
-	if clear == n:
+	var extracted: int = 0
+	for i in sim.count():
+		if sim.extracted[i] and sim.team[i] == WorldSim.SQUAD and sim.element[i] == 0:
+			extracted += 1
+	if won:
 		_score += FULLSQUAD_PTS
 	_score += int(mission.t)             # survival: a point for every second you lasted
-	_score = maxi(0, _score)             # a bloodbath never posts a negative board
+	# HDDs recovered multiply the whole board (x1 per HDD, so 3 HDDs = x1.3).
+	var mult: float = 1.0 + 0.1 * float(_hdd)
+	_score = maxi(0, int(round(float(_score) * mult)))
 
 	var mm: int = int(mission.t) / 60
 	var ss: int = int(mission.t) % 60
 	var rows: PackedStringArray = [
-		"EXFIL COMPLETE" if won else "OVERRUN",
+		mission.reason if won else "OVERRUN",
 		"",
-		"ELEMENTS EXTRACTED   %d / %d" % [clear, n],
-		"HOSTILES DOWN        %d" % _kills,
-		"SANITATION ELITES    %d" % _san_kills,
-		"CIVILIAN COLLATERAL  %d" % _collateral,
-		"SURVIVAL             T+%d:%02d" % [mm, ss],
+		"YOUR TEAM EXTRACTED   %d" % extracted,
+		"HOSTILES DOWN         %d" % _kills,
+		"SANITATION ELITES     %d" % _san_kills,
+		"CIVILIAN COLLATERAL   %d" % _collateral,
+		"HDDs RECOVERED        %d  (x%.1f)" % [_hdd, mult],
+		"SURVIVAL              T+%d:%02d" % [mm, ss],
 		"",
 		"SCORE   %d" % _score,
 	]
