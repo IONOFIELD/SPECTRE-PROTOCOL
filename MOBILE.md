@@ -37,7 +37,21 @@ is the build guide + what's already configured.
    `com.ionofield.spectreprotocol`), min SDK 24+, and the architectures
    (`arm64-v8a` for modern phones; add `armeabi-v7a` for older).
 4. **Export.** *Export Project* → `.apk` for sideload/test, or `.aab` for Play.
-   iOS is the same flow via an Xcode project on macOS.
+
+### iOS — same project, second preset (no fork)
+
+Android and iOS ship from **one codebase / one `main`** — add an **iOS** export
+preset alongside the Android one; do **not** fork the repo. Everything here
+(touch, responsive framing, the Mobile renderer, gameplay) is platform-agnostic
+and runs on both. iOS specifics:
+
+- Build the final app on **macOS with Xcode** (Godot exports an Xcode project you
+  then build/sign). The Godot side is identical to Android.
+- Set the bundle identifier + a team/signing profile in the iOS preset.
+- The **Mobile (Vulkan→Metal)** renderer path is the one already verified; Godot
+  maps Forward Mobile onto Metal on iOS.
+- Platform-specific code (rare — IAP, a native API) uses `OS.get_name()` checks +
+  feature tags, never a separate repo.
 
 ## Testing without a device (desktop)
 

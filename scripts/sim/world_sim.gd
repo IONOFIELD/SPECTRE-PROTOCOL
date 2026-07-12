@@ -507,7 +507,7 @@ func _strike(i: int, f: int) -> void:
 	cd[i] = STATS[kind[i]][5]
 	_dmg[f] = float(_dmg.get(f, 0.0)) + STATS[kind[i]][4]
 	var what: String = "claw" if team[i] == INFECTED else "gunfire"
-	events.append({"kind": what, "pos": pos[i], "team": team[i], "unit": kind[i]})
+	events.append({"kind": what, "pos": pos[i], "to": pos[f], "team": team[i], "unit": kind[i]})
 
 
 ## Apply the tick's queued damage; anything that drops dies and is logged.

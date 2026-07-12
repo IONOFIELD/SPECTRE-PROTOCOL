@@ -115,10 +115,15 @@ var _pinch_prev: float = 0.0           # last two-finger spread, for pinch-zoom
 const AC_COST: int = 14                # kills to arm one fire mission
 const STRIKE_R: float = 16.0           # kill radius, metres
 const STRIKE_DMG: float = 460.0        # one burst flattens even the Sanitation elite
+const STRIKE_TOF: float = 1.8          # round time-of-flight, seconds (tuned for feel)
+const STRIKE_ALT: float = 280.0        # visible descent altitude of the round, metres
 var _ac_charge: int = 0                # kills banked toward the next strike
 var _fire_req: bool = false            # a strike was requested this frame
+var _strike_pending: bool = false      # a round is inbound (in flight)
+var _strike_target: Vector2 = Vector2.ZERO
+var _strike_tof: float = 0.0           # seconds since the round left the gun
 var _strike_pos: Vector2 = Vector2.ZERO
-var _strike_t: float = 999.0           # seconds since the last strike, for the impact FX
+var _strike_t: float = 999.0           # seconds since impact, for the blast FX
 var _flashes: Array = []               # muzzle flashes: [{pos: Vector2, t: float}], newest last
 const FLASH_LIFE: float = 0.12         # seconds a muzzle flash stays lit
 const FLASH_MAX: int = 80              # cap, so a big firefight can't flood the overlay
@@ -684,7 +689,7 @@ func _drain_audio() -> void:
 			"gunfire":
 				_sfx_at(at, _sfx_gun)
 				if _flashes.size() < FLASH_MAX:
-					_flashes.append({"pos": e["pos"], "t": 0.0})
+					_flashes.append({"pos": e["pos"], "to": e["to"], "t": 0.0})
 			"claw":
 				_sfx_at(at, _sfx_claw)
 			"zed_death":
@@ -723,13 +728,13 @@ func _request_strike() -> void:
 ## Call the strike on the optic boresight (the camera target). Everything in the
 ## ring dies -- friendly fire included, so slew off your own squad first.
 func _fire_ac130() -> void:
-	if _ac_charge < AC_COST:
+	if _ac_charge < AC_COST or _strike_pending:
 		return
 	_ac_charge = 0
-	_strike_pos = Vector2(cam_tx, cam_tz)
-	_strike_t = 0.0
-	sim.air_strike(_strike_pos, STRIKE_R, STRIKE_DMG)
-	Audio.comms("open_fire", 0)
+	_strike_target = Vector2(cam_tx, cam_tz)     # boresight -- slew off your own squad
+	_strike_tof = 0.0
+	_strike_pending = true                        # round in flight; impact after STRIKE_TOF
+	Audio.comms("open_fire", 0)                   # fire-mission callout
 
 
 func _process(delta: float) -> void:
@@ -771,7 +776,14 @@ func _process(delta: float) -> void:
 	sim.step(delta)
 	if _fire_req:
 		_fire_req = false
-		_fire_ac130()          # appends strike + kill events for the drain below
+		_fire_ac130()          # launches the fire mission; round now in flight
+	if _strike_pending:
+		_strike_tof += delta
+		if _strike_tof >= STRIKE_TOF:
+			_strike_pending = false
+			_strike_pos = _strike_target
+			_strike_t = 0.0
+			sim.air_strike(_strike_target, STRIKE_R, STRIKE_DMG)   # impact: kills + "strike" event
 	_sync_visuals(delta)
 	_drain_audio()
 	_strike_t += delta
@@ -937,6 +949,7 @@ func _draw_selection() -> void:
 	_draw_hud()
 	_draw_allegiance()
 	_draw_flashes()
+	_draw_incoming()
 	for i in sim.count():
 		if not sim.alive[i] or not sim.selected[i]:
 			continue
@@ -1082,6 +1095,28 @@ func _draw_strike() -> void:
 	sel_layer.draw_arc(cc, rad * (0.5 + k * 0.6), 0.0, TAU, 44, Color(1.0, 0.78, 0.45, fade), 3.0)
 
 
+## The inbound round: a hot dot descending from altitude onto the boresight over
+## the TOF, a trail behind it, and a danger-close ring where it will land.
+func _draw_incoming() -> void:
+	if not _strike_pending:
+		return
+	var k: float = clampf(_strike_tof / STRIKE_TOF, 0.0, 1.0)
+	var g3: Vector3 = Vector3(_strike_target.x, 0.3, _strike_target.y)
+	if not cam.is_position_behind(g3):
+		var gc: Vector2 = _screen_point(g3)
+		var edge: Vector2 = _screen_point(Vector3(_strike_target.x + STRIKE_R, 0.3, _strike_target.y))
+		var rad: float = maxf(6.0, gc.distance_to(edge))
+		sel_layer.draw_arc(gc, rad, 0.0, TAU, 36, Color(1.0, 0.42, 0.30, 0.55), 1.5)
+	var y: float = STRIKE_ALT * (1.0 - k * k)     # accelerating fall onto the target
+	var w3: Vector3 = Vector3(_strike_target.x, y + 0.5, _strike_target.y)
+	if cam.is_position_behind(w3):
+		return
+	var sp: Vector2 = _screen_point(w3)
+	var trail: Vector3 = Vector3(_strike_target.x, minf(STRIKE_ALT, y + 26.0) + 0.5, _strike_target.y)
+	sel_layer.draw_line(_screen_point(trail), sp, Color(1.0, 0.9, 0.62, 0.85), 2.0)
+	sel_layer.draw_circle(sp, 3.5, Color(1.0, 0.97, 0.86, 1.0))
+
+
 func _age_flashes(delta: float) -> void:
 	var i: int = _flashes.size() - 1
 	while i >= 0:
@@ -1091,18 +1126,23 @@ func _age_flashes(delta: float) -> void:
 		i -= 1
 
 
-## Muzzle flashes: a hot pip at each shot for a few frames, so firefights read on
-## the thermal feed instead of being audio-only.
+## Tracers + muzzle flashes: each shot streaks a hot round from shooter to target
+## and pips the muzzle, for a few frames, so firefights read on the feed.
 func _draw_flashes() -> void:
 	for f in _flashes:
-		var wp: Vector2 = f["pos"]
-		var w3: Vector3 = Vector3(wp.x, 1.1, wp.y)
-		if cam.is_position_behind(w3):
+		var from2: Vector2 = f["pos"]
+		var w_from: Vector3 = Vector3(from2.x, 1.1, from2.y)
+		if cam.is_position_behind(w_from):
 			continue
-		var sp: Vector2 = _screen_point(w3)
+		var sp: Vector2 = _screen_point(w_from)
 		var fade: float = 1.0 - float(f["t"]) / FLASH_LIFE
-		var r: float = 3.0 + fade * 2.5
-		# warm flash reads on bright land AND dark ocean; hot white core
+		# tracer streak shooter -> target
+		var to2: Vector2 = f["to"]
+		var w_to: Vector3 = Vector3(to2.x, 1.1, to2.y)
+		if not cam.is_position_behind(w_to):
+			sel_layer.draw_line(sp, _screen_point(w_to), Color(1.0, 0.74, 0.34, fade * 0.7), 1.5)
+		# muzzle pip: warm ring + hot white core, reads on bright land + dark ocean
+		var r: float = 3.0 + fade * 2.0
 		sel_layer.draw_circle(sp, r, Color(1.0, 0.60, 0.18, fade * 0.9))
 		sel_layer.draw_circle(sp, r * 0.42, Color(1.0, 0.96, 0.82, fade))
 
