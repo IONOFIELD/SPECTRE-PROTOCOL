@@ -54,7 +54,7 @@ const SURVIVOR_HOLDOUTS: int = 6   # dug-in armed holdouts...
 const SURVIVOR_PER_HOLDOUT: int = 3
 const GAUNTLET_PER_BRIDGE: int = 44   # infected choking each bridge deck
 const ELEMENTS: int = 4
-const ELEMENT_ROSTER: Array = [&"cdr", &"cbt", &"med", &"snp", &"rec"]   # per team; CMD leads
+const ELEMENT_ROSTER: Array = [&"cdr", &"cbt", &"med", &"snp", &"rec", &"eod"]   # per team; CMD leads, EOD lobs grenades
 
 # --- Read of the units. FLIR flattens PS1 mesh detail to a blob at this range, so
 # the role is carried by HEAT + SIZE, not the model. false = minimalist thermal
@@ -94,6 +94,7 @@ var _sfx_gun: AudioStream
 var _sfx_claw: AudioStream
 var _sfx_death: AudioStream
 var _sfx_strike: AudioStream
+var _sfx_blast: AudioStream
 var sel_layer: Control
 var drag_start: Vector2 = Vector2.ZERO
 var dragging: bool = false
@@ -190,6 +191,7 @@ func _ready() -> void:
 	_sfx_claw = load("res://audio/sfx/zed_attack.wav")
 	_sfx_death = load("res://audio/sfx/zed_death.wav")
 	_sfx_strike = load("res://audio/sfx/ac130_strike.wav")
+	_sfx_blast = load("res://audio/sfx/blast.wav")
 
 
 func _build_tree() -> void:
@@ -706,6 +708,9 @@ func _drain_audio() -> void:
 					_score_kill()
 			"strike":
 				_sfx_at(at, _sfx_strike)   # AC-130 cannon report at the impact
+			"blast":
+				_sfx_at(at, _sfx_blast)    # EOD grenade / RPG
+				_spawn_flash3d(e["pos"], 4.0, 0.35, 1.6)
 			"man_down":
 				Audio.comms("need_backup", 2500)
 

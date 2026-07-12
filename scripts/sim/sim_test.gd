@@ -31,6 +31,7 @@ func _initialize() -> void:
 	test_terrain()
 	test_land_polygon()
 	test_air_strike()
+	test_eod_grenade()
 	test_population_hunts_and_fights()
 	test_elements_and_medic()
 	test_mission_exfil()
@@ -433,6 +434,23 @@ func test_air_strike() -> void:
 		if e["kind"] == "strike":
 			logged = true
 	check("the strike is logged for audio + FX", logged, "events=%d" % s.events.size())
+
+
+## EOD lobs a grenade: area damage on the target's cluster, hostiles only.
+func test_eod_grenade() -> void:
+	var s: WorldSim = WorldSim.new()
+	s.set_bounds(Vector2(-40, -40), Vector2(160, 160))
+	var eod: int = s.spawn(Vector2(50, 50), &"eod", WorldSim.SQUAD)
+	var z1: int = s.spawn(Vector2(50, 60), &"zed", WorldSim.INFECTED)   # target, in throw range
+	var z2: int = s.spawn(Vector2(52, 61), &"zed", WorldSim.INFECTED)   # near target -> caught
+	var z3: int = s.spawn(Vector2(50, 92), &"zed", WorldSim.INFECTED)   # far -> spared
+	var civ: int = s.spawn(Vector2(48, 60), &"civ", WorldSim.CIVILIAN)  # in the ring but friendly
+	for _t in 300:
+		s.step(1.0 / 60.0)
+	check("the EOD grenade kills the target cluster", not s.alive[z1] and not s.alive[z2],
+		"z1 alive=%s, z2 alive=%s" % [s.alive[z1], s.alive[z2]])
+	check("the grenade spares the far infected", s.alive[z3], "z3 alive=%s" % s.alive[z3])
+	check("no friendly fire on civilians in the ring", s.alive[civ], "civ alive=%s (eod alive=%s)" % [s.alive[civ], s.alive[eod]])
 
 
 ## A populated city: factions land on walkable ground, and the hunting horde

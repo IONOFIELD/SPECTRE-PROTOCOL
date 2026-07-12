@@ -19,6 +19,8 @@ const CELL: float = 12.0              # measured knee: rebuild cost falls with c
 const HEAL_RANGE: float = 9.0
 const HEAL_RATE: float = 14.0         # hp/s a medic restores to nearby allies
 const BRIDGE_SLOW: float = 0.55       # a shove through the horde: every metre of deck is fought for
+const EOD_BLAST_R: float = 4.5        # EOD grenade / RPG area radius
+const EOD_BLAST_DMG: float = 30.0     # damage per hostile in the ring
 
 # teams. Civilians never fight (they run). Infected + Sanitation + Bandits HUNT
 # (roam for the nearest warm body); Squad + Survivors hold and engage what they
@@ -505,6 +507,15 @@ func _flee(i: int, sp: float) -> Vector2:
 ## _reap() after the loop, so a kill never depends on unit iteration order.
 func _strike(i: int, f: int) -> void:
 	cd[i] = STATS[kind[i]][5]
+	if kind[i] == &"eod":
+		# grenade / RPG: area damage on the target, hostiles only (no friendly fire
+		# -- the sim auto-aims it, so it can't punish the player for the AI's throw).
+		var r2: float = EOD_BLAST_R * EOD_BLAST_R
+		for j in count():
+			if alive[j] and _targets(team[i], team[j]) and pos[j].distance_squared_to(pos[f]) <= r2:
+				_dmg[j] = float(_dmg.get(j, 0.0)) + EOD_BLAST_DMG
+		events.append({"kind": "blast", "pos": pos[f], "to": pos[f], "team": team[i], "unit": kind[i]})
+		return
 	_dmg[f] = float(_dmg.get(f, 0.0)) + STATS[kind[i]][4]
 	var what: String = "claw" if team[i] == INFECTED else "gunfire"
 	events.append({"kind": what, "pos": pos[i], "to": pos[f], "team": team[i], "unit": kind[i]})
