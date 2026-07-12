@@ -125,6 +125,20 @@ const FULLSQUAD_PTS: int = 750         # bonus if every element gets clear
 var _touches: Dictionary = {}          # active touch index -> position
 var _touch_moved: float = 0.0          # primary-touch travel, to tell a tap from a drag
 var _pinch_prev: float = 0.0           # last two-finger spread, for pinch-zoom
+var _last_tap_ms: int = 0              # for double-tap detection (move order)
+var _last_tap_pos: Vector2 = Vector2.ZERO
+const DOUBLE_TAP_MS: int = 320         # a second tap within this window = a move order
+const DOUBLE_TAP_PX: float = 46.0      # ...and within this distance of the first
+
+# Loot: press-and-HOLD on a building fills a ring; releasing or dragging cancels.
+var _loot_idx: int = -1                # building being looted, -1 = none
+var _loot_t: float = 0.0               # seconds held on it
+var _press_pos: Vector2 = Vector2.ZERO # where the hold began (drag past this cancels)
+var _looted: Dictionary = {}           # building index -> true (cleared, can't re-loot)
+var _loot_count: int = 0               # buildings looted this mission
+const LOOT_TIME: float = 1.5           # hold seconds to clear a building
+const LOOT_PTS: int = 60               # score per building looted
+const LOOT_CANCEL_PX: float = 42.0     # drag past this and it's a pan, not a loot
 
 # AC-130 fire support -- a kill-charged boresight strike (v0.19's killstreak)
 const AC_UNLOCK: int = 100             # INFECTED kills to unlock a fire mission (killstreak; resets on use)
@@ -833,6 +847,7 @@ func _process(delta: float) -> void:
 	_strike_t += delta
 	_age_flashes(delta)
 	_age_flash3d(delta)
+	_advance_loot(delta)
 
 	if mission != null:
 		var was: int = mission.result
@@ -1026,6 +1041,7 @@ func _draw_selection() -> void:
 		return                      # mission over: clear the sensor clutter for the debrief
 	_draw_streets()
 	_draw_coast()
+	_draw_loot()
 	_draw_hud()
 	_draw_allegiance()
 	_draw_flashes()
@@ -1084,6 +1100,29 @@ func _draw_coast() -> void:
 		if cam.is_position_behind(a3) or cam.is_position_behind(b3):
 			continue
 		sel_layer.draw_line(_screen_point(a3), _screen_point(b3), col, 2.0)
+
+
+## Loot: a filling ring on the building you're holding, and a small dim ring on each
+## building already cleared (only at tactical zoom, where it's a useful read).
+func _draw_loot() -> void:
+	if city == null:
+		return
+	if cam_dist < 520.0:
+		var mk: Color = Color(HUD_COL.r, HUD_COL.g, HUD_COL.b, 0.28)
+		for idx in _looted:
+			var lb: Dictionary = city.buildings[idx]
+			var m3: Vector3 = Vector3(lb["x"] + lb["w"] * 0.5, 0.5, lb["z"] + lb["d"] * 0.5)
+			if cam.is_position_behind(m3):
+				continue
+			sel_layer.draw_arc(_screen_point(m3), 5.0, 0.0, TAU, 12, mk, 1.5)
+	if _loot_idx >= 0:
+		var b: Dictionary = city.buildings[_loot_idx]
+		var c3: Vector3 = Vector3(b["x"] + b["w"] * 0.5, 0.5, b["z"] + b["d"] * 0.5)
+		if not cam.is_position_behind(c3):
+			var p: Vector2 = _screen_point(c3)
+			var k: float = clampf(_loot_t / LOOT_TIME, 0.0, 1.0)
+			sel_layer.draw_arc(p, 15.0, 0.0, TAU, 28, Color(HUD_COL.r, HUD_COL.g, HUD_COL.b, 0.22), 2.0)
+			sel_layer.draw_arc(p, 15.0, -PI * 0.5, -PI * 0.5 + TAU * k, 28, HUD_COL, 2.5)
 
 
 ## The two bridge escape zones, ringed on the deck -- the only ways out. Green,
@@ -1445,8 +1484,10 @@ func _input(e: InputEvent) -> void:
 			if e.pressed:
 				dragging = true
 				drag_start = e.position
+				_begin_loot(e.position)       # hold-to-loot starts here
 			else:
 				dragging = false
+				_end_loot()
 				if _strike_arming:
 					_fire_ac130_at(_ground_pick(e.position))   # armed: click calls the strike
 				else:
@@ -1507,11 +1548,14 @@ func _input(e: InputEvent) -> void:
 			_touches[e.index] = e.position
 			if _touches.size() == 1:
 				_touch_moved = 0.0
+				_begin_loot(e.position)       # hold-to-loot starts here
 			elif _touches.size() == 2:
 				_pinch_prev = _two_touch_dist()
+				_end_loot()                   # a second finger = pinch, not a loot
 		else:
 			if _touches.size() == 1 and _touch_moved < 14.0 and _touches.has(e.index):
-				_tap(e.position)
+				_handle_tap(e.position)
+			_end_loot()
 			_touches.erase(e.index)
 	elif e is InputEventScreenDrag:
 		if not _touches.has(e.index):
@@ -1543,13 +1587,40 @@ func _over_ui(pos: Vector2) -> bool:
 	return _touch_bar != null and _touch_bar.get_global_rect().has_point(pos)
 
 
-## A tap: tap your own squad to drive that element; tap open ground to move the
-## element you are driving to that spot.
+## Route a tap: a quick second tap near the first is a MOVE order; otherwise a single
+## tap that selects. Keeps a stray tap from walking your squad into the horde.
+func _handle_tap(pos: Vector2) -> void:
+	var now: int = Time.get_ticks_msec()
+	if now - _last_tap_ms < DOUBLE_TAP_MS and pos.distance_to(_last_tap_pos) < DOUBLE_TAP_PX:
+		_last_tap_ms = 0
+		_double_tap(pos)
+	else:
+		_last_tap_ms = now
+		_last_tap_pos = pos
+		_tap(pos)
+
+
+## Single tap: designate the strike if armed, else drive the squad element you tapped.
 func _tap(pos: Vector2) -> void:
 	var g: Vector2 = _ground_pick(pos)
 	if _strike_arming:
 		_fire_ac130_at(g)      # armed: the tap calls the strike here
 		return
+	var best: int = _squad_at(g)
+	if best >= 0:
+		_pick_element(sim.element[best])
+		Audio.comms("ack_affirmative", 2500)
+
+
+## Double tap: move the element you're driving to the tapped ground.
+func _double_tap(pos: Vector2) -> void:
+	if not sim.selected_ids().is_empty():
+		sim.order_move(sim.selected_ids(), _ground_pick(pos))
+		Audio.comms_order()
+
+
+## Nearest living squad member to a ground point, within a finger-sized radius, or -1.
+func _squad_at(g: Vector2) -> int:
 	var best: int = -1
 	var bd: float = 7.0
 	for i in sim.count():
@@ -1558,12 +1629,62 @@ func _tap(pos: Vector2) -> void:
 			if d < bd:
 				bd = d
 				best = i
-	if best >= 0:
-		_pick_element(sim.element[best])
-		Audio.comms("ack_affirmative", 2500)
-	elif not sim.selected_ids().is_empty():
-		sim.order_move(sim.selected_ids(), g)
-		Audio.comms_order()
+	return best
+
+
+## Advance to the next squad element -- the touch "cycle through units" control (TAB on desktop).
+func _cycle_element() -> void:
+	_pick_element((active_element + 1) % ELEMENTS)
+	Audio.comms("ack_affirmative", 2500)
+
+
+## The building under a ground point (AABB test), or -1. O(buildings), press-time only.
+func _building_at(g: Vector2) -> int:
+	if city == null:
+		return -1
+	for i in city.buildings.size():
+		var b: Dictionary = city.buildings[i]
+		if Rect2(b["x"], b["z"], b["w"], b["d"]).has_point(g):
+			return i
+	return -1
+
+
+## Begin a loot hold if the press landed on an un-looted building (and we're not
+## designating a strike). _process fills it while the finger stays put; release cancels.
+func _begin_loot(pos: Vector2) -> void:
+	_press_pos = pos
+	_loot_t = 0.0
+	_loot_idx = -1
+	if _strike_arming:
+		return
+	var b: int = _building_at(_ground_pick(pos))
+	if b >= 0 and not _looted.has(b):
+		_loot_idx = b
+
+
+func _end_loot() -> void:
+	_loot_idx = -1
+	_loot_t = 0.0
+
+
+## Fill the active loot hold; a drag off the spot (pan) or a release cancels it. On
+## completion the building is cleared for a loot bonus -- once each.
+func _advance_loot(delta: float) -> void:
+	if _loot_idx < 0:
+		return
+	var cur: Vector2 = get_viewport().get_mouse_position()
+	if not _touches.is_empty():
+		cur = _touches.values()[0]
+	if _looted.has(_loot_idx) or cur.distance_to(_press_pos) > LOOT_CANCEL_PX:
+		_end_loot()
+		return
+	_loot_t += delta
+	if _loot_t >= LOOT_TIME:
+		_looted[_loot_idx] = true
+		_score += LOOT_PTS
+		_loot_count += 1
+		Audio.comms("ack_inposition", 1500)   # "in position" -- building cleared
+		_end_loot()
 
 
 func _toggle_fire() -> void:
@@ -1588,6 +1709,9 @@ func _build_touch_bar(host: CanvasLayer) -> void:
 		var b: Button = _hud_button(str(n + 1))
 		b.pressed.connect(_pick_element.bind(n))
 		_touch_bar.add_child(b)
+	var bc: Button = _hud_button("CYC")
+	bc.pressed.connect(_cycle_element)
+	_touch_bar.add_child(bc)
 	var bf: Button = _hud_button("WPN")
 	bf.pressed.connect(_toggle_fire)
 	_touch_bar.add_child(bf)
@@ -1644,6 +1768,8 @@ func _place_touch_bar() -> void:
 
 
 func _rebuild_world() -> void:
+	_looted.clear()          # building indices are about to change; drop stale loot marks
+	_end_loot()
 	city.queue_free()
 	if cars != null:
 		cars.queue_free()
