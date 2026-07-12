@@ -22,6 +22,16 @@ const BRIDGE_SLOW: float = 0.55       # a shove through the horde: every metre o
 const EOD_BLAST_R: float = 4.5        # EOD grenade / RPG area radius
 const EOD_BLAST_DMG: float = 30.0     # damage per hostile in the ring
 
+# Sanitation flash-grenade evasion: when pinned (recently hit), a Sanitation elite
+# will RARELY pop a flash -- a bright thermal bloom -- break contact, and slide to a
+# flank to re-engage from a new angle. Long per-unit cooldown + a low roll keep it
+# a rare, unsettling tell, not a reflex.
+const HURT_MEMORY: float = 1.2        # s a unit counts as "under fire" after a hit
+const FLASH_CD: float = 22.0          # s before the same elite may flash again
+const FLASH_CHANCE: float = 0.004     # per-tick roll while pinned (~rare over a firefight)
+const EVADE_TIME: float = 2.6         # s of break-contact movement after the flash
+const EVADE_DIST: float = 26.0        # m of the flanking side-step
+
 # teams. Civilians never fight (they run). Infected + Sanitation + Bandits HUNT
 # (roam for the nearest warm body); Squad + Survivors hold and engage what they
 # see. Sanitation clears the whole board -- the apex threat. Hostility is a
@@ -82,6 +92,10 @@ var element: Array[int] = []          # player element 0-3, or -1 for non-player
 var extracted: Array[bool] = []       # boarded the exfil bird -- out of play, not dead
 var foe: Array[int] = []              # current target index, -1 = none
 var cd: Array[float] = []             # seconds until this unit may fire/strike again
+var hurt: Array[float] = []           # seconds of "just took a hit" left (pinned tell)
+var flash_cd: Array[float] = []       # sanitation: seconds until it may flash-evade again
+var evade: Array[float] = []          # sanitation: seconds of break-contact left, 0 = fighting
+var evade_to: Array[Vector2] = []     # sanitation: the flank point it's sliding to
 
 ## Combat discipline + output. weapons_free gates squad auto-fire (the hold-fire /
 ## open-fire toggle). events is the per-tick log main drains for positional audio:
@@ -102,6 +116,7 @@ var path_i: Array[int] = []
 var grid: SpatialGrid = SpatialGrid.new()
 var bgrid: RectGrid = RectGrid.new()
 var _near: PackedInt32Array = PackedInt32Array()   # reused every unit, every tick
+var _rng := RandomNumberGenerator.new()            # AI dice (flash-evade); fixed seed = reproducible
 var _bounds_lo: Vector2 = Vector2(-64, -64)
 var _bounds_hi: Vector2 = Vector2(640, 640)
 
@@ -114,6 +129,7 @@ func set_bounds(lo: Vector2, hi: Vector2) -> void:
 
 func _init() -> void:
 	grid.setup(_bounds_lo, _bounds_hi, CELL)
+	_rng.seed = 0xC0FFEE
 
 
 func count() -> int:
@@ -138,6 +154,10 @@ func spawn(p: Vector2, t: StringName, tm: int = 0, elem: int = -1) -> int:
 	extracted.append(false)
 	foe.append(-1)
 	cd.append(0.0)
+	hurt.append(0.0)
+	flash_cd.append(0.0)
+	evade.append(0.0)
+	evade_to.append(p)
 	return pos.size() - 1
 
 
@@ -299,6 +319,9 @@ func step(dt: float) -> void:
 		if not bridges.is_empty() and _on_bridge(pos[i]):
 			sp *= BRIDGE_SLOW          # wading through the gauntlet
 		cd[i] = maxf(0.0, cd[i] - dt)
+		hurt[i] = maxf(0.0, hurt[i] - dt)
+		flash_cd[i] = maxf(0.0, flash_cd[i] - dt)
+		evade[i] = maxf(0.0, evade[i] - dt)
 		# Perception scans the SIGHT radius -- the sim's most expensive query -- so
 		# each unit re-acquires only every 20th tick (~0.33 s to notice a NEW foe),
 		# staggered by index so the cost spreads evenly. A unit already locked onto
@@ -464,6 +487,11 @@ func _combat(i: int, sp: float) -> Vector2:
 	var t: int = team[i]
 	if t == CIVILIAN:
 		return _flee(i, sp)
+	# Sanitation mid-evade: weapon down, slide to the flank point it flashed toward.
+	if t == SANITATION and evade[i] > 0.0:
+		var run: Vector2 = evade_to[i] - pos[i]
+		var rd: float = run.length()
+		return run / rd * sp if rd > 1.5 else Vector2.ZERO
 	var f: int = foe[i]
 	if f == -1 or not alive[f]:
 		return Vector2.ZERO
@@ -475,6 +503,10 @@ func _combat(i: int, sp: float) -> Vector2:
 				_strike(i, f)
 			return Vector2.ZERO
 		return (pos[f] - pos[i]) / maxf(d, 1e-5) * sp
+	# Sanitation under fire: rarely trade its next action for a flash-bang + a flank,
+	# reappearing at a new angle. Pinned (recently hit) + off cooldown + a low roll.
+	if t == SANITATION and hurt[i] > 0.0 and flash_cd[i] <= 0.0 and _rng.randf() < FLASH_CHANCE:
+		return _pop_flash(i, f, sp)
 	# shooters: squad, sanitation, bandits, survivors. Fire in range, clear line.
 	# Only the squad's trigger is disciplined (weapons_free); the rest fire at will.
 	if d <= reach and _los(pos[i], pos[f]):
@@ -501,6 +533,28 @@ func _flee(i: int, sp: float) -> Vector2:
 	if away.length() > 0.0:
 		return away.normalized() * sp
 	return Vector2.ZERO
+
+
+## Sanitation pops a flash-bang: a bright thermal bloom (the 'flash' event), then
+## commits to a break-contact side-step to a flank point, giving up a little ground
+## to re-engage from a new angle. Returns the first step of that move.
+func _pop_flash(i: int, f: int, sp: float) -> Vector2:
+	flash_cd[i] = FLASH_CD
+	evade[i] = EVADE_TIME
+	var dir: Vector2 = (pos[f] - pos[i])
+	dir /= maxf(dir.length(), 1e-5)
+	var perp: Vector2 = Vector2(-dir.y, dir.x)
+	var side: float = 1.0 if _rng.randf() < 0.5 else -1.0
+	# hard sidestep, ceding a little ground toward cover on the flank
+	var flank: Vector2 = pos[i] + perp * (side * EVADE_DIST) - dir * (EVADE_DIST * 0.4)
+	if _blocked(flank):
+		flank = pos[i] + perp * (-side * EVADE_DIST) - dir * (EVADE_DIST * 0.4)   # try the other hand
+	if _blocked(flank):
+		flank = pos[i]                        # boxed in: flash in place and hold
+	evade_to[i] = flank
+	events.append({"kind": "flash", "pos": pos[i], "to": pos[i], "team": team[i], "unit": kind[i]})
+	var run: Vector2 = flank - pos[i]
+	return run / maxf(run.length(), 1e-5) * sp
 
 
 ## Queue a hit on `f` and log the muzzle/claw for audio. Damage is applied in
@@ -532,6 +586,7 @@ func _reap() -> void:
 	for k in _dmg:
 		if not alive[k]:
 			continue
+		hurt[k] = HURT_MEMORY          # took fire: pinned for a moment (drives the flash-evade)
 		hp[k] -= _dmg[k]
 		if hp[k] <= 0.0:
 			alive[k] = false

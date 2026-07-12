@@ -95,6 +95,7 @@ var _sfx_claw: AudioStream
 var _sfx_death: AudioStream
 var _sfx_strike: AudioStream
 var _sfx_blast: AudioStream
+var _sfx_flash: AudioStream
 var sel_layer: Control
 var drag_start: Vector2 = Vector2.ZERO
 var dragging: bool = false
@@ -194,6 +195,7 @@ func _ready() -> void:
 	_sfx_death = load("res://audio/sfx/zed_death.wav")
 	_sfx_strike = load("res://audio/sfx/ac130_strike.wav")
 	_sfx_blast = load("res://audio/sfx/blast.wav")
+	_sfx_flash = load("res://audio/sfx/flashbang.wav")
 
 
 func _build_tree() -> void:
@@ -715,6 +717,9 @@ func _drain_audio() -> void:
 				_spawn_flash3d(e["pos"], 4.0, 0.35, 1.6)
 			"flame":
 				_spawn_flame(e["pos"], e["to"])   # sanitation fire jet -- glow only, no report
+			"flash":
+				_sfx_at(at, _sfx_flash)            # sanitation flash-bang: bright bloom + ring-out
+				_spawn_flash3d(e["pos"], 6.0, 0.40, 2.0)
 			"man_down":
 				Audio.comms("need_backup", 2500)
 

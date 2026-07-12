@@ -33,6 +33,7 @@ func _initialize() -> void:
 	test_air_strike()
 	test_eod_grenade()
 	test_sanitation_flame()
+	test_sanitation_flash_evade()
 	test_population_hunts_and_fights()
 	test_elements_and_medic()
 	test_mission_exfil()
@@ -472,6 +473,33 @@ func test_sanitation_flame() -> void:
 				san_gun = true
 	check("sanitation emits a flame plume event", flame, "flame=%s" % flame)
 	check("sanitation never fires a gun round", not san_gun, "san_gun=%s" % san_gun)
+
+
+## A pinned Sanitation elite rarely pops a flash-bang and breaks contact to a flank.
+func test_sanitation_flash_evade() -> void:
+	var s: WorldSim = WorldSim.new()
+	s.set_bounds(Vector2(-60, -60), Vector2(200, 200))
+	var san: int = s.spawn(Vector2(100, 100), &"san", WorldSim.SANITATION)
+	s.spawn(Vector2(100, 110), &"cbt", WorldSim.SQUAD)   # holds the elite under fire
+	var flashed: bool = false
+	var flash_pos: Vector2 = Vector2.ZERO
+	var moved: float = 0.0
+	var after: int = -1
+	for _t in 1800:
+		s.step(1.0 / 60.0)
+		if not flashed:
+			for e in s.events:
+				if e["kind"] == "flash":
+					flashed = true
+					flash_pos = s.pos[san]
+					after = 0
+		elif after >= 0 and after < 60:
+			after += 1
+			moved = maxf(moved, s.pos[san].distance_to(flash_pos))
+		if not s.alive[san]:
+			break
+	check("a pinned sanitation elite pops a flash", flashed, "flashed=%s" % flashed)
+	check("it breaks contact after the flash", moved > 3.0, "moved=%.1f m" % moved)
 
 
 ## A populated city: factions land on walkable ground, and the hunting horde
