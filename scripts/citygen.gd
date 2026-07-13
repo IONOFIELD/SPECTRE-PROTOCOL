@@ -17,12 +17,12 @@ const SETBACK: float = 3.5      # building set-back past the kerb into the block
 const PERIM_INSET: float = 30.0 # the coastal RING road runs this far inside the shoreline (a clean outer loop)
 const STREET_DY: float = 0.24   # N-S streets ride this much above E-W so crossings never z-fight
 const ROAD_W: float = 15.0      # street WIDTH -- a narrow 2-lane street, to the scale of the cars/buildings
-const ROAD_Y: float = 0.50      # roads sit clearly above the ground base. MOBILE's depth buffer resolves
-                                # much less than desktop's at the max-zoom altitude, so these offsets are
-                                # raised well past the old 0.22 (which shimmered on phones) + the camera
-                                # near/far were tightened to match. Still sub-pixel at gameplay zooms.
+const ROAD_Y: float = 0.70      # roads sit clearly above the ground base. MOBILE's depth buffer resolves
+                                # much less than desktop's at the max-zoom altitude (~0.5 m floor if it's a
+                                # 16-bit buffer), so this is raised past 0.5 to clear it -- still ~sub-pixel
+                                # at gameplay zooms. Paired with a tightened camera near/far.
 const WALK_W: float = 2.3       # sidewalk width each side of the asphalt
-const WALK_Y: float = 0.64      # sidewalks sit a touch higher than the road -> reads as a raised kerb
+const WALK_Y: float = 0.84      # sidewalks sit a touch higher than the road -> reads as a raised kerb
 const BEACH_W: float = 24.0     # how far the sand reaches inland from the coastline
 const BEACH_SEA: float = 10.0   # ...and how far it laps out over the water
 
@@ -43,6 +43,9 @@ var escapes: Array[Rect2] = []   # bridge far ends: step inside to get off the m
 var far_lands: Array = []        # large model-free landmasses the bridges run to (illusion of a wider world)
 var parks: Array[Rect2] = []     # Golden Gate Park, the Presidio, the Panhandle, Twin Peaks, ...
 var road_lines: Array = []       # street centrelines [a, b] -- cars ride these; truck deploy snaps to them
+var _no_build_lines: Array = []  # NON-grid road centrelines (perimeter loop + park borders + bridge spurs)
+                                 # that buildings must clear -- the block grid already sets them back from
+                                 # the GRID streets, but not from these, so shells used to sit on them
 var ring_poly: PackedVector2Array = PackedVector2Array()   # the coastal RING road path (inset land_poly); city fits inside it
 var land: Rect2 = Rect2()        # polygon bounding box, for ambient population scatter
 var poly_lo: Vector2 = Vector2.ZERO
@@ -130,6 +133,7 @@ func generate(snap_res: Vector2i) -> void:
 	_road_tris.clear()
 	_walk_tris.clear()
 	road_lines.clear()
+	_no_build_lines.clear()
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 	rng.seed = seed_value
 
@@ -187,7 +191,9 @@ func _lay_city(rng: RandomNumberGenerator) -> void:
 			_tile(Rect2(x, z, CELL, CELL), "park" if _in_park(c) else "ground")
 	_lay_grid_roads(sxs, szs)      # the street mesh (clipped to the ring), over the ground
 	_lay_perimeter_loop()          # ONE big coastal loop road around the outside -- no perimeter dead-ends
-	_lay_blocks(rng, sxs, szs)     # buildings filling each block, inside the ring
+	_lay_park_roads()              # a loop road AROUND each park, so grid streets connect around it (not dead-end in)
+	_lay_bridge_spurs()            # a short road from the grid onto each bridge deck (so a road actually leads to it)
+	_lay_blocks(rng, sxs, szs)     # buildings filling each block, inside the ring + clear of ALL the above roads
 
 
 ## Evenly spaced street centres from lo..hi on a BLOCK pitch (half a block of margin at each end).
@@ -275,7 +281,8 @@ func _fill_block(rng: RandomNumberGenerator, block: Rect2, dc: float) -> void:
 				continue
 			var bx: float = block.position.x + float(a) * pw + gap * 0.5
 			var bz: float = block.position.y + float(b) * pd + gap * 0.5
-			if not _footprint_in_land(bx, bz, bw, bd) or _footprint_in_park(bx, bz, bw, bd):
+			if not _footprint_in_land(bx, bz, bw, bd) or _footprint_in_park(bx, bz, bw, bd) \
+					or _footprint_hits_road(bx, bz, bw, bd):
 				continue
 			var fl: int = 1 + rng.randi() % 2
 			var tall: bool = false
@@ -352,6 +359,7 @@ func _lay_perimeter_loop() -> void:
 	for i in n:
 		var a: Vector2 = ring_poly[i]
 		var b: Vector2 = ring_poly[(i + 1) % n]
+		_no_build_lines.append([a, b])          # keep buildings off the loop
 		var steps: int = maxi(1, int(ceil(a.distance_to(b) / 16.0)))
 		for k in steps:
 			var p0: Vector2 = a.lerp(b, float(k) / float(steps))
@@ -359,6 +367,69 @@ func _lay_perimeter_loop() -> void:
 			if _in_park((p0 + p1) * 0.5):
 				continue
 			_road_seg(p0, p1, half, STREET_DY + 0.08)
+
+
+## A road loop AROUND each park's border, so the grid streets that run up to a park connect to a road
+## that routes around it instead of dead-ending at the edge. Rides a touch above the grid at junctions.
+func _lay_park_roads() -> void:
+	var half: float = ROAD_W * 0.5
+	for pk in parks:
+		var corners: Array = [pk.position, Vector2(pk.end.x, pk.position.y), pk.end, Vector2(pk.position.x, pk.end.y)]
+		for i in 4:
+			var a: Vector2 = corners[i]
+			var b: Vector2 = corners[(i + 1) % 4]
+			road_lines.append([a, b])
+			_no_build_lines.append([a, b])
+			var steps: int = maxi(1, int(ceil(a.distance_to(b) / 16.0)))
+			for k in steps:
+				var p0: Vector2 = a.lerp(b, float(k) / float(steps))
+				var p1: Vector2 = a.lerp(b, float(k + 1) / float(steps))
+				if _in_ring((p0 + p1) * 0.5):
+					_road_seg(p0, p1, half, STREET_DY + 0.11)
+
+
+## A short road spur from the grid onto each bridge deck's peninsula end, so a road actually LEADS onto
+## the bridge (the grid streets are clipped to the ring and otherwise stop short of the deck).
+func _lay_bridge_spurs() -> void:
+	var half: float = ROAD_W * 0.5
+	for deck in bridges:
+		# the deck's LONG axis tells us which end sits on the peninsula + which way to run the spur inland
+		var horizontal: bool = deck.size.x >= deck.size.y
+		var endp: Vector2
+		var inland: Vector2
+		if horizontal:                                   # Bay: runs E-W, peninsula end at min-x (west)
+			endp = Vector2(deck.position.x, deck.position.y + deck.size.y * 0.5)
+			inland = endp + Vector2(-80.0, 0.0)
+		else:                                            # GG: runs N-S, peninsula end at max-z (south)
+			endp = Vector2(deck.position.x + deck.size.x * 0.5, deck.position.y + deck.size.y)
+			inland = endp + Vector2(0.0, 80.0)
+		road_lines.append([inland, endp])
+		_no_build_lines.append([inland, endp])
+		var steps: int = maxi(1, int(ceil(inland.distance_to(endp) / 16.0)))
+		for k in steps:
+			var p0: Vector2 = inland.lerp(endp, float(k) / float(steps))
+			var p1: Vector2 = inland.lerp(endp, float(k + 1) / float(steps))
+			_road_seg(p0, p1, half, STREET_DY + 0.13)    # onto the deck; rides highest so junctions win
+
+
+## Does the footprint (grown a little) come within a road-corridor's clearance of any NON-grid road
+## (perimeter loop / park border / bridge spur)? The block grid already sets shells back from the GRID
+## streets; this keeps them off the roads the grid doesn't know about.
+func _footprint_hits_road(x: float, z: float, w: float, d: float) -> bool:
+	var c: Vector2 = Vector2(x + w * 0.5, z + d * 0.5)
+	var clr: float = ROAD_W * 0.5 + maxf(w, d) * 0.5 + 2.5    # road half + footprint radius + a margin
+	for line in _no_build_lines:
+		if _dist_point_seg(c, line[0], line[1]) < clr:
+			return true
+	return false
+
+
+## Shortest distance from point p to segment a->b.
+func _dist_point_seg(p: Vector2, a: Vector2, b: Vector2) -> float:
+	var ab: Vector2 = b - a
+	var l2: float = ab.length_squared()
+	var t: float = 0.0 if l2 < 1e-6 else clampf((p - a).dot(ab) / l2, 0.0, 1.0)
+	return p.distance_to(a + ab * t)
 
 
 ## One street segment a->b: a central 2-LANE asphalt ribbon flanked by a raised SIDEWALK kerb on each
@@ -700,24 +771,36 @@ func _bridge_towers(deck: Rect2, north_running: bool) -> void:
 			_add_box(Vector3(xc, 0.0, deck.end.y - 1.6), Vector3(3.2, h, 3.2), "parapet")
 
 
-## The Golden Gate as a HERO PROP: a low-poly GLB reskinned to cold steel (`parapet`), scaled to span
-## its deck and grounded, so the bridge reads as the icon instead of a bare grey slab + boxy towers.
-## The walkable deck tile underneath stays (units cross it at y=0); this is the superstructure on top.
+# --- Bridge FIT tuning (dialed in via the SPECTRE_BRIDGE side-on capture) ---
+# The GLBs are fit to their deck in WIDTH + LENGTH (so the procedural deck tile is fully covered, no
+# grey rectangle poking out) but kept LOW, then SUNK so the ROADWAY -- not the model's lowest strut --
+# lands on the y=0 deck/road level. A suspension bridge's deck sits well above its base, so grounding
+# the base alone floats the road "higher than the buildings". H = height as a fraction of the
+# length-uniform scale; SINK = fraction of the scaled height to drop so the roadway reaches y=0.
+# SINK = the roadway's height as a fraction of the model span above its base -- MEASURED from the GLB
+# vertex distribution (GG deck sits at 0.43 of its height, Bay at 0.40). spawn_fit grounds the base to
+# y=0, so subtracting SINK*scaled_height drops the ROADWAY onto the y=0 deck tile.
+const GG_H: float = 0.42
+const GG_SINK: float = 0.43
+const BAY_H: float = 0.52
+const BAY_SINK: float = 0.40
+
+
+## The Golden Gate as a HERO PROP: a low-poly GLB reskinned to cold steel (`parapet`), fit to its deck
+## + sunk so the ROADWAY sits on the y=0 walkable tile (units cross the tile; this is the superstructure).
 func _lay_gg_bridge() -> void:
 	var deck: Rect2 = bridges[0]
 	var model: Vector3 = Vector3(18.5, 74.1, 392.7)     # measured GLB bounds (metres)
 	var s: float = deck.size.y / model.z                # deck runs N-S (z) -- uniform-fit to its length
-	# Fit X (width) + Z (length) to the deck, but SQUASH the height: at the game's compressed ~600 m
-	# span a uniform scale makes a 119 m-tall tower whose roadway floats ~30 m over the y=0 walkable
-	# deck tile -- from the top-down optic that parallax read as "the bridge floats above the ground,
-	# units can't get on it". A low 45 m bridge hugs the deck; the towers still read from above.
+	var sh: float = model.y * s * GG_H                  # scaled height, kept low
 	var node: Node3D = ThermalModel.spawn_fit(
 		"res://models/buildings and scenery/golden_gate_bridge.glb", "parapet", _snap_res,
-		Vector3(model.x * s, model.y * s * 0.38, model.z * s), 0.0)
+		Vector3(deck.size.x, sh, model.z * s), 0.0)     # width = the FULL deck (covers the tile); length = deck
 	if node == null:
 		return
-	node.position.x = deck.position.x + deck.size.x * 0.5   # centre on the deck; spawn_fit already grounded y
+	node.position.x = deck.position.x + deck.size.x * 0.5   # centre on the deck
 	node.position.z = deck.position.y + deck.size.y * 0.5
+	node.position.y += ROAD_Y - sh * GG_SINK           # roadway lands at ROAD level (just above the deck tile, no z-fight)
 	add_child(node)
 
 
@@ -730,25 +813,28 @@ const BAY_MODEL: Vector3 = Vector3(28.2, 49.8, 387.8)   # measured GLB bounds (m
 func _lay_bay_bridge() -> void:
 	var deck: Rect2 = bridges[1]
 	var s: float = deck.size.x / BAY_MODEL.z            # uniform-fit the span to the deck length
+	var w: float = deck.size.y                          # BOTH spans carry the deck WIDTH (covers the tile)
 	# main span, SF -> Treasure Island (yaw 90deg -> the model's length runs east-west)
-	_bay_span(Vector2(deck.position.x + deck.size.x * 0.5, deck.position.y + deck.size.y * 0.5), PI * 0.5, s)
-	# second span, off Treasure Island's SE shoulder at 45deg, trailing off-screen SE
+	_bay_span(Vector2(deck.position.x + deck.size.x * 0.5, deck.position.y + deck.size.y * 0.5), PI * 0.5, s, w)
+	# second span, off Treasure Island's SE shoulder at 45deg, trailing off-screen SE (same width)
 	var start: Vector2 = Vector2(1350.0, 500.0)
 	var dir: Vector2 = Vector2(0.7071, 0.7071)          # SE
-	_bay_span(start + dir * (BAY_MODEL.z * s * 0.5), PI * 0.25, s)
+	_bay_span(start + dir * (BAY_MODEL.z * s * 0.5), PI * 0.25, s, w)
 
 
-## One Bay Bridge span: the model at world-XZ centre `ctr`, yawed, uniform-scaled by `s`, grounded.
-func _bay_span(ctr: Vector2, yaw: float, s: float) -> void:
-	# Same as the GG: fit length+width to the deck but squash the height so the span hugs the y=0
-	# walkable tile instead of floating a tall truss above it (which read as "misaligned").
+## One Bay Bridge span: fit to length + the passed `width` (so the deck tile is covered), kept low, and
+## sunk so the roadway lands on the y=0 deck. `width` is the model's cross-span in world units -- after
+## the yaw, the local-X (size_m.x) maps onto it, so both the 90deg main span and the 45deg dogleg get it.
+func _bay_span(ctr: Vector2, yaw: float, s: float, width: float) -> void:
+	var sh: float = BAY_MODEL.y * s * BAY_H
 	var node: Node3D = ThermalModel.spawn_fit(
 		"res://models/buildings and scenery/bay_bridge.glb", "parapet", _snap_res,
-		Vector3(BAY_MODEL.x * s, BAY_MODEL.y * s * 0.50, BAY_MODEL.z * s), yaw)
+		Vector3(width, sh, BAY_MODEL.z * s), yaw)
 	if node == null:
 		return
 	node.position.x = ctr.x
 	node.position.z = ctr.y
+	node.position.y += ROAD_Y - sh * BAY_SINK          # roadway at ROAD level (just above the deck tile, no z-fight)
 	add_child(node)
 
 
