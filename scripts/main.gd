@@ -159,7 +159,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] passive stance   [V] ar
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 93
+const BUILD_PUSHES: int = 94
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -233,7 +233,10 @@ var mission: Mission
 # heat (kills). Once deployed, the only way out is a bridge or wiping the whole force.
 var _sani_deployed: bool = false
 var _sani_music_on: bool = false       # the wipe-force theme layer is live (asset present)
-var _deploy_anim: Dictionary = {}      # {body, rotor, start, rest, t, dur, heli}: your insertion flying in
+var _deploy_anim: Dictionary = {}      # {body, rotor, mode, base, ex, t}: your insertion, animated v0.19-style
+var _deploy_mode: int = 0              # 0 heli / 1 truck / 2 walk -- element 0's insertion this run
+const HELI_ALT: float = 19.0           # heli altitude scale (max ~42 m at v0.19 lift 2.2)
+const ROTOR_SPD: float = 22.0          # main-rotor spin, rad/s (v0.19 elapsed*22)
 var _deploy_stagger: Array = []        # [{i, at, form}]: element-0 troopers disembarking one by one
 var _deploy_clock: float = 0.0         # seconds since the drop, drives the disembark stagger
 var _intro_t: float = -1.0             # >=0: the intro camera is holding close on the drop before pulling out wide
@@ -783,43 +786,68 @@ func _populate_world() -> void:
 			sim.spawn_line(&"zed", WorldSim.INFECTED, b, GAUNTLET_PER_BRIDGE, rng)   # the choked deck
 
 
-## The insertion vehicle at a team's deployment edge -- a helo (with rotor), a truck, or
-## a boat. YOUR team (element 0) gets a random one that flies/drives/sails IN from off-map
-## (see _advance_deploy); rival teams cycle a static one. Parented to the city.
+## The insertion vehicle, animated EXACTLY like v0.19: a HELI drops straight DOWN onto the drop,
+## hovers while the troops pour out, then lifts off vertically and departs; a TRUCK drives in from
+## off-map and parks as scenery; a WALK insertion has NO vehicle (the troops just march in). YOUR
+## team (element 0) plays the animation (see _advance_deploy); rivals get a static prop.
 func _deploy_vehicle(base: Vector2, e: int) -> void:
-	var kind: int = (_rng.randi() % 3) if e == 0 else (e % 3)
-	var bm: BoxMesh = BoxMesh.new()
-	if kind == 0:
-		bm.size = Vector3(3.0, 2.4, 8.0)      # helo
-	elif kind == 1:
-		bm.size = Vector3(3.0, 3.0, 7.0)      # truck
+	if city == null:
+		return
+	var mode: int = (_rng.randi() % 3) if e == 0 else (e % 3)   # 0 heli / 1 truck / 2 walk
+	if e == 0:
+		_deploy_mode = mode
+	if mode == 2:
+		return                                                 # foot march -- no vehicle at all
+	var outward: Vector2 = (base - city.land.get_center()).normalized()
+	if mode == 0:
+		var body: MeshInstance3D = _heli_body()
+		var rotor: MeshInstance3D = _heli_rotor()
+		city.add_child(body)
+		city.add_child(rotor)
+		if e == 0:
+			body.position = Vector3(base.x, 1.4 + HELI_ALT * 2.2, base.y)   # start high (v0.19 lift 2.2)
+			rotor.position = body.position + Vector3(0.0, 1.7, 0.0)
+			_deploy_anim = {"body": body, "rotor": rotor, "mode": 0, "base": Vector3(base.x, 0.0, base.y), "t": 0.0}
+		else:
+			body.position = Vector3(base.x, 1.4, base.y)                    # rival: landed, static
+			rotor.position = body.position + Vector3(0.0, 1.7, 0.0)
 	else:
-		bm.size = Vector3(4.0, 2.2, 10.0)     # boat
+		var tm: BoxMesh = BoxMesh.new()
+		tm.size = Vector3(3.0, 3.0, 7.0)
+		var truck: MeshInstance3D = MeshInstance3D.new()
+		truck.mesh = tm
+		truck.material_override = ThermalLib.get_material("hood_warm", snap_res)
+		truck.rotation.y = 0.0 if absf(outward.x) < absf(outward.y) else PI * 0.5   # axis-snapped (a rotated box blows out)
+		var rest: Vector3 = Vector3(base.x, 1.5, base.y)
+		var ex: Vector3 = rest + Vector3(outward.x, 0.0, outward.y) * 70.0
+		truck.position = ex if e == 0 else rest
+		city.add_child(truck)
+		if e == 0:
+			_deploy_anim = {"body": truck, "rotor": null, "mode": 1, "base": rest, "ex": ex, "t": 0.0}
+
+
+func _heli_body() -> MeshInstance3D:
+	var bm: BoxMesh = BoxMesh.new()
+	bm.size = Vector3(3.0, 2.4, 8.0)
 	var body: MeshInstance3D = MeshInstance3D.new()
 	body.mesh = bm
-	var rest: Vector3 = Vector3(base.x - 5.0, bm.size.y * 0.5, base.y - 5.0)
-	body.position = rest
 	body.material_override = ThermalLib.get_material("hood_warm", snap_res)
-	city.add_child(body)
-	var rotor: MeshInstance3D = null
-	if kind == 0:
-		var rm: BoxMesh = BoxMesh.new()
-		rm.size = Vector3(14.0, 0.2, 0.7)
-		rotor = MeshInstance3D.new()
-		rotor.mesh = rm
-		rotor.position = Vector3(rest.x, 3.1, rest.z)
-		rotor.material_override = ThermalLib.get_material("parapet", snap_res)
-		city.add_child(rotor)
-	if e == 0 and city != null:
-		# fly YOUR insertion in from off-map: a helo drops from altitude, a truck/boat drives in.
-		var outward: Vector2 = (base - city.land.get_center()).normalized()
-		var start: Vector3 = rest + Vector3(outward.x, 0.0, outward.y) * 70.0
-		if kind == 0:
-			start.y = 46.0
-		body.position = start
-		if rotor != null:
-			rotor.position = Vector3(start.x, start.y + 0.7, start.z)
-		_deploy_anim = {"body": body, "rotor": rotor, "start": start, "rest": rest, "t": 0.0, "dur": 2.8, "heli": kind == 0}
+	return body
+
+
+## The rotor: a thin flat DISC (v0.19's rotor "blur disc"). Axis-symmetric, so spinning it about
+## its own axis never changes the silhouette -- it reads as a spinning rotor WITHOUT the bright
+## over-draw a rotated flat blade would trip on the PSX vertex-snap shader.
+func _heli_rotor() -> MeshInstance3D:
+	var cm: CylinderMesh = CylinderMesh.new()
+	cm.top_radius = 7.0
+	cm.bottom_radius = 7.0
+	cm.height = 0.18
+	cm.radial_segments = 14
+	var r: MeshInstance3D = MeshInstance3D.new()
+	r.mesh = cm
+	r.material_override = ThermalLib.get_material("parapet", snap_res)
+	return r
 
 
 ## Stage element 0's disembark: each trooper starts hidden aboard the insertion vehicle at
@@ -832,12 +860,16 @@ func _setup_deploy_stagger(base: Vector2) -> void:
 	for i in sim.count():
 		if sim.team[i] == WorldSim.SQUAD and sim.element[i] == 0:
 			ids.append(i)
+	# v0.19 disembark timing by insertion mode: heli t0 2.0 (once it lands), truck 2.6 (once it
+	# arrives), walk 0.3 (straight in); step 0.10 (0.16 on foot).
+	var t0: float = 2.0 if _deploy_mode == 0 else (2.6 if _deploy_mode == 1 else 0.3)
+	var step: float = 0.16 if _deploy_mode == 2 else 0.10
 	for k in ids.size():
 		var i: int = ids[k]
 		var ang: float = float(k) / maxf(1.0, float(ids.size())) * TAU
 		var rad: float = 7.0 + float(k % 4) * 3.5                 # a few loose rings, not a stack
 		var form: Vector2 = base + Vector2(cos(ang), sin(ang)) * rad
-		var at: float = 1.8 + float(k) * 0.08                     # after the bird lands, one by one (all out < INTRO_HOLD)
+		var at: float = t0 + float(k) * step                     # disembark one by one
 		_deploy_stagger.append({"i": i, "at": at, "form": form})
 		sim.pos[i] = base                                         # aboard the vehicle at the drop
 		if i < views.size() and views[i] != null:
@@ -849,16 +881,37 @@ func _setup_deploy_stagger(base: Vector2) -> void:
 func _advance_deploy(delta: float) -> void:
 	if not _deploy_anim.is_empty():
 		_deploy_anim["t"] += delta
-		var k: float = clampf(_deploy_anim["t"] / _deploy_anim["dur"], 0.0, 1.0)
-		var e: float = 1.0 - pow(1.0 - k, 3.0)                     # ease-out
+		var t: float = _deploy_anim["t"]
 		var body: MeshInstance3D = _deploy_anim["body"]
-		if is_instance_valid(body):
-			body.position = (_deploy_anim["start"] as Vector3).lerp(_deploy_anim["rest"] as Vector3, e)
-			var rotor: MeshInstance3D = _deploy_anim["rotor"]
-			if rotor != null and is_instance_valid(rotor):
-				rotor.position = body.position + Vector3(0.0, 0.7, 0.0)   # ride above the hull
-		if k >= 1.0:
-			_deploy_anim = {}
+		if int(_deploy_anim["mode"]) == 0:
+			# HELI (v0.19): drop straight down (0-2 s) -> hover on the deck (2-5.5 s, troops out)
+			# -> lift off vertically + depart (5.5-8 s) -> gone.
+			if t >= 8.0 or not is_instance_valid(body):
+				if is_instance_valid(body):
+					body.queue_free()
+				var rr: Variant = _deploy_anim.get("rotor")
+				if rr != null and is_instance_valid(rr):
+					rr.queue_free()
+				_deploy_anim = {}
+			else:
+				var lift: float = 0.0
+				if t < 2.0:
+					lift = (2.0 - t) / 2.0 * 2.2
+				elif t >= 5.5:
+					lift = minf(2.2, (t - 5.5) / 2.0 * 2.2)
+				var base: Vector3 = _deploy_anim["base"]
+				body.position = Vector3(base.x, 1.4 + lift * HELI_ALT, base.z)
+				var rotor: MeshInstance3D = _deploy_anim["rotor"]
+				if rotor != null and is_instance_valid(rotor):
+					rotor.position = body.position + Vector3(0.0, 1.7, 0.0)
+					rotor.rotate_y(delta * ROTOR_SPD)                     # spinning rotor disc
+		else:
+			# TRUCK (v0.19): drive in from off-map over 2.4 s, then PARK (stays as scenery).
+			var f: float = clampf(t / 2.4, 0.0, 1.0)
+			if is_instance_valid(body):
+				body.position = (_deploy_anim["ex"] as Vector3).lerp(_deploy_anim["base"] as Vector3, f)
+			if f >= 1.0:
+				_deploy_anim = {}                                        # parked -- leave it in place
 	if _deploy_stagger.is_empty():
 		return
 	_deploy_clock += delta
