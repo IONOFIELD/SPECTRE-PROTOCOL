@@ -59,6 +59,16 @@ const BANDIT_PER_CREW: int = 5
 const SURVIVOR_HOLDOUTS: int = 8   # dug-in armed holdouts
 const SURVIVOR_PER_HOLDOUT: int = 3
 const GAUNTLET_PER_BRIDGE: int = 56   # infected choking each bridge deck (decks now extend to the far lands)
+# SWARM UPKEEP -- the city keeps bleeding infected at you so the streets never go quiet. Density is
+# maintained LOCALLY (near the squad) rather than globally: infected disperse across a huge map, so a
+# high global count still feels empty where you are. As they die/wander off, fresh ones emerge from
+# nearby buildings (and re-man a bridge deck as you close on it), capped so the total never overruns.
+const SWARM_LOCAL_R: float = 560.0    # keep the area around the squad populated within this radius
+const SWARM_LOCAL_TARGET: int = 32    # ...to about this many infected before topping up
+const SWARM_TOTAL_CAP: int = 620      # never push the total live unit count past this (the perf ceiling)
+const SWARM_INTERVAL: float = 1.1     # seconds between upkeep passes
+const SWARM_BRIDGE_R: float = 440.0   # re-man a bridge deck once the squad is this close
+const SWARM_BRIDGE_MIN: int = 20      # ...up to this many infected on the reachable deck
 const ELEMENTS: int = 4                 # max player teams (touch bar 1-4)
 var _team_count: int = 4                 # chosen at the startup menu (solo / 2 / 3 / 4)
 var _team_colors: Array[Color] = []      # per-element unit-icon colour, randomized every game (distinct hues)
@@ -166,7 +176,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] passive stance   [V] ar
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 111
+const BUILD_PUSHES: int = 112
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -240,6 +250,7 @@ var mission: Mission
 # heat (kills). Once deployed, the only way out is a bridge or wiping the whole force.
 var _sani_deployed: bool = false
 var _sani_music_on: bool = false       # the wipe-force theme layer is live (asset present)
+var _swarm_t: float = 0.0              # swarm-upkeep throttle
 var _deploy_anim: Dictionary = {}      # {body, rotor, mode, base, ex, t}: your insertion, animated v0.19-style
 var _deploy_mode: int = 0              # 0 heli / 1 truck / 2 walk -- element 0's insertion this run
 const HELI_ALT: float = 19.0           # heli altitude scale (max ~42 m at v0.19 lift 2.2)
@@ -1754,6 +1765,7 @@ func _process(delta: float) -> void:
 	if _loot_toast_t > 0.0:
 		_loot_toast_t = maxf(0.0, _loot_toast_t - delta)
 	_ambient_combat(delta)
+	_swarm_upkeep(delta)                       # keep the streets teeming: fresh infected from nearby buildings
 	_advance_panic(delta)
 	_sanitation_vox(delta)
 	_scan_t += delta
@@ -3275,6 +3287,103 @@ func _nearest_player_unit(g: Vector2, max_m: float) -> int:
 
 ## The building was occupied: 1-2 infected boil out at the door, and whoever breached
 ## takes a bite that can drop them. Spawns keep views/_anim index-aligned with the sim.
+## Keep the city feeling SWARMED without exceeding the sim budget. Density is held LOCALLY: if too few
+## infected are near the squad, a knot emerges from a nearby building; and a bridge deck is re-manned
+## as the squad closes on it (the gauntlet drifts off over the long wait). Global total is hard-capped.
+func _swarm_upkeep(delta: float) -> void:
+	if _menu_sim or _tutorial or city == null or sim == null or mission == null or mission.result != Mission.ONGOING:
+		return
+	_swarm_t += delta
+	if _swarm_t < SWARM_INTERVAL:
+		return
+	_swarm_t = 0.0
+	var fp: Vector3 = _follow_point()
+	var here: Vector2 = Vector2(fp.x, fp.z)
+	# one pass: count the live total (perf gate) and the infected near the squad (density gate)
+	var total: int = 0
+	var local: int = 0
+	for i in sim.count():
+		if not sim.alive[i] or sim.extracted[i]:
+			continue
+		total += 1
+		if sim.team[i] == WorldSim.INFECTED and here.distance_squared_to(sim.pos[i]) < SWARM_LOCAL_R * SWARM_LOCAL_R:
+			local += 1
+	if total >= SWARM_TOTAL_CAP:
+		return
+	# thin around the squad? emerge a small knot from a building off in the middle distance.
+	if local < SWARM_LOCAL_TARGET:
+		var b: int = _building_near_ring(here, 130.0, 470.0)
+		if b >= 0:
+			var bd: Dictionary = city.buildings[b]
+			var c: Vector2 = Vector2(bd["x"] + bd["w"] * 0.5, bd["z"] + bd["d"] * 0.5)
+			var n: int = 2 + (_rng.randi() % 3)                 # 2-4 emerge
+			for _z in n:
+				if total >= SWARM_TOTAL_CAP:
+					break
+				var hw: float = bd["w"] * 0.5 + 3.0
+				var hd: float = bd["d"] * 0.5 + 3.0
+				var p: Vector2 = c + Vector2(_rng.randf_range(-hw, hw), _rng.randf_range(-hd, hd))
+				_spawn_infected_at(p, &"run" if _rng.randf() < 0.3 else &"zed")
+				total += 1
+	# closing on a bridge? make sure its deck is manned (the crossing should be a fight, not a stroll).
+	for deck in city.bridges:
+		if here.distance_to((deck as Rect2).get_center()) > SWARM_BRIDGE_R:
+			continue
+		var on_deck: int = 0
+		for i in sim.count():
+			if sim.alive[i] and not sim.extracted[i] and sim.team[i] == WorldSim.INFECTED and (deck as Rect2).has_point(sim.pos[i]):
+				on_deck += 1
+		if on_deck < SWARM_BRIDGE_MIN:
+			for _z in 5:
+				if total >= SWARM_TOTAL_CAP:
+					break
+				var r: Rect2 = deck
+				var p: Vector2 = Vector2(_rng.randf_range(r.position.x, r.end.x), _rng.randf_range(r.position.y, r.end.y))
+				_spawn_infected_at(p, &"zed")
+				total += 1
+
+
+## Spawn one infected with a matching thermal view, index-aligned with `views`/`_anim`. Prefers to
+## RECYCLE a dead infected slot (keeps the arrays bounded under continuous respawning); only appends a
+## fresh slot when no corpse is free.
+func _spawn_infected_at(p: Vector2, kind: StringName) -> void:
+	var i: int = sim.recycle_infected(p, kind)
+	if i >= 0:
+		if i < views.size() and views[i] != null:
+			views[i].queue_free()               # retire the old (hidden) shape at this slot
+		var rv: Node3D = _make_unit_view(WorldSim.INFECTED, kind, _rng)
+		if rv != null:
+			rv.position = Vector3(p.x, 0.0, p.y)
+			vp.add_child(rv)
+		if i < views.size():
+			views[i] = rv
+			_anim[i] = Animator.new(rv, _rng) if rv != null else null
+		return
+	sim.spawn(p, kind, WorldSim.INFECTED)
+	var v: Node3D = _make_unit_view(WorldSim.INFECTED, kind, _rng)
+	if v != null:
+		v.position = Vector3(p.x, 0.0, p.y)
+		vp.add_child(v)
+	views.append(v)
+	_anim.append(Animator.new(v, _rng) if v != null else null)
+
+
+## A random building whose centre is between rmin and rmax of `here` -- the mid-distance a knot of
+## infected can believably "emerge" from (not on top of the squad, not off-screen).
+func _building_near_ring(here: Vector2, rmin: float, rmax: float) -> int:
+	var pick: int = -1
+	var seen: int = 0
+	for bi in city.buildings.size():
+		var bd: Dictionary = city.buildings[bi]
+		var c: Vector2 = Vector2(bd["x"] + bd["w"] * 0.5, bd["z"] + bd["d"] * 0.5)
+		var d: float = here.distance_to(c)
+		if d >= rmin and d <= rmax:
+			seen += 1
+			if _rng.randi() % seen == 0:       # reservoir pick -> uniform without building a list
+				pick = bi
+	return pick
+
+
 func _loot_ambush(c: Vector2, unit: int) -> void:
 	var n: int = 1 + (_loot_rng.randi() % 2)
 	for _z in n:

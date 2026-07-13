@@ -183,6 +183,23 @@ func spawn(p: Vector2, t: StringName, tm: int = 0, elem: int = -1) -> int:
 	return pos.size() - 1
 
 
+## Reuse a DEAD infected slot in place, returning its index (or -1 if none free). The spawn arrays
+## are append-only, so a CONTINUOUS respawner (the swarm upkeep) would grow them every mission -- this
+## keeps the unit count bounded by resurrecting a corpse's slot instead of appending a fresh one.
+func recycle_infected(p: Vector2, t: StringName) -> int:
+	for i in alive.size():
+		if alive[i] or extracted[i] or team[i] != INFECTED:
+			continue
+		pos[i] = p; vel[i] = Vector2.ZERO; heading[i] = 0.0; target[i] = p
+		has_order[i] = false; path[i] = PackedVector2Array(); path_i[i] = 0
+		kind[i] = t; hp[i] = STATS[t][1]; alive[i] = true; selected[i] = false
+		foe[i] = -1; cd[i] = 0.0; hurt[i] = 0.0; flash_cd[i] = 0.0
+		evade[i] = 0.0; evade_to[i] = p; armor[i] = 0.0
+		buff_t[i] = 0.0; buff_dmg[i] = 1.0; buff_res[i] = 0.0
+		return i
+	return -1
+
+
 func speed_of(i: int) -> float:
 	if team[i] == SANITATION and san_speed > 0.0:
 		return san_speed          # gameplay overrides the pack speed (menu keeps the fast STATS roam)
