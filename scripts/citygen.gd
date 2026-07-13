@@ -165,17 +165,21 @@ func _lay_city(rng: RandomNumberGenerator) -> void:
 				continue
 			var dc: float = c.distance_to(downtown)
 			var fl: int = 1 + rng.randi() % 2
-			if dc < 175.0:
-				fl = 5 + rng.randi() % 6              # downtown highrise
-			elif dc < 330.0:
-				fl = 3 + rng.randi() % 4
-			elif dc < 520.0:
+			var tall: bool = false
+			if dc < 210.0:
+				fl = 9 + rng.randi() % 12             # DOWNTOWN SKYSCRAPERS -- 9-20 storeys
+				tall = true
+			elif dc < 360.0:
+				fl = 4 + rng.randi() % 4              # inner-city mid-rise
+			elif dc < 540.0:
 				fl = 2 + rng.randi() % 3
 			# footprints kept well inside the cell -- WIDE gaps (~12-20 m) between buildings so
-			# units have real room to move + fight in the streets, not a solid wall of blocks.
-			var bw: float = CELL * rng.randf_range(0.54, 0.72)
-			var bd: float = CELL * rng.randf_range(0.54, 0.72)
-			_building(rng, c.x - bw * 0.5 + rng.randf_range(-3.0, 3.0), c.y - bd * 0.5 + rng.randf_range(-3.0, 3.0), bw, bd, fl)
+			# units have real room to move + fight in the streets. Downtown towers sit on a bigger base.
+			var lo: float = 0.64 if tall else 0.54
+			var hi: float = 0.82 if tall else 0.72
+			var bw: float = CELL * rng.randf_range(lo, hi)
+			var bd: float = CELL * rng.randf_range(lo, hi)
+			_building(rng, c.x - bw * 0.5 + rng.randf_range(-3.0, 3.0), c.y - bd * 0.5 + rng.randf_range(-3.0, 3.0), bw, bd, fl, tall)
 
 
 ## Is c within `half` metres of any arterial segment?
@@ -269,7 +273,7 @@ func _lay_beach() -> void:
 		var p1: Vector3 = Vector3(bo.x, -0.04, bo.y)
 		var p2: Vector3 = Vector3(bi.x, -0.04, bi.y)
 		var p3: Vector3 = Vector3(ai.x, -0.04, ai.y)
-		for v in [p0, p2, p1, p0, p3, p2]:
+		for v in [p0, p2, p1, p0, p3, p2, p0, p1, p2, p0, p2, p3]:   # both windings (cull_back -- see _emit_surfaces)
 			st.set_normal(Vector3.UP)
 			st.set_uv(Vector2(v.x, v.z) * 0.02)
 			st.add_vertex(v)
@@ -398,14 +402,27 @@ const LIGHT_BUILDINGS: Array = [
 ]
 
 
-func _building(rng: RandomNumberGenerator, x: float, z: float, w: float, d: float, fl: int) -> void:
+## Single-mesh shells that stretch cleanly into a TALL tower -- the downtown high-rises. Kept
+## separate from LIGHT_BUILDINGS so only the right models get pulled up into skyscrapers.
+const SKYSCRAPERS: Array = [
+	"res://models/buildings and scenery/psx_apartment.glb",
+	"res://models/buildings and scenery/psx_building.glb",
+	"res://models/buildings and scenery/building_-_stretched_octagonal_-_tier.glb",
+	"res://models/buildings and scenery/building_-_square_-_illuminated.glb",
+]
+
+
+## `tall` = a downtown skyscraper: pulled from the SKYSCRAPERS set and flagged NOT lootable
+## (you don't clear a 15-storey tower like a corner shop). Everything else is a lootable shell.
+func _building(rng: RandomNumberGenerator, x: float, z: float, w: float, d: float, fl: int, tall: bool = false) -> void:
 	var h: float = float(fl) * FLOOR_H
 	# 35% brick structure map vs cast concrete — same temperature class.
 	var wall_mat: String = "brick" if rng.randf() < 0.35 else "wall"
-	buildings.append({"x": x, "z": z, "w": w, "d": d, "fl": fl})
+	buildings.append({"x": x, "z": z, "w": w, "d": d, "fl": fl, "loot": not tall})
 
 	# Prefer one stretched PSX shell (1–2 meshes) over 5+ greybox draw calls.
-	var path: String = LIGHT_BUILDINGS[rng.randi() % LIGHT_BUILDINGS.size()]
+	var pool: Array = SKYSCRAPERS if tall else LIGHT_BUILDINGS
+	var path: String = pool[rng.randi() % pool.size()]
 	# 0° / 90° only — keeps stretched footprints aligned to the parcel axes (and off the
 	# rotated-mesh bright-quad bug).
 	var yaw: float = PI * 0.5 if rng.randf() < 0.5 else 0.0

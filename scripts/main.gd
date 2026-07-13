@@ -164,7 +164,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] passive stance   [V] ar
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 98
+const BUILD_PUSHES: int = 99
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -1127,8 +1127,8 @@ func _pick_landmark_building(rng: RandomNumberGenerator, used: Dictionary) -> in
 	var best: int = -1
 	for _try in 40:
 		var bi: int = rng.randi() % city.buildings.size()
-		if used.has(bi):
-			continue
+		if used.has(bi) or not city.buildings[bi].get("loot", true):
+			continue                     # landmarks are lootable civic buildings, never a tower
 		if int(city.buildings[bi].get("fl", 1)) >= 3:
 			return bi                    # a good tall pick -- take it
 		if best < 0:
@@ -3162,7 +3162,7 @@ func _begin_loot(pos: Vector2) -> void:
 	if _strike_arming:
 		return
 	var b: int = _building_at(_ground_pick(pos))
-	if b >= 0 and not _looted.has(b):
+	if b >= 0 and not _looted.has(b) and city.buildings[b].get("loot", true):   # skyscrapers aren't lootable
 		var bd: Dictionary = city.buildings[b]
 		var c: Vector2 = Vector2(bd["x"] + bd["w"] * 0.5, bd["z"] + bd["d"] * 0.5)
 		var near: float = maxf(bd["w"], bd["d"]) * 0.5 + LOOT_NEAR_M     # edge of the building + a margin
