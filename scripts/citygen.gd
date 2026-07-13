@@ -38,7 +38,6 @@ var water: Array[Rect2] = []     # (unused with a polygon; the ocean plane is th
 var bridges: Array[Rect2] = []   # walkable decks, movement-slowed -- the only ways off the peninsula
 var escapes: Array[Rect2] = []   # bridge far ends: step inside to get off the map
 var far_lands: Array = []        # large model-free landmasses the bridges run to (illusion of a wider world)
-var dogleg: PackedVector2Array = PackedVector2Array()   # Bay Bridge's 45deg span past Treasure Island (visual deck)
 var parks: Array[Rect2] = []     # Golden Gate Park, the Presidio, the Panhandle, Twin Peaks, ...
 var arterials: Array = []        # the major roads, each a PackedVector2Array polyline -- cars ride these
 var road_lines: Array = []       # arterial centrelines [a, b] for the map overlay (main draws them)
@@ -146,10 +145,8 @@ func generate(snap_res: Vector2i) -> void:
 	# bridge decks over the water (a mid-tone between water and land, so they read)
 	for b in bridges:
 		_tile(b, "bridge")
-	if not dogleg.is_empty():
-		_fill_polygon(dogleg, "bridge", 0.0)   # the Bay Bridge's off-screen dogleg past Treasure Island
 	_lay_gg_bridge()                     # the iconic Golden Gate (low-poly GLB), reskinned cold steel
-	_lay_bay_bridge()                    # the Bay Bridge (McClintic-Marshall GLB), reskinned cold steel
+	_lay_bay_bridge()                    # the Bay Bridge (McClintic-Marshall GLB): SF->TI span + the dogleg span
 
 	# the arterials, as overlay centrelines (main draws these as the "black line" roads)
 	for art in arterials:
@@ -530,17 +527,13 @@ func _lay_geography() -> void:
 			Vector2(680, -1330), Vector2(970, -1000), Vector2(1010, -640), Vector2(840, -420),
 			Vector2(520, -395), Vector2(120, -405),
 		]),
-		PackedVector2Array([   # TREASURE ISLAND -- a modest island midway on the Bay Bridge
-			Vector2(1090, 360), Vector2(1150, 340), Vector2(1290, 350), Vector2(1330, 440),
-			Vector2(1310, 520), Vector2(1210, 545), Vector2(1100, 520), Vector2(1075, 440),
+		PackedVector2Array([   # TREASURE ISLAND -- a SMALL island right where the Bay Bridge terminates
+			Vector2(1255, 425), Vector2(1305, 415), Vector2(1360, 440),
+			Vector2(1365, 495), Vector2(1330, 530), Vector2(1270, 528), Vector2(1245, 480),
 		]),
 	]
-	# Past Treasure Island the Bay Bridge turns ~45deg and runs off the map SE (Oakland, never reached).
-	# A VISUAL deck only -- a diagonal quad over the water, trailing beyond the map bounds "into nothing".
-	var dl_a: Vector2 = Vector2(1305, 500)          # off Treasure Island's SE shoulder
-	var dl_b: Vector2 = Vector2(1820, 1015)         # off-screen SE, past the map edge
-	var dl_n: Vector2 = (dl_b - dl_a).normalized().orthogonal() * 36.0    # half the deck width
-	dogleg = PackedVector2Array([dl_a - dl_n, dl_b - dl_n, dl_b + dl_n, dl_a + dl_n])
+	# Past Treasure Island the Bay Bridge continues -- a SECOND copy of the bridge model runs off its
+	# SE shoulder at ~45deg and trails off the map to Oakland (never reached). See _lay_bay_bridge.
 
 	map_lo = poly_lo
 	map_hi = poly_hi
@@ -607,18 +600,30 @@ func _lay_gg_bridge() -> void:
 
 
 ## The Bay Bridge as a hero prop: the McClintic-Marshall model (the firm that built the real one),
-## reskinned cold steel and YAWED 90deg so its length runs east-west along the deck, uniform-fit and
-## grounded. Procedural Bay towers are dropped in its favour.
+## reskinned cold steel. TWO spans, like the real bridge: the MAIN span SF -> Treasure Island (E-W),
+## and a SECOND copy running off Treasure Island's SE shoulder at ~45deg, trailing off the map to
+## Oakland (never reached). Procedural Bay towers are dropped in its favour.
+const BAY_MODEL: Vector3 = Vector3(28.2, 49.8, 387.8)   # measured GLB bounds (metres)
+
 func _lay_bay_bridge() -> void:
 	var deck: Rect2 = bridges[1]
-	var model: Vector3 = Vector3(28.2, 49.8, 387.8)     # measured GLB bounds (metres)
-	var s: float = deck.size.x / model.z                # deck runs E-W (x); model length is z -> uniform fit
+	var s: float = deck.size.x / BAY_MODEL.z            # uniform-fit the span to the deck length
+	# main span, SF -> Treasure Island (yaw 90deg -> the model's length runs east-west)
+	_bay_span(Vector2(deck.position.x + deck.size.x * 0.5, deck.position.y + deck.size.y * 0.5), PI * 0.5, s)
+	# second span, off Treasure Island's SE shoulder at 45deg, trailing off-screen SE
+	var start: Vector2 = Vector2(1350.0, 500.0)
+	var dir: Vector2 = Vector2(0.7071, 0.7071)          # SE
+	_bay_span(start + dir * (BAY_MODEL.z * s * 0.5), PI * 0.25, s)
+
+
+## One Bay Bridge span: the model at world-XZ centre `ctr`, yawed, uniform-scaled by `s`, grounded.
+func _bay_span(ctr: Vector2, yaw: float, s: float) -> void:
 	var node: Node3D = ThermalModel.spawn_fit(
-		"res://models/buildings and scenery/bay_bridge.glb", "parapet", _snap_res, model * s, PI * 0.5)
+		"res://models/buildings and scenery/bay_bridge.glb", "parapet", _snap_res, BAY_MODEL * s, yaw)
 	if node == null:
 		return
-	node.position.x = deck.position.x + deck.size.x * 0.5
-	node.position.z = deck.position.y + deck.size.y * 0.5
+	node.position.x = ctr.x
+	node.position.z = ctr.y
 	add_child(node)
 
 
