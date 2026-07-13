@@ -11,6 +11,7 @@ extends RefCounted
 
 const RADIUS: float = 0.35            # operator footprint
 const SEPARATION: float = 0.90        # start pushing apart at this range
+const SEP_CAP: int = 10               # max neighbours summed for the push (dense-pile guard)
 const ARRIVE: float = 0.6             # slow down inside this, stop inside RADIUS
 const WAYPOINT: float = 1.1           # corner-cutting tolerance on intermediate nodes
 const MAX_PUSH: float = 2.4           # m/s of separation velocity, capped
@@ -389,8 +390,11 @@ func step(dt: float) -> void:
 				var scale: float = 1.0 if (d > ARRIVE or not last) else (d / ARRIVE)
 				desired = to / d * sp * scale
 
-		# separation. Query the grid, not the whole array.
+		# separation. Query the grid, not the whole array, and CAP the neighbours summed: in a
+		# teeming pile the nearest dozen give the push -- iterating all 40+ just costs, so cap it
+		# and a city of hundreds stays affordable.
 		var push: Vector2 = Vector2.ZERO
+		var seen: int = 0
 		grid.query_into(pos[i], SEPARATION, _near)
 		for j in _near:
 			if j == i or not alive[j]:
@@ -400,6 +404,9 @@ func step(dt: float) -> void:
 			if dist > SEPARATION or dist < 1e-5:
 				continue
 			push += off / dist * (1.0 - dist / SEPARATION)
+			seen += 1
+			if seen >= SEP_CAP:
+				break
 		if push.length() > 0.0:
 			desired += push.normalized() * minf(push.length() * sp, MAX_PUSH)
 
@@ -529,9 +536,12 @@ func _acquire(i: int) -> void:
 	# otherwise. Same O(n) staggered scan as the other hunters, just with a distance cutoff
 	# (a grid query over a 120 m radius scans more empty cells than the map has units).
 	if t == INFECTED:
+		# Grid query over the SENSE radius (not an O(n) whole-map scan) -- so a teeming city of
+		# hundreds of zombies stays cheap: each only looks at the handful of bodies actually near it.
+		grid.query_into(pos[i], INFECTED_SENSE, _near)
 		var bi: int = -1
 		var bid: float = INFECTED_SENSE * INFECTED_SENSE
-		for j in count():
+		for j in _near:
 			if j == i or not alive[j] or not _hostile_units(i, j):
 				continue
 			var dz: float = pos[i].distance_squared_to(pos[j])

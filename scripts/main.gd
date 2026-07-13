@@ -43,17 +43,18 @@ const ZOMBIES: Array = [
 	"res://models/characters/zombie_3.glb",
 ]
 const ZOMBIE_SCALE: float = 0.32
-const POP_INFECTED: int = 99    # ambient horde, spread over the ~806 m city (+10%)
-const POP_CIV: int = 61         # the crowd -- warm panicked bodies to read among (+10%)
+# A CHAOTIC, teeming city coming apart -- the streets are thick with the infected + the crowd.
+const POP_INFECTED: int = 120   # ambient horde, roaming the whole city
+const POP_CIV: int = 125        # the crowd -- warm panicked bodies fleeing everywhere (nearly 2x)
 const POP_SAN: int = 6          # the wipe force: rare, deadly, cool signatures (v0.19 elite = 6)
 # The wider ecology -- cheap now that units are shapes. Counts span the whole city.
-const POP_RUNNERS: int = 33     # fast, fragile infected mixed through the horde
-const POP_BRUTES: int = 14      # slow, tanky infected
+const POP_RUNNERS: int = 38     # fast, fragile infected mixed through the horde
+const POP_BRUTES: int = 16      # slow, tanky infected
 const ZED_HORDES: int = 3       # dense zombie clusters -- overwhelming if you wander in
 const ZED_PER_HORDE: int = 35   # a wall of bodies packed into a tight radius
-const BANDIT_CREWS: int = 6     # roaming armed crews... (+10%)
+const BANDIT_CREWS: int = 7     # roaming armed crews
 const BANDIT_PER_CREW: int = 5
-const SURVIVOR_HOLDOUTS: int = 7   # dug-in armed holdouts... (+10%)
+const SURVIVOR_HOLDOUTS: int = 8   # dug-in armed holdouts
 const SURVIVOR_PER_HOLDOUT: int = 3
 const GAUNTLET_PER_BRIDGE: int = 44   # infected choking each bridge deck
 const ELEMENTS: int = 4                 # max player teams (touch bar 1-4)
@@ -99,6 +100,7 @@ const SCAN_PULSE: float = 1.3            # seconds the green sweep ring takes to
 const FOG_SIGHT: float = 100.0           # a unit passively sees enemies this close (fog of war)
 const FOG_SIGHT_SNP: float = 150.0       # the sniper's optic reaches further -- a scout's eyes
 const SCAN_RANGE: float = 175.0          # a commander scan IDs enemies out to here for SCAN_REVEAL s
+const SANI_BRACKET_RANGE: float = 250.0  # the Sanitation force auto-brackets (red) within this of your squad
 
 
 ## The player's commander (element 0's cdr), or any element-0 unit if the cdr is down; -1
@@ -162,7 +164,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] passive stance   [V] ar
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 97
+const BUILD_PUSHES: int = 98
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -1003,8 +1005,9 @@ func _setup_deploy_stagger(base: Vector2) -> void:
 	for i in sim.count():
 		if sim.team[i] == WorldSim.SQUAD and sim.element[i] == 0:
 			ids.append(i)
-	# disembark timing by mode: heli t0 2.0 (once it lands), truck/boat 2.6 (once they arrive).
-	var t0: float = 2.0 if _deploy_mode == DEPLOY_HELI else 2.6
+	# disembark ONLY after the vehicle has fully stopped: the heli lands at t=2.0, the truck/boat
+	# arrive at t=2.4 -- so start the troops a clear beat later (heli 2.8, truck/boat 3.3).
+	var t0: float = 2.8 if _deploy_mode == DEPLOY_HELI else 3.3
 	var step: float = 0.10
 	var emerge: Vector2 = _deploy_emerge if _deploy_emerge != Vector2.ZERO else base
 	# form up a little INLAND of the drop, so the troops climb out of the vehicle and MOVE OFF it
@@ -2296,30 +2299,44 @@ func _landmark_header(font: Font, p: Vector2, text: String, col: Color) -> void:
 	sel_layer.draw_string(font, Vector2(p.x - w * 0.5, p.y - 4.0), text, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, col)
 
 
-## A tiny allegiance pip over each contact you can SEE -- the v0.19 coloured-unit read, so
-## warm human shapes (squad / bandit / survivor) don't all look alike on FLIR. Fog of war:
-## a contact is pipped only within your units' line of sight or a live commander scan;
-## purple horde, red loose combatants, white civilians. Sanitation shows a black signature
-## with red brackets + the radiation trefoil once identified.
+## A tiny allegiance pip over each contact you can SEE -- the v0.19 coloured-unit read. Fog of
+## war: pipped within your units' sight or a live scan. A SCAN paints RED targeting brackets on
+## every detected zombie/combatant for its reveal window; the Sanitation force wears the red
+## brackets + trefoil AUTOMATICALLY whenever it's within SANI_BRACKET_RANGE of your squad.
 func _draw_allegiance() -> void:
+	var scanning: bool = _scan_t < SCAN_REVEAL
 	for i in sim.count():
 		if not sim.alive[i] or sim.team[i] == WorldSim.SQUAD:
 			continue
-		if not _identified(i):
+		var t: int = sim.team[i]
+		var san: bool = t == WorldSim.SANITATION
+		var sani_close: bool = san and _squad_near(sim.pos[i], SANI_BRACKET_RANGE)
+		if not _identified(i) and not sani_close:
 			continue                                                        # fog of war: only what you can see
 		var w: Vector3 = Vector3(sim.pos[i].x, 0.9, sim.pos[i].y)
 		if cam.is_position_behind(w):
 			continue
 		var p: Vector2 = _screen_point(w)
-		var t: int = sim.team[i]
-		if t == WorldSim.SANITATION:
+		if san:
 			sel_layer.draw_circle(p, 2.7, Color(0.05, 0.05, 0.06, 0.95))   # black hull
-			_corner_box(p, 5.5, TAG_ENEMY)                                 # red brackets
+			_corner_box(p, 5.5, TAG_ENEMY)                                 # red brackets (always, within 250 m)
 			_unit_glyph(&"san", p - Vector2(0.0, 13.0), 5.0, TAG_ENEMY)    # radiation trefoil
 		else:
 			var col: Color = _alleg_color(t)
 			if col.a > 0.0:
 				sel_layer.draw_circle(p, 2.5, col)
+			if scanning:                                                    # a live scan targets what it detects
+				_corner_box(p, 4.5, TAG_ENEMY, 1.0)                        # red targeting bracket
+
+
+## Is any of YOUR squad (element 0) within `r` metres of a point?
+func _squad_near(p: Vector2, r: float) -> bool:
+	var r2: float = r * r
+	for j in sim.count():
+		if sim.alive[j] and sim.team[j] == WorldSim.SQUAD and sim.element[j] == 0:
+			if p.distance_squared_to(sim.pos[j]) <= r2:
+				return true
+	return false
 
 
 func _alleg_color(t: int) -> Color:

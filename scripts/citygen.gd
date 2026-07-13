@@ -68,7 +68,10 @@ func _emit_surfaces() -> void:
 			var b: Vector3 = Vector3(r.end.x, 0.0, r.position.y)
 			var c: Vector3 = Vector3(r.end.x, 0.0, r.end.y)
 			var d: Vector3 = Vector3(r.position.x, 0.0, r.end.y)
-			for v in [a, c, b, a, d, c]:      # CCW seen from above
+			# Emit BOTH windings: the thermal shader is cull_back, and these ground quads were wound
+			# the wrong way (facing down) so they were culled -> invisible. One set now always faces
+			# up and renders; the other is the harmless back side.
+			for v in [a, c, b, a, d, c, a, b, c, a, c, d]:
 				st.set_normal(Vector3.UP)
 				st.set_uv(Vector2(v.x, v.z) * 0.02)   # any UV -- the shader is triplanar, but the
 				st.add_vertex(v)                      # vertex FORMAT needs UVs for tangents below
