@@ -158,7 +158,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] passive stance   [V] ar
 const HUD_COL: Color = Color(0.59, 0.78, 0.65, 0.90)   # ISR green-white (darkened)
 const HUD_DIM: Color = Color(0.59, 0.78, 0.65, 0.42)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 88
+const BUILD_PUSHES: int = 89
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -212,16 +212,12 @@ var _sanvox_next: float = 6.0
 var _ambient_t: float = 0.0            # ambient-combat timer: war rumbling around the map
 var _ambient_next: float = 3.0
 # panic driver: a warm car bolts down a street, crashes, and burns -- environmental
-var _panic: MeshInstance3D = null
-var _panic_fire: MeshInstance3D = null
-var _panic_pos: Vector2 = Vector2.ZERO
-var _panic_dir: Vector2 = Vector2.ZERO
-var _panic_t: float = 0.0
-var _panic_phase: int = 0              # 0 = fleeing, 1 = wreck ablaze
-var _panic_next: float = 14.0
+var _panics: Array = []                # active panic-driven cars: [{body, fire, pos, dir, phase, t}]
+var _panic_next: float = 6.0           # seconds to the next civilian bolting in a car
 const PANIC_SPEED: float = 15.0
 const PANIC_DRIVE: float = 5.0         # seconds it careens before the crash
-const PANIC_BURN: float = 7.0          # seconds the wreck burns before it's cleared
+const PANIC_BURN: float = 45.0         # a crashed wreck burns ~45 s
+const PANIC_MAX: int = 4               # up to this many careening / burning at once
 var sel_layer: Control
 var drag_start: Vector2 = Vector2.ZERO
 var dragging: bool = false
@@ -422,6 +418,10 @@ func _build_tree() -> void:
 	# RGBA16F. An 8-bit target puts the entire roof-to-skin range inside five
 	# code values, because radiance is a fourth power and fire is 17x a wall.
 	vp.use_hdr_2d = true
+	# CRITICAL: a SubViewport does NOT process 3D audio unless this is on. Every combat SFX
+	# plays from an AudioStreamPlayer3D pool that lives in here -- without this the listener
+	# is dead and ALL gunfire/explosions/claws are silent (music/ambience are 2D, so they play).
+	vp.audio_listener_enable_3d = true
 	add_child(vp)
 
 	sensor_mat = ShaderMaterial.new()
@@ -975,7 +975,7 @@ func _deploy_sanitation() -> void:
 	sim.san_speed = WorldSim.STATS[&"cbt"][0] * 1.05   # in-game: only 5% faster than your troopers
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 	rng.randomize()
-	var pack: Vector2 = _random_land_point(rng)     # one drop point -- they arrive as a tight pack
+	var pack: Vector2 = _random_edge_point(rng)     # they land at the MAP EDGE and push in, as a tight pack
 	for _s in POP_SAN:
 		var p: Vector2 = pack + Vector2(rng.randf_range(-6.0, 6.0), rng.randf_range(-6.0, 6.0))
 		sim.spawn(p, &"san", WorldSim.SANITATION)
@@ -1040,6 +1040,21 @@ func _random_land_point(rng: RandomNumberGenerator) -> Vector2:
 		if Geometry2D.is_point_in_polygon(p, city.land_poly):
 			return p
 	return Vector2(400.0, 500.0)   # central-land fallback
+
+
+## A random land point biased toward the map PERIMETER -- an external force (the Sanitation
+## wipe team) lands at the edge and pushes IN, never in the middle of the city.
+func _random_edge_point(rng: RandomNumberGenerator) -> Vector2:
+	var c: Vector2 = city.land.get_center()
+	var best: Vector2 = _random_land_point(rng)
+	var bd: float = best.distance_squared_to(c)
+	for _t in 10:
+		var p: Vector2 = _random_land_point(rng)
+		var d: float = p.distance_squared_to(c)
+		if d > bd:
+			bd = d
+			best = p
+	return best
 
 
 ## Seed the dedicated HDD drives across the city -- intel to scoop by walking a unit
@@ -1268,8 +1283,26 @@ func _drain_audio() -> void:
 			"flash":
 				_sfx_at(at, _sfx_flash)            # sanitation flash-bang: bright bloom + ring-out
 				_spawn_flash3d(e["pos"], 6.0, 0.40, 2.0)
+			"turn":
+				_turn_view(int(e.get("idx", -1)), at)   # a civilian just rose as a zombie -- swap its shape
 			"man_down":
 				pass   # (no callout -- the squad's together, no backup to call)
+
+
+## A civilian just TURNED (the sim converted it to an infected in place). Swap its warm
+## civilian shape for a cool zombie one and reset its animator.
+func _turn_view(i: int, at: Vector3) -> void:
+	if i < 0 or i >= views.size():
+		return
+	if views[i] != null:
+		views[i].queue_free()
+	var v: Node3D = _make_unit_view(WorldSim.INFECTED, &"zed", _rng)
+	if v != null:
+		v.position = Vector3(sim.pos[i].x, 0.0, sim.pos[i].y)
+		vp.add_child(v)
+	views[i] = v
+	_anim[i] = Animator.new(v, _rng) if v != null else null
+	_sfx_at(at, _sfx_claw, -1.0)   # a wet, close turn
 
 
 ## Ambient war: every few seconds, a distant blast or a burst of gunfire somewhere on
@@ -1291,64 +1324,73 @@ func _ambient_combat(delta: float) -> void:
 		_sfx_at(at, _sfx_gun, -3.5)      # a distant burst of fire
 
 
-## A panic driver: a warm car careens down a street, then crashes into a building/edge
-## and bursts into flame -- an occasional environmental beat. Axis-aligned travel so the
-## thermal shader doesn't over-draw it (the rotated-mesh bright bug).
+## Panic drivers: civilians bolting in cars. Each careens down a street, crashes into a
+## building/edge, and burns for ~45 s -- several going at once, so there's always chaos on
+## the streets. Axis-aligned travel so the thermal shader doesn't over-draw it (rotated-mesh
+## bright bug).
 func _advance_panic(delta: float) -> void:
 	if city == null or (mission != null and mission.result != Mission.ONGOING):
 		return
-	if _panic == null:
-		_panic_next -= delta
-		if _panic_next > 0.0:
-			return
+	_panic_next -= delta
+	if _panic_next <= 0.0 and _panics.size() < PANIC_MAX:
 		_spawn_panic()
-		return
-	_panic_t += delta
-	if _panic_phase == 0:
-		_panic_pos += _panic_dir * PANIC_SPEED * delta
-		_panic.position = Vector3(_panic_pos.x, 0.7, _panic_pos.y)
-		var crashed: bool = _panic_t > PANIC_DRIVE or _building_at(_panic_pos) >= 0 \
-			or not Geometry2D.is_point_in_polygon(_panic_pos, city.land_poly)
-		if crashed:
-			_panic_phase = 1
-			_panic_t = 0.0
-			_panic.material_override = ThermalLib.get_material("burning", snap_res)
-			var fm: BoxMesh = BoxMesh.new()
-			fm.size = Vector3(2.4, 3.2, 2.8)
-			_panic_fire = MeshInstance3D.new()
-			_panic_fire.mesh = fm
-			_panic_fire.position = Vector3(_panic_pos.x, 2.4, _panic_pos.y)
-			_panic_fire.material_override = ThermalLib.get_material("fire", snap_res)
-			vp.add_child(_panic_fire)
-			_sfx_at(Vector3(_panic_pos.x, 1.0, _panic_pos.y), _sfx_expl, -2.0)
-			_spawn_flash3d(_panic_pos, 3.0, 0.4, 1.6)
-	elif _panic_t > PANIC_BURN:
-		_clear_panic()
-		_panic_next = _rng.randf_range(16.0, 34.0)
+		_panic_next = _rng.randf_range(4.0, 11.0)
+	var done: Array = []
+	for pc in _panics:
+		pc["t"] += delta
+		if pc["phase"] == 0:
+			pc["pos"] += (pc["dir"] as Vector2) * PANIC_SPEED * delta
+			if is_instance_valid(pc["body"]):
+				pc["body"].position = Vector3(pc["pos"].x, 0.7, pc["pos"].y)
+			var crashed: bool = pc["t"] > PANIC_DRIVE or _building_at(pc["pos"]) >= 0 \
+				or not Geometry2D.is_point_in_polygon(pc["pos"], city.land_poly)
+			if crashed:
+				pc["phase"] = 1
+				pc["t"] = 0.0
+				if is_instance_valid(pc["body"]):
+					pc["body"].material_override = ThermalLib.get_material("burning", snap_res)
+				var fm: BoxMesh = BoxMesh.new()
+				fm.size = Vector3(2.4, 3.2, 2.8)
+				var fire: MeshInstance3D = MeshInstance3D.new()
+				fire.mesh = fm
+				fire.position = Vector3(pc["pos"].x, 2.4, pc["pos"].y)
+				fire.material_override = ThermalLib.get_material("fire", snap_res)
+				vp.add_child(fire)
+				pc["fire"] = fire
+				_sfx_at(Vector3(pc["pos"].x, 1.0, pc["pos"].y), _sfx_expl, -2.0)
+				_spawn_flash3d(pc["pos"], 3.0, 0.4, 1.6)
+		elif pc["t"] > PANIC_BURN:
+			done.append(pc)
+	for pc in done:
+		_free_panic(pc)
+		_panics.erase(pc)
 
 
 func _spawn_panic() -> void:
-	_panic_pos = _random_land_point(_rng)
-	_panic_dir = [Vector2(1, 0), Vector2(-1, 0), Vector2(0, 1), Vector2(0, -1)][_rng.randi() % 4]
-	_panic_t = 0.0
-	_panic_phase = 0
+	var pos: Vector2 = _random_land_point(_rng)
+	var dir: Vector2 = [Vector2(1, 0), Vector2(-1, 0), Vector2(0, 1), Vector2(0, -1)][_rng.randi() % 4]
 	var m: BoxMesh = BoxMesh.new()
 	m.size = Vector3(2.0, 1.4, 4.6)
-	_panic = MeshInstance3D.new()
-	_panic.mesh = m
-	_panic.position = Vector3(_panic_pos.x, 0.7, _panic_pos.y)
-	_panic.rotation.y = PI * 0.5 if _panic_dir.x != 0.0 else 0.0
-	_panic.material_override = ThermalLib.get_material("hood_warm", snap_res)
-	vp.add_child(_panic)
+	var body: MeshInstance3D = MeshInstance3D.new()
+	body.mesh = m
+	body.position = Vector3(pos.x, 0.7, pos.y)
+	body.rotation.y = PI * 0.5 if dir.x != 0.0 else 0.0
+	body.material_override = ThermalLib.get_material("hood_warm", snap_res)
+	vp.add_child(body)
+	_panics.append({"body": body, "fire": null, "pos": pos, "dir": dir, "phase": 0, "t": 0.0})
+
+
+func _free_panic(pc: Dictionary) -> void:
+	if is_instance_valid(pc["body"]):
+		pc["body"].queue_free()
+	if pc.get("fire") != null and is_instance_valid(pc["fire"]):
+		pc["fire"].queue_free()
 
 
 func _clear_panic() -> void:
-	if _panic != null:
-		_panic.queue_free()
-		_panic = null
-	if _panic_fire != null:
-		_panic_fire.queue_free()
-		_panic_fire = null
+	for pc in _panics:
+		_free_panic(pc)
+	_panics.clear()
 
 
 ## Sanitation vocals: every so often a living Sanitation unit mutters a reversed radio
@@ -1971,7 +2013,7 @@ func _draw_hdd_pickups() -> void:
 			continue
 		var p: Vector2 = _screen_point(w3)
 		var inside: bool = box.has_point(p)
-		var col: Color = Color(0.44, 0.80, 0.58, 0.9 if inside else 0.34)
+		var col: Color = Color(TAG_VEHICLE.r, TAG_VEHICLE.g, TAG_VEHICLE.b, 0.9 if inside else 0.34)   # HDDs are the only yellow now
 		var r: float = 5.0
 		var pts: PackedVector2Array = PackedVector2Array()
 		for a in 4:
@@ -2132,21 +2174,7 @@ func _draw_tags(font: Font) -> void:
 	var look: Vector2 = Vector2(cam_tx, cam_tz)
 	var r2: float = pow(cam_dist * 0.4, 2.0)   # skip anything too far from the reticle to be in the box
 	var drawn: int = 0
-	# vehicles first -- yellow, like the reference gunship footage
-	if cars != null:
-		for r in cars.rects:
-			if drawn > 40:
-				break
-			var cc: Vector2 = r.get_center()
-			if cc.distance_squared_to(look) > r2:
-				continue
-			var wv: Vector3 = Vector3(cc.x, 0.9, cc.y)
-			if cam.is_position_behind(wv):
-				continue
-			var pv: Vector2 = _screen_point(wv)
-			if box.has_point(pv) and _in_los(cc):     # yellow tag only within line of sight
-				_corner_box(pv, 8.0, TAG_VEHICLE)
-				drawn += 1
+	# (no vehicle tags -- yellow is reserved for the HDD pickups now)
 	for i in sim.count():
 		if drawn > 60:
 			break

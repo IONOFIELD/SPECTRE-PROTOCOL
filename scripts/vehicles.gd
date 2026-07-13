@@ -100,14 +100,14 @@ func _traffic_jam(city: CityGen, rng: RandomNumberGenerator) -> void:
 ## near-axis: the PSX vertex-snap shader over-draws rotated meshes into a bright mass.
 func _scatter_wrecks(city: CityGen, rng: RandomNumberGenerator) -> void:
 	var pitch: float = CityGen.BLOCK + CityGen.STREET
-	for _p in 16:
+	for _p in 26:                                    # more wrecks -- the city is in chaos
 		var vertical: bool = rng.randf() < 0.5
 		var lane: float = float(rng.randi() % (city.grid_n + 1)) * pitch + CityGen.HALF_ST
 		var along: float = rng.randf_range(6.0, float(city.grid_n) * pitch - 6.0)
 		var at: Vector2 = Vector2(lane, along) if vertical else Vector2(along, lane)
 		if not Geometry2D.is_point_in_polygon(at, city.land_poly):
 			continue
-		var burning: bool = rng.randf() < 0.35
+		var burning: bool = rng.randf() < 0.55         # over half ablaze -- fires all over the map
 		var count: int = 1 + rng.randi() % 3         # a pile of 1-3
 		for c in count:
 			var off: Vector2 = Vector2(rng.randf_range(-2.5, 2.5), rng.randf_range(-2.5, 2.5))

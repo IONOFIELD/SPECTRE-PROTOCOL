@@ -25,6 +25,8 @@ const EOD_BLAST_R: float = 4.5        # EOD grenade / RPG area radius
 const EOD_BLAST_DMG: float = 30.0     # damage per hostile in the ring
 const SAN_FLAME_CHANCE: float = 0.14  # a Sanitation attack projects fire this often; else a round
 const PANIC_CHANCE: float = 0.0015    # per-tick odds a fleeing civilian yells (audio hook)
+const INFECTED_SENSE: float = 120.0   # zombies smell warm bodies within this, wander otherwise (v0.19-natural, not a map-wide magnet)
+const WANDER_SPEED: float = 0.34      # idle amble as a fraction of full speed -- the crowd/horde drifts, never freezes
 
 # Sanitation flash-grenade evasion: when pinned (recently hit), a Sanitation elite
 # will RARELY pop a flash -- a bright thermal bloom -- break contact, and slide to a
@@ -115,6 +117,7 @@ var san_speed: float = 0.0            # >0 overrides the Sanitation pack's speed
 var allied: Dictionary = {}           # element -> true if that rival is allied (passive) with you
 var events: Array = []
 var _dmg: Dictionary = {}             # target index -> damage queued this tick
+var _dmg_src: Dictionary = {}         # target index -> attacker TEAM this tick (for civ->zombie infection)
 var _tick: int = 0
 var _san_c: Vector2 = Vector2.ZERO     # Sanitation pack centroid (cohesion anchor), per tick
 var _san_foe: int = -1                 # the pack's shared hunt target, -1 = none
@@ -345,6 +348,7 @@ func step(dt: float) -> void:
 	grid.rebuild(pos, alive)
 	events.clear()
 	_dmg.clear()
+	_dmg_src.clear()
 	_tick += 1
 	_update_san_pack()           # the Sanitation pack's shared centroid + hunt target
 
@@ -520,9 +524,24 @@ func _acquire(i: int) -> void:
 	if t == CIVILIAN:
 		foe[i] = -1
 		return
-	# HUNTERS (infected, sanitation, bandits) sense the nearest warm body anywhere
-	# on the map, no line of sight -- they close on you rather than standing idle.
-	# The scan is O(n) but staggered (see step), so it costs a fraction of a tick.
+	# The INFECTED smell warm bodies only within a SENSE radius (v0.19-natural) -- a zombie
+	# 600 m away doesn't beeline at you; it shambles after whatever's near and wanders
+	# otherwise. Same O(n) staggered scan as the other hunters, just with a distance cutoff
+	# (a grid query over a 120 m radius scans more empty cells than the map has units).
+	if t == INFECTED:
+		var bi: int = -1
+		var bid: float = INFECTED_SENSE * INFECTED_SENSE
+		for j in count():
+			if j == i or not alive[j] or not _hostile_units(i, j):
+				continue
+			var dz: float = pos[i].distance_squared_to(pos[j])
+			if dz < bid:
+				bid = dz
+				bi = j
+		foe[i] = bi
+		return
+	# The other HUNTERS (sanitation, bandits, rival squads) sense the nearest warm body
+	# anywhere on the map -- relentless. Staggered O(n), a fraction of a tick.
 	if _unit_hunts(i):
 		var best: int = -1
 		var bestd: float = INF
@@ -563,7 +582,7 @@ func _combat(i: int, sp: float) -> Vector2:
 		return _san_combat(i, sp)      # one tight, fast, roaming pack -- search & destroy
 	var f: int = foe[i]
 	if f == -1 or not alive[f]:
-		return Vector2.ZERO
+		return _wander(i, sp) if t == INFECTED else Vector2.ZERO   # idle zombies shamble, don't freeze
 	var d: float = pos[i].distance_to(pos[f])
 	var reach: float = STATS[kind[i]][3]
 	if t == INFECTED:
@@ -654,7 +673,16 @@ func _flee(i: int, sp: float) -> Vector2:
 		if _rng.randf() < PANIC_CHANCE:
 			events.append({"kind": "panic", "pos": pos[i], "to": pos[i], "team": CIVILIAN, "unit": kind[i]})
 		return away.normalized() * sp
-	return Vector2.ZERO
+	return _wander(i, sp)                        # nothing to flee: amble naturally, don't freeze
+
+
+## A slow, smoothly-curving idle drift, unique per unit and STATELESS (no RNG, no SoA
+## state, so sim_test stays deterministic). Gives the idle crowd + horde organic motion
+## instead of freezing in place -- the v0.19 living-world feel.
+func _wander(i: int, sp: float) -> Vector2:
+	var ph: float = float(i) * 1.7
+	var ang: float = ph + float(_tick) * 0.010 + sin(float(_tick) * 0.005 + ph) * 2.2
+	return Vector2(cos(ang), sin(ang)) * sp * WANDER_SPEED
 
 
 ## Sanitation pops a flash-bang: a bright thermal bloom (the 'flash' event), then
@@ -695,6 +723,7 @@ func _strike(i: int, f: int) -> void:
 		return
 	var out: float = STATS[kind[i]][4] * (buff_dmg[i] if buff_t[i] > 0.0 else 1.0)
 	_dmg[f] = float(_dmg.get(f, 0.0)) + out
+	_dmg_src[f] = team[i]                        # who dealt it -- an infected kill TURNS a civilian
 	# Sanitation projects fire -- a hot plume on thermal, no muzzle report. Everyone
 	# else claws (infected) or fires a round (armed teams).
 	var what: String = "gunfire"
@@ -765,6 +794,18 @@ func _reap() -> void:
 		hurt[k] = HURT_MEMORY          # took fire: pinned for a moment (drives the flash-evade)
 		hp[k] -= _incoming(k, _dmg[k])
 		if hp[k] <= 0.0:
+			# A civilian brought down by the INFECTED doesn't die -- it TURNS, rising as one of
+			# the horde IN PLACE (index kept, no array resize), so the crowd feeds the swarm (v0.19).
+			if team[k] == CIVILIAN and int(_dmg_src.get(k, -1)) == INFECTED:
+				team[k] = INFECTED
+				kind[k] = &"zed"
+				hp[k] = STATS[&"zed"][1]
+				foe[k] = -1
+				has_order[k] = false
+				selected[k] = false
+				vel[k] = Vector2.ZERO
+				events.append({"kind": "turn", "idx": k, "pos": pos[k], "team": INFECTED, "unit": &"zed"})
+				continue
 			alive[k] = false
 			vel[k] = Vector2.ZERO
 			has_order[k] = false

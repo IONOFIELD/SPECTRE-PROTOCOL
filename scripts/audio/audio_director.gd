@@ -36,7 +36,7 @@ const BUS_UI := "UI"
 ## The bed sits this far under unity. "A few dB" off a hot master; the sidechain
 ## below pulls it further only while SFX are actually playing. Tune here -- this
 ## is the only place a music level is hardcoded.
-const MUSIC_BED_DB := -6.0
+const MUSIC_BED_DB := -7.5   # ~10% quieter than -6.0 (user pass)
 
 ## Master brickwall. Assets are mastered hot and will stack (a gunshot over the
 ## bed over the channel-cut static). This keeps the sum off the rail without

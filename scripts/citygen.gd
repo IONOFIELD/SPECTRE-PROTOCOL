@@ -35,8 +35,8 @@ const LANE: float = 64.0       # bridge deck width
 const FAR: float = 40.0        # depth of a bridge's far-end escape zone
 const GG_X: float = 90.0       # Golden Gate lane, off the west of the north edge
 const BAY_Z: float = 360.0     # Bay Bridge lane, off the east edge
-const BEACH_W: float = 15.0    # how far the sand reaches inland from the coastline
-const BEACH_SEA: float = 7.0   # ...and how far it laps out over the water
+const BEACH_W: float = 24.0    # how far the sand reaches inland from the coastline (a broad beach all round)
+const BEACH_SEA: float = 10.0  # ...and how far it laps out over the water
 
 @export var grid_n: int = 13     # ~806 m across (13 x 62 m); ~120 s to cross at 6.6 m/s
 @export var seed_value: int = 11
@@ -140,7 +140,8 @@ func generate(snap_res: Vector2i) -> void:
 	add_child(smi)
 
 	_lay_beach()     # sand ring at the waterline, so the coast/edges read
-	_lay_ships()     # transport ships at a pier off the SE bay, below the Bay Bridge
+	# (ships/pier removed -- the big flat "road" pier deck + hulls blew out to a bright
+	#  rectangle on the feed, the same PSX vertex-snap artifact as the old Market quad.)
 
 	# --- bridge decks over the water (a mid-tone between water and land, so they read)
 	for b in bridges:
@@ -195,6 +196,7 @@ func generate(snap_res: Vector2i) -> void:
 			_block(rng, bx, bz, c.distance_to(downtown) / pitch)
 
 	_lay_soma(rng)                               # rotated Market grid in the SoMa hole
+	_scatter_trees(rng)                          # trees + shrubs -- a real, vegetated environment
 	_emit_surfaces()
 	# NO rotated avenue deck: a diagonal road QUAD gets blown out to a bright band by the
 	# PSX vertex-snap shader (same bug as the SoMa shells). Market reads from the 2D overlay
@@ -310,6 +312,37 @@ func _soma_building(rng: RandomNumberGenerator, c: Vector2, bw: float, bd: float
 	buildings.append({"x": c.x - core * 0.5, "z": c.y - core * 0.5, "w": core, "d": core, "fl": fl})
 
 
+## Trees + shrubs -- cool foliage that reads DARK on the feed (vegetation is evaporative).
+## Dense in the named parks, a line along the coastal fringe, and scattered street trees, so
+## the map reads as a real vegetated environment instead of bare blocks. Canopy-only spheres
+## (the trunk is invisible at FLIR range); trees are big cool blobs, shrubs small ground ones.
+func _scatter_trees(rng: RandomNumberGenerator) -> void:
+	var mat: ShaderMaterial = ThermalLib.get_material("foliage", _snap_res)
+	for pk in parks:                                     # parks: densely wooded
+		var n: int = clampi(int(pk.size.x * pk.size.y / 300.0), 4, 55)
+		for _t in n:
+			_foliage(Vector2(rng.randf_range(pk.position.x, pk.end.x), rng.randf_range(pk.position.y, pk.end.y)), rng, mat, rng.randf() < 0.75)
+	for _s in 130:                                       # coastal line + street trees + shrubs
+		var p: Vector2 = Vector2(rng.randf_range(poly_lo.x, poly_hi.x), rng.randf_range(poly_lo.y, poly_hi.y))
+		if not _in_land(p):
+			continue
+		_foliage(p, rng, mat, rng.randf() < 0.45)
+
+
+func _foliage(p: Vector2, rng: RandomNumberGenerator, mat: ShaderMaterial, tree: bool) -> void:
+	var r: float = rng.randf_range(2.1, 3.3) if tree else rng.randf_range(0.8, 1.5)
+	var s: SphereMesh = SphereMesh.new()
+	s.radius = r
+	s.height = r * (2.3 if tree else 1.4)
+	s.radial_segments = 6                                # PSX-cheap
+	s.rings = 3
+	var mi: MeshInstance3D = MeshInstance3D.new()
+	mi.mesh = s
+	mi.position = Vector3(p.x, r * (0.95 if tree else 0.5), p.y)
+	mi.material_override = mat
+	add_child(mi)
+
+
 ## A sand ring along the coastline: a beach band from BEACH_SEA out over the water to
 ## BEACH_W inland, laid just under the ground so the city blocks cover the inland side
 ## and the beach shows as a bright fringe at the waterline (per the reference FLIR).
@@ -345,19 +378,6 @@ func _lay_beach() -> void:
 	mi.mesh = st.commit()
 	mi.material_override = ThermalLib.get_material("beach", _snap_res)
 	add_child(mi)
-
-
-## Transport ships docked at a pier off the SE bay, below the Bay Bridge. Scenery on
-## the water (units can't reach it) -- big warm hulls + hot funnels on the cold bay.
-func _lay_ships() -> void:
-	var coast_x: float = 940.0
-	var pier_z: float = 600.0
-	_add_box(Vector3(coast_x + 45.0, -1.5, pier_z), Vector3(96.0, 0.5, 9.0), "road")   # the pier deck
-	for bz in [pier_z - 26.0, pier_z + 26.0, pier_z + 78.0]:
-		var sx: float = coast_x + 78.0
-		_add_box(Vector3(sx, -1.5, bz), Vector3(74.0, 5.0, 17.0), "ship")            # hull
-		_add_box(Vector3(sx - 22.0, -1.5, bz), Vector3(11.0, 11.0, 11.0), "parapet") # superstructure
-		_add_box(Vector3(sx + 12.0, -1.5, bz), Vector3(6.0, 9.0, 6.0), "hvac")       # warm funnel
 
 
 ## The San Francisco coastline, ~1,150 m across, clockwise from the Lands End tip.

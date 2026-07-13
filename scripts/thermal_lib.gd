@@ -35,6 +35,7 @@ const MAT: Dictionary = {
 	"road":      {"t": 18.0, "sky": 2.5, "e": 0.93, "solar": 2.8, "d": 3, "dt": 1.8, "de": 0.05, "ms": Vector2(4.0, 2.586)},
 	"sidewalk":  {"t": 13.5, "sky": 3.5, "e": 0.94, "solar": 2.2, "d": 6, "dt": 1.2, "de": 0.02, "ms": Vector2(1.8, 1.8)},
 	"grass":     {"t": 11.5, "sky": 4.5, "e": 0.97, "solar": 0.8, "d": 7, "dt": 2.2, "de": 0.02, "ms": Vector2(1.5, 1.5)},
+	"foliage":   {"t": 12.5, "sky": 5.0, "e": 0.98, "solar": 0.4, "d": 7, "dt": 2.6, "de": 0.02},   # tree/shrub canopy -- a distinct DARK-GREY rounded blob (reads, but cooler than pavement)
 	"lot":       {"t": 14.5, "sky": 2.8, "e": 0.93, "solar": 2.6, "d": 8, "dt": 1.6, "de": 0.04},
 	# Building shells (GLB) have unreliable roof normals, so the sky_loss cooling that
 	# darkens the flat ground barely touches them -- set the base temp low directly so
