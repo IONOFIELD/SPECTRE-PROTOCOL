@@ -51,6 +51,7 @@ func generate(snap_res: Vector2i, city: CityGen, count: int, seed_value: int = 3
 	for _j in 8:
 		_traffic_jam(city, rng)
 	_scatter_wrecks(city, rng)
+	_bridge_jams(city, rng)     # the evac that never made it off -- cars choking the bridge decks
 
 
 ## A random arterial segment [a, b] from the city's road network, or [] if none.
@@ -114,6 +115,27 @@ func _traffic_jam(city: CityGen, rng: RandomNumberGenerator) -> void:
 		if not Geometry2D.is_point_in_polygon(at, city.land_poly):
 			continue
 		_car(at, yaw, "hood_hot" if rng.randf() < 0.12 else "body_cold", rng)
+
+
+## Abandoned cars backed up down the BRIDGE decks -- the evacuation that froze on the only ways off
+## the peninsula. A few nose-to-tail clusters per deck in two lanes, mostly cold. Visual only (not
+## sim blockers), so the squad + horde thread through. Cars sit on the deck (y=0, handled by _car).
+func _bridge_jams(city: CityGen, rng: RandomNumberGenerator) -> void:
+	for b in city.bridges:
+		var ew: bool = b.size.x >= b.size.y                 # deck's long axis east-west?
+		var length: float = b.size.x if ew else b.size.y
+		var dir: Vector2 = Vector2(1.0, 0.0) if ew else Vector2(0.0, 1.0)
+		var perp: Vector2 = Vector2(-dir.y, dir.x)
+		var s0: Vector2 = b.get_center() - dir * (length * 0.5)   # centre of the near deck end
+		var yaw: float = _road_yaw(dir)
+		for _cluster in 5:                                  # backed-up clusters strung down the deck
+			var lane: Vector2 = perp * (LANE_OFF * (1.0 if rng.randf() < 0.5 else -1.0))
+			var cnt: int = 4 + rng.randi() % 5              # 4-8 cars nose-to-tail
+			var smax: float = length - float(cnt) * JAM_GAP - 8.0
+			var s: float = rng.randf_range(8.0, maxf(9.0, smax))
+			for k in cnt:
+				var at: Vector2 = s0 + dir * (s + float(k) * JAM_GAP) + lane
+				_car(at, yaw, "hood_hot" if rng.randf() < 0.1 else "body_cold", rng)
 
 
 ## Box-car wrecks piled up + some ablaze in the streets -- an environmental read and

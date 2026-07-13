@@ -57,7 +57,7 @@ const BANDIT_CREWS: int = 7     # roaming armed crews
 const BANDIT_PER_CREW: int = 5
 const SURVIVOR_HOLDOUTS: int = 8   # dug-in armed holdouts
 const SURVIVOR_PER_HOLDOUT: int = 3
-const GAUNTLET_PER_BRIDGE: int = 44   # infected choking each bridge deck
+const GAUNTLET_PER_BRIDGE: int = 56   # infected choking each bridge deck (decks now extend to the far lands)
 const ELEMENTS: int = 4                 # max player teams (touch bar 1-4)
 var _team_count: int = 4                 # chosen at the startup menu (solo / 2 / 3 / 4)
 var _team_colors: Array[Color] = []      # per-element unit-icon colour, randomized every game (distinct hues)
@@ -165,7 +165,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] passive stance   [V] ar
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 104
+const BUILD_PUSHES: int = 105
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)

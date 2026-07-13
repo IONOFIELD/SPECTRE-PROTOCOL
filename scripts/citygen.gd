@@ -37,6 +37,7 @@ var land_poly: PackedVector2Array = PackedVector2Array()   # the SF coastline (i
 var water: Array[Rect2] = []     # (unused with a polygon; the ocean plane is the sea now)
 var bridges: Array[Rect2] = []   # walkable decks, movement-slowed -- the only ways off the peninsula
 var escapes: Array[Rect2] = []   # bridge far ends: step inside to get off the map
+var far_lands: Array = []        # large model-free landmasses the bridges run to (illusion of a wider world)
 var parks: Array[Rect2] = []     # Golden Gate Park, the Presidio, the Panhandle, Twin Peaks, ...
 var arterials: Array = []        # the major roads, each a PackedVector2Array polyline -- cars ride these
 var road_lines: Array = []       # arterial centrelines [a, b] for the map overlay (main draws them)
@@ -139,6 +140,7 @@ func generate(snap_res: Vector2i) -> void:
 		add_child(smi)
 
 	_lay_beach()
+	_lay_islands()          # the far landmasses (bare ground) the bridges run out to
 
 	# bridge decks over the water (a mid-tone between water and land, so they read)
 	for b in bridges:
@@ -351,6 +353,43 @@ func _lay_beach() -> void:
 	add_child(mi)
 
 
+## The far landmasses the bridges run to -- large, MODEL-FREE ground (no city, no props) that sells
+## an interconnected world. Bare `ground`, laid a hair below y=0 so the bridge decks read cleanly
+## on top where they plug in. Not in land_poly, so nothing spawns/walks there -- pure backdrop.
+func _lay_islands() -> void:
+	for poly in far_lands:
+		_fill_polygon(poly, "ground", -0.05)
+
+
+## Fill a simple polygon with a flat mesh of `mat` at height y. Triangles are forced to the same
+## front-up winding as _emit_surfaces (+ tangents), so it renders under the thermal shader.
+func _fill_polygon(poly: PackedVector2Array, mat: String, y: float) -> void:
+	var idx: PackedInt32Array = Geometry2D.triangulate_polygon(poly)
+	if idx.is_empty():
+		return
+	var st: SurfaceTool = SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var i: int = 0
+	while i < idx.size():
+		var a: Vector2 = poly[idx[i]]
+		var b: Vector2 = poly[idx[i + 1]]
+		var c: Vector2 = poly[idx[i + 2]]
+		if (b - a).cross(c - a) < 0.0:          # flip to the up-facing winding (see _emit_surfaces)
+			var t: Vector2 = b
+			b = c
+			c = t
+		for p in [a, b, c]:
+			st.set_normal(Vector3.UP)
+			st.set_uv(p * 0.02)
+			st.add_vertex(Vector3(p.x, y, p.y))
+		i += 3
+	st.generate_tangents()
+	var mi: MeshInstance3D = MeshInstance3D.new()
+	mi.mesh = st.commit()
+	mi.material_override = ThermalLib.get_material(mat, _snap_res)
+	add_child(mi)
+
+
 ## The San Francisco coastline, clockwise from the Lands End / Presidio tip. Unmistakably
 ## the peninsula: straight Ocean Beach (W), the Marina waterfront (N), the Financial District
 ## jutting NE into the bay, Hunters Point pointing E (SE), and the Lake Merced notch (SW).
@@ -401,13 +440,28 @@ func _lay_geography() -> void:
 		Rect2(727, 892, 100, 100),   # McLaren Park -- SE
 		Rect2(435, 690, 110, 110),   # Twin Peaks / Mount Sutro -- the central hills
 	]
+	# The escape bridges, EXTENDED past their old ends to plug into the far landmasses below, so the
+	# world reads as connected instead of the decks stopping over open water. The WIN trigger is still
+	# `escapes` at the OLD deck ends -- everything past it (deck + landmass) is illusion you never reach.
 	bridges = [
-		Rect2(235, -120, 66, 300),   # Golden Gate, north (meets the N coast ~z 150)
-		Rect2(950, 435, 340, 72),    # Bay Bridge, east (meets the E coast ~x 940)
+		Rect2(235, -450, 66, 630),   # Golden Gate, north: coast (~z150) -> north-bay island (~z-440)
+		Rect2(950, 435, 560, 72),    # Bay Bridge, east: coast (~x940) -> east-bay mainland (~x1510)
 	]
 	escapes = [
-		Rect2(235, -120, 66, 46),    # Marin end (far north)
-		Rect2(1246, 435, 44, 72),    # Oakland end (far east)
+		Rect2(235, -120, 66, 46),    # Marin end -- UNCHANGED win zone (now mid-deck; the rest is illusion)
+		Rect2(1246, 435, 44, 72),    # Oakland end -- UNCHANGED win zone
+	]
+	# Large, MODEL-FREE landmasses the bridges run to. NOT part of land_poly -> nothing spawns or walks
+	# there; they exist only to sell an interconnected world at the far bridge ends.
+	far_lands = [
+		PackedVector2Array([   # NORTH BAY island (Marin), beyond the Golden Gate
+			Vector2(80, -440), Vector2(120, -650), Vector2(320, -720), Vector2(520, -650),
+			Vector2(545, -470), Vector2(360, -430), Vector2(200, -440),
+		]),
+		PackedVector2Array([   # EAST BAY mainland (Oakland), beyond the Bay Bridge
+			Vector2(1500, 460), Vector2(1560, 250), Vector2(1780, 210), Vector2(1975, 320),
+			Vector2(1990, 560), Vector2(1880, 720), Vector2(1660, 705), Vector2(1515, 545),
+		]),
 	]
 
 	map_lo = poly_lo
@@ -418,6 +472,10 @@ func _lay_geography() -> void:
 	for e in escapes:
 		map_lo = map_lo.min(e.position)
 		map_hi = map_hi.max(e.end)
+	for fl in far_lands:                 # the camera must be able to pan out far enough to see them
+		for v in fl:
+			map_lo = map_lo.min(v)
+			map_hi = map_hi.max(v)
 	map_lo -= Vector2(240, 170)
 	map_hi += Vector2(240, 170)
 
