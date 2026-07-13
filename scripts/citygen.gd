@@ -148,8 +148,8 @@ func generate(snap_res: Vector2i) -> void:
 		_tile(b, "bridge")
 	if not dogleg.is_empty():
 		_fill_polygon(dogleg, "bridge", 0.0)   # the Bay Bridge's off-screen dogleg past Treasure Island
-	_bridge_towers(bridges[1], false)    # Bay Bridge towers (procedural); the Golden Gate's come from the GLB
-	_lay_gg_bridge()                     # the iconic Golden Gate, a low-poly GLB reskinned as cold steel
+	_lay_gg_bridge()                     # the iconic Golden Gate (low-poly GLB), reskinned cold steel
+	_lay_bay_bridge()                    # the Bay Bridge (McClintic-Marshall GLB), reskinned cold steel
 
 	# the arterials, as overlay centrelines (main draws these as the "black line" roads)
 	for art in arterials:
@@ -517,11 +517,11 @@ func _lay_geography() -> void:
 	# below; the dogleg past Treasure Island is a VISUAL deck only. WIN zones sit on the reachable decks.
 	bridges = [
 		Rect2(251, -450, 34, 630),   # Golden Gate, north: SF coast (~z150) -> Marin (~z-405). Narrow -- the GLB rides here.
-		Rect2(950, 435, 340, 72),    # Bay Bridge, east: SF coast (~x940) -> Treasure Island (~x1290)
+		Rect2(950, 456, 340, 30),    # Bay Bridge, east: SF coast (~x940) -> Treasure Island (~x1290). Narrow -- the GLB rides here.
 	]
 	escapes = [
 		Rect2(251, -120, 34, 46),    # Marin end -- win zone on the GG deck (unchanged position, narrowed to the deck)
-		Rect2(1246, 435, 44, 72),    # Treasure Island end -- win zone on the Bay deck (UNCHANGED)
+		Rect2(1246, 456, 44, 30),    # Treasure Island end -- win zone on the Bay deck (narrowed to the deck)
 	]
 	# Large, MODEL-FREE landmasses (NOT in land_poly -> nothing spawns or walks there; pure backdrop).
 	far_lands = [
@@ -602,6 +602,22 @@ func _lay_gg_bridge() -> void:
 	if node == null:
 		return
 	node.position.x = deck.position.x + deck.size.x * 0.5   # centre on the deck; spawn_fit already grounded y
+	node.position.z = deck.position.y + deck.size.y * 0.5
+	add_child(node)
+
+
+## The Bay Bridge as a hero prop: the McClintic-Marshall model (the firm that built the real one),
+## reskinned cold steel and YAWED 90deg so its length runs east-west along the deck, uniform-fit and
+## grounded. Procedural Bay towers are dropped in its favour.
+func _lay_bay_bridge() -> void:
+	var deck: Rect2 = bridges[1]
+	var model: Vector3 = Vector3(28.2, 49.8, 387.8)     # measured GLB bounds (metres)
+	var s: float = deck.size.x / model.z                # deck runs E-W (x); model length is z -> uniform fit
+	var node: Node3D = ThermalModel.spawn_fit(
+		"res://models/buildings and scenery/bay_bridge.glb", "parapet", _snap_res, model * s, PI * 0.5)
+	if node == null:
+		return
+	node.position.x = deck.position.x + deck.size.x * 0.5
 	node.position.z = deck.position.y + deck.size.y * 0.5
 	add_child(node)
 
