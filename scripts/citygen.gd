@@ -153,6 +153,7 @@ func generate(snap_res: Vector2i) -> void:
 
 	_lay_beach()
 	_lay_islands()          # the far landmasses (bare ground) the bridges run out to
+	_lay_alcatraz()         # a wee island out in the bay, just the rock + the cellhouse, for fun
 
 	# bridge decks over the water (a mid-tone between water and land, so they read)
 	for b in bridges:
@@ -448,6 +449,18 @@ func _lay_beach() -> void:
 func _lay_islands() -> void:
 	for poly in far_lands:
 		_fill_polygon(poly, "ground", -0.05)
+
+
+## Alcatraz: a small rock out in the bay (north of the wharf) with a simple cellhouse block on it.
+## Not gameplay space -- pure scenery, so no nav/spawns; just a ground fill + one box.
+func _lay_alcatraz() -> void:
+	var ctr: Vector2 = Vector2(720.0, 5.0)
+	var isle: PackedVector2Array = PackedVector2Array([
+		ctr + Vector2(-34.0, -18.0), ctr + Vector2(-8.0, -27.0), ctr + Vector2(26.0, -22.0),
+		ctr + Vector2(39.0, 2.0), ctr + Vector2(27.0, 24.0), ctr + Vector2(-6.0, 29.0), ctr + Vector2(-36.0, 13.0),
+	])
+	_fill_polygon(isle, "ground", -0.05)
+	_add_box(Vector3(ctr.x, 0.0, ctr.y), Vector3(36.0, 9.0, 13.0), "wall")   # the cellhouse -- one long block
 
 
 ## A copy of `poly` rotated by `ang` (about its own centroid) and re-centred on `ctr` -- used to
