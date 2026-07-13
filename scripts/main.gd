@@ -176,7 +176,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] passive stance   [V] ar
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 117
+const BUILD_PUSHES: int = 118
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -505,10 +505,11 @@ func _build_tree() -> void:
 
 	cam = Camera3D.new()
 	cam.fov = 24.0
-	# The optic never sits below ZOOM_MIN (~150 m out), so nothing is ever within
-	# ~100 m of the lens. A near of 6 m (vs 0.35) buys far better depth precision at
-	# the max-zoom altitude, so the 1.5 m coast step never z-fights the ocean.
-	cam.near = 6.0
+	# The optic never sits below ZOOM_MIN (~150 m out), so nothing is ever within ~100 m of the lens.
+	# A large near (vs 0.35) buys far better depth precision at the max-zoom altitude -- the depth
+	# buffer only resolves ~0.03 m out there at near=6, which z-fought the road/ground offsets (shimmer).
+	# near=18 roughly triples that precision while staying well inside the ~100 m clearance.
+	cam.near = 18.0
 	cam.far = 2600.0
 	vp.add_child(cam)
 

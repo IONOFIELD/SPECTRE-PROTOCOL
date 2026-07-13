@@ -14,11 +14,12 @@ const FLOOR_H: float = 3.4
 const CELL: float = 44.0        # fine grid for the ground/park base tiles
 const BLOCK: float = 92.0       # STREET GRID pitch -- street centre to street centre (a city block)
 const SETBACK: float = 3.5      # building set-back past the kerb into the block
-const STREET_DY: float = 0.03   # N-S streets ride this much above E-W so crossings never z-fight
+const STREET_DY: float = 0.14   # N-S streets ride this much above E-W so crossings never z-fight
 const ROAD_W: float = 15.0      # street WIDTH -- a narrow 2-lane street, to the scale of the cars/buildings
-const ROAD_Y: float = 0.10      # roads ride a hair over the ground base (avoids z-fighting the ground quads)
+const ROAD_Y: float = 0.22      # roads sit clearly above the ground base -- the depth buffer only resolves
+                                # ~0.03 m at the max-zoom altitude, so tiny offsets z-fight (the shimmer)
 const WALK_W: float = 2.3       # sidewalk width each side of the asphalt
-const WALK_Y: float = 0.14      # sidewalks sit a touch higher than the road -> reads as a raised kerb
+const WALK_Y: float = 0.30      # sidewalks sit a touch higher than the road -> reads as a raised kerb
 const BEACH_W: float = 24.0     # how far the sand reaches inland from the coastline
 const BEACH_SEA: float = 10.0   # ...and how far it laps out over the water
 
@@ -279,10 +280,14 @@ func _fill_block(rng: RandomNumberGenerator, block: Rect2, dc: float) -> void:
 			_building(rng, bx, bz, bw, bd, fl, tall)
 
 
-## All four corners of the footprint inside the coastline? Keeps the whole shell on land -- nothing
-## hangs out over the water at an irregular coast (block-centre-in-land isn't enough).
+## The footprint (GROWN by COAST_MARGIN) fully inside the coastline? The margin sets shells back off
+## the waterline so the ground base always covers them AND they don't appear to overhang the water at
+## a low camera angle -- block-centre-in-land, or even bare corners, isn't enough at an irregular coast.
+const COAST_MARGIN: float = 13.0
+
 func _footprint_in_land(x: float, z: float, w: float, d: float) -> bool:
-	for corner in [Vector2(x, z), Vector2(x + w, z), Vector2(x + w, z + d), Vector2(x, z + d)]:
+	var m: float = COAST_MARGIN
+	for corner in [Vector2(x - m, z - m), Vector2(x + w + m, z - m), Vector2(x + w + m, z + d + m), Vector2(x - m, z + d + m)]:
 		if not _in_land(corner):
 			return false
 	return true
