@@ -90,7 +90,7 @@ func _emit_surfaces() -> void:
 		st.generate_tangents()
 		var mi: MeshInstance3D = MeshInstance3D.new()
 		mi.mesh = st.commit()
-		mi.material_override = ThermalLib.get_material(mat, _snap_res)
+		mi.material_override = ThermalLib.get_material(mat, _snap_res, 0)   # snap OFF on flat terrain -- the PS1 vertex-snap makes large flat surfaces (roads/ground) crawl + shimmer as the camera orbits
 		add_child(mi)
 
 	# the road network: 2-lane asphalt ribbons + raised sidewalk kerbs, laid over the ground
@@ -112,7 +112,7 @@ func _emit_tris(tris: PackedVector3Array, mat: String) -> void:
 	st.generate_tangents()
 	var mi: MeshInstance3D = MeshInstance3D.new()
 	mi.mesh = st.commit()
-	mi.material_override = ThermalLib.get_material(mat, _snap_res)
+	mi.material_override = ThermalLib.get_material(mat, _snap_res, 0)   # snap OFF on flat terrain -- the PS1 vertex-snap makes large flat surfaces (roads/ground) crawl + shimmer as the camera orbits
 	add_child(mi)
 
 
@@ -151,7 +151,7 @@ func generate(snap_res: Vector2i) -> void:
 		var smi: MeshInstance3D = MeshInstance3D.new()
 		smi.mesh = sea
 		smi.position = Vector3((map_lo.x + map_hi.x) * 0.5, -1.5, (map_lo.y + map_hi.y) * 0.5)
-		smi.material_override = ThermalLib.get_material("water", _snap_res)
+		smi.material_override = ThermalLib.get_material("water", _snap_res, 0)   # snap OFF -- the huge flat ocean would shimmer worst of all
 		add_child(smi)
 
 	_lay_beach()
@@ -560,7 +560,7 @@ func _lay_beach() -> void:
 	st.generate_tangents()      # normals-without-tangents breaks custom shaders (see _emit_surfaces)
 	var mi: MeshInstance3D = MeshInstance3D.new()
 	mi.mesh = st.commit()
-	mi.material_override = ThermalLib.get_material("beach", _snap_res)
+	mi.material_override = ThermalLib.get_material("beach", _snap_res, 0)   # snap OFF -- flat shoreline
 	add_child(mi)
 
 
@@ -625,7 +625,7 @@ func _fill_polygon(poly: PackedVector2Array, mat: String, y: float) -> void:
 	st.generate_tangents()
 	var mi: MeshInstance3D = MeshInstance3D.new()
 	mi.mesh = st.commit()
-	mi.material_override = ThermalLib.get_material(mat, _snap_res)
+	mi.material_override = ThermalLib.get_material(mat, _snap_res, 0)   # snap OFF on flat terrain -- the PS1 vertex-snap makes large flat surfaces (roads/ground) crawl + shimmer as the camera orbits
 	add_child(mi)
 
 
