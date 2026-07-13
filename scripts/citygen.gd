@@ -156,6 +156,7 @@ func generate(snap_res: Vector2i) -> void:
 	_lay_city(rng)          # cell grid: parks / ground base / building blocks (roadway kept clear)
 	_lay_roads()            # continuous road ribbons flowing along the arterials, over the ground
 	_scatter_trees(rng)     # trees + shrubs -- a real, vegetated environment
+	_scatter_far_foliage(rng)   # wooded groves on the far landmasses (Marin / East Bay hills)
 	_emit_surfaces()
 
 
@@ -300,8 +301,8 @@ func _scatter_trees(rng: RandomNumberGenerator) -> void:
 		_foliage(p, rng, mat, rng.randf() < 0.45)
 
 
-func _foliage(p: Vector2, rng: RandomNumberGenerator, mat: ShaderMaterial, tree: bool) -> void:
-	var r: float = rng.randf_range(2.1, 3.3) if tree else rng.randf_range(0.8, 1.5)
+func _foliage(p: Vector2, rng: RandomNumberGenerator, mat: ShaderMaterial, tree: bool, scale: float = 1.0) -> void:
+	var r: float = (rng.randf_range(2.1, 3.3) if tree else rng.randf_range(0.8, 1.5)) * scale
 	var s: SphereMesh = SphereMesh.new()
 	s.radius = r
 	s.height = r * (2.3 if tree else 1.4)
@@ -312,6 +313,39 @@ func _foliage(p: Vector2, rng: RandomNumberGenerator, mat: ShaderMaterial, tree:
 	mi.position = Vector3(p.x, r * (0.95 if tree else 0.5), p.y)
 	mi.material_override = mat
 	add_child(mi)
+
+
+## Wooded GROVES on the far landmasses -- Marin's headlands + the East Bay hills are green, not bare
+## slabs. Clumped (not evenly scattered) so they read as thickets of dark canopy at a distance, using
+## the same cool evaporative foliage as the city. far_lands aren't gameplay space -- pure dressing.
+func _scatter_far_foliage(rng: RandomNumberGenerator) -> void:
+	if far_lands.is_empty():
+		return
+	var mat: ShaderMaterial = ThermalLib.get_material("foliage", _snap_res)
+	for poly in far_lands:
+		var lo: Vector2 = poly[0]
+		var hi: Vector2 = poly[0]
+		for v in poly:
+			lo = lo.min(v)
+			hi = hi.max(v)
+		var clumps: int = clampi(int((hi.x - lo.x) * (hi.y - lo.y) / 7000.0), 8, 26)
+		for _c in clumps:
+			var ctr: Vector2 = Vector2.ZERO
+			var ok: bool = false
+			for _try in 14:                              # find a clump centre inside the coastline
+				var q: Vector2 = Vector2(rng.randf_range(lo.x, hi.x), rng.randf_range(lo.y, hi.y))
+				if Geometry2D.is_point_in_polygon(q, poly):
+					ctr = q
+					ok = true
+					break
+			if not ok:
+				continue
+			# big canopy blobs (2.2x city trees) packed tight -> merge into a dark thicket that reads
+			# as woods even from the AC-130's altitude, not a pixel-sized speck.
+			for _t in 5 + rng.randi() % 5:               # 5-9 blobs per grove
+				var p: Vector2 = ctr + Vector2(rng.randf_range(-11.0, 11.0), rng.randf_range(-11.0, 11.0))
+				if Geometry2D.is_point_in_polygon(p, poly):
+					_foliage(p, rng, mat, rng.randf() < 0.9, 2.2)
 
 
 ## A sand ring along the coastline: a beach band from BEACH_SEA out over the water to
