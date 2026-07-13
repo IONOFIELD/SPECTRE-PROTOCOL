@@ -58,6 +58,7 @@ const SURVIVOR_PER_HOLDOUT: int = 3
 const GAUNTLET_PER_BRIDGE: int = 44   # infected choking each bridge deck
 const ELEMENTS: int = 4                 # max player teams (touch bar 1-4)
 var _team_count: int = 4                 # chosen at the startup menu (solo / 2 / 3 / 4)
+var _team_colors: Array[Color] = []      # per-element unit-icon colour, randomized every game (distinct hues)
 # Your squad's loadout, chosen at the menu -- how many of each unit type deploy (element 0).
 const FIXED_CDR: int = 1                  # every team fields exactly one commander -- fixed, not choosable
 const CHOOSABLE: Array = [&"cbt", &"med", &"snp", &"rec", &"eod"]   # the five tunable roles (the commander is set)
@@ -155,10 +156,10 @@ const USE_MODELS: bool = false
 const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] passive stance   [V] arm  [B] AC-130 strike\n[TAB]/[Q] unit type   [1] select all   [E] scan   [SPACE] wide / ISR view\n[WASD] pan   [wheel] zoom   [T] palette   [C] snow   [H] hide\nEXFIL: cross a bridge, reach an evac LZ, or wipe the rival teams"
 
 # AC-130 gunship ISR HUD palette
-const HUD_COL: Color = Color(0.59, 0.78, 0.65, 0.90)   # ISR green-white (darkened)
-const HUD_DIM: Color = Color(0.59, 0.78, 0.65, 0.42)
+const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
+const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 89
+const BUILD_PUSHES: int = 90
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -182,6 +183,7 @@ var props: Node3D
 var cut_rect: ColorRect
 var hud: Label
 var _hud_font: Font                    # the game HUD font (Inversionz), for drawn banners/threat text
+var _warn_ctrl: Control                # top overlay for the RADIATION WARNING -- above the bars + all HUD
 
 var sensor_mat: ShaderMaterial
 var cut_mat: ShaderMaterial
@@ -191,7 +193,9 @@ var sim: WorldSim = WorldSim.new()
 var views: Array[Node3D] = []          # one visual per sim unit, index-aligned
 var active_element: int = 0            # which of the four teams the player is driving
 var _type_idx: int = -1                # unit-type cycle position within the active element
-var _cyc_btn: Button                   # the TYP button (shows the current type)
+var _cyc_btn: Button                   # the TYPE button (shows the current type, or ALL)
+var _all_btn: Button                   # the ALL button (dark when ALL is the current selection)
+var _scan_btn: Button                  # the SCAN button (shows the cooldown countdown, lit when ready)
 var _anim: Array = []                  # an Animator per view (or null), index-aligned
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 var _sfx_pool: Array[AudioStreamPlayer3D] = []
@@ -375,6 +379,7 @@ func _ready() -> void:
 	_init_res()                    # frame the feed to the window we were opened with
 	_build_tree()
 	_build_version_stamp()         # the build number, top-right, always on top
+	_randomize_team_colors()       # distinct per-team icon colours (also reshuffled on each _start_game)
 	_spawn()
 	get_window().size_changed.connect(_reframe)   # ...and re-frame if it changes / rotates
 	set_process_input(true)
@@ -503,6 +508,17 @@ func _build_tree() -> void:
 	sel_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	sel_layer.draw.connect(_draw_selection)
 	layer.add_child(sel_layer)
+
+	# top overlay for the RADIATION WARNING -- its own high CanvasLayer so it draws OVER the
+	# control bars and every other HUD element.
+	var warn_layer: CanvasLayer = CanvasLayer.new()
+	warn_layer.layer = 45
+	_warn_ctrl = Control.new()
+	_warn_ctrl.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_warn_ctrl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_warn_ctrl.draw.connect(_draw_radiation_warning)
+	warn_layer.add_child(_warn_ctrl)
+	add_child(warn_layer)
 
 	hud = Label.new()
 	hud.position = Vector2(24, 20)
@@ -934,35 +950,23 @@ func _recompute_alliances() -> void:
 		sim.allied[e] = _passive and _rival_open.get(e, false)
 
 
-## The rival element (SQUAD, not your team) whose nearest unit sits closest to the reticle.
-func _rival_near_reticle() -> int:
-	var look: Vector2 = Vector2(cam_tx, cam_tz)
-	var best: int = -1
-	var bd: float = INF
-	for i in sim.count():
-		if not sim.alive[i] or sim.team[i] != WorldSim.SQUAD:
-			continue
-		var e: int = sim.element[i]
-		if e == 0 or e == sim.player_element:
-			continue
-		var d: float = look.distance_squared_to(sim.pos[i])
-		if d < bd:
-			bd = d
-			best = e
-	return best
+## Distinct random unit-icon colours, one per element, reshuffled each game -- so the teams
+## read apart at a glance (yours + the rivals). Evenly-spaced hues + a little jitter.
+func _randomize_team_colors() -> void:
+	_team_colors.clear()
+	var base: float = _rng.randf()
+	for e in ELEMENTS:
+		var h: float = fposmod(base + float(e) / float(ELEMENTS) + _rng.randf_range(-0.05, 0.05), 1.0)
+		_team_colors.append(Color.from_hsv(h, 0.68, 1.0, 0.95))
 
 
-## Bracket colour for a squad unit by its team's stance toward you: your own green, an
-## allied team cyan, a team open to truce amber, an unrepentant rival red.
+## A squad unit's bracket colour is its team's assigned colour (stance now reads in the
+## top-left element roster + the PSV button, not the bracket).
 func _squad_col(i: int) -> Color:
 	var e: int = sim.element[i]
-	if e == 0 or e == sim.player_element:
-		return TAG_FRIEND
-	if sim.allied.get(e, false):
-		return TAG_ALLY
-	if _rival_open.get(e, false):
-		return TAG_PASSIVE
-	return TAG_ENEMY
+	if e >= 0 and e < _team_colors.size():
+		return _team_colors[e]
+	return TAG_FRIEND
 
 
 ## Call in the Sanitation force: POP_SAN cool elites scattered across the city, with
@@ -1529,6 +1533,7 @@ func _process(delta: float) -> void:
 	_scan_pulse_t += delta
 	_update_move_marker()
 	_update_ac_buttons()
+	_update_scan_button()
 	_update_status_panel()
 	if _bar_l != null:
 		# control bars: hidden at the menu and once the game is over (debrief needs no controls)
@@ -1617,6 +1622,8 @@ func _process(delta: float) -> void:
 	cut_mat.set_shader_parameter("cctv", cctv)
 	if sel_layer != null:
 		sel_layer.queue_redraw()
+	if _warn_ctrl != null:
+		_warn_ctrl.queue_redraw()
 
 	if _menu_active:
 		hud.text = ""                       # the menu stays clean -- just the sweep + the ping
@@ -1749,7 +1756,7 @@ func _show_banner(won: bool) -> void:
 	banner.visible = true
 
 
-const SEL_COL: Color = Color(0.50, 0.72, 0.57, 0.85)
+const SEL_COL: Color = Color(0.85, 1.00, 0.85, 0.95)   # bright selection overlay, over the team-coloured ID bracket
 
 ## Menu backdrop bookkeeping: fire the scanner ping on an irregular beat (its own SFX),
 ## and when the Sanitation force has cleared every other entity, roll the sim over.
@@ -1862,17 +1869,7 @@ func _draw_selection() -> void:
 	_draw_tags(ThemeDB.fallback_font)
 	_draw_flashes()
 	_draw_incoming()
-	for i in sim.count():
-		if not sim.alive[i] or not sim.selected[i]:
-			continue
-		var p: Vector2 = _screen_of(i)
-		var r: float = 14.0
-		var arm: float = 8.0
-		for c in [Vector2(-1, -1), Vector2(1, -1), Vector2(-1, 1), Vector2(1, 1)]:
-			var a: Vector2 = p + c * r
-			sel_layer.draw_line(a, a - Vector2(c.x * arm, 0), SEL_COL, 2.0)
-			sel_layer.draw_line(a, a - Vector2(0, c.y * arm), SEL_COL, 2.0)
-		# (no order ray -- the move marker alone shows where they're headed)
+	# (selection brackets are drawn per-unit inside _draw_unit_boxes now -- one combined marker)
 	if dragging:
 		var m: Vector2 = get_viewport().get_mouse_position()
 		sel_layer.draw_rect(Rect2(drag_start, m - drag_start), SEL_COL, false, 1.0)
@@ -2133,8 +2130,10 @@ func _alleg_color(t: int) -> Color:
 	return Color(0, 0, 0, 0)
 
 
-## My squad, always on: a small green corner-box + a caret over each head. Zoomed way
-## out, drop the per-unit clutter for ONE big caret over the active element.
+## Squad brackets, ALL IN ONE per unit: a THIN, SMALL team-coloured ID bracket always on,
+## plus -- only when the unit is selected -- a slightly larger bracket overlaid on top (so a
+## selected unit reads as one combined marker, not a pile of brackets). Zoomed way out, drop
+## the per-unit clutter for ONE team caret over the active element.
 func _draw_unit_boxes() -> void:
 	if sim == null:
 		return
@@ -2142,7 +2141,8 @@ func _draw_unit_boxes() -> void:
 		var ctr: Vector3 = _follow_point()
 		var wc: Vector3 = Vector3(ctr.x, 6.0, ctr.z)
 		if not cam.is_position_behind(wc):
-			_caret(_screen_point(wc), 15.0, TAG_FRIEND, true)
+			var tc: Color = _team_colors[active_element] if active_element < _team_colors.size() else TAG_FRIEND
+			_caret(_screen_point(wc), 15.0, tc, true)
 		return
 	for i in sim.count():
 		if not sim.alive[i] or sim.team[i] != WorldSim.SQUAD:
@@ -2154,9 +2154,11 @@ func _draw_unit_boxes() -> void:
 			continue
 		var p: Vector2 = _screen_point(w)
 		var col: Color = _squad_col(i)
-		_corner_box(p, 6.5, col)
+		_corner_box(p, 4.0, col, 1.0)                 # thin, small ID bracket (interior corners)
+		if sim.selected[i]:
+			_corner_box(p, 8.0, SEL_COL, 1.5)         # selection bracket overlays -- all in one
 		# the role glyph over the head -- your team + any rival team you can see
-		_unit_glyph(sim.kind[i], p - Vector2(0.0, 15.0), 5.0, col)
+		_unit_glyph(sim.kind[i], p - Vector2(0.0, 13.0), 4.5, col)
 
 
 ## AC-130 target tags -- ONLY inside the centre reticle box, like the real optic when
@@ -2203,12 +2205,12 @@ func _draw_tags(font: Font) -> void:
 
 
 ## An AC-130 corner-bracket box around p (half-size h): four L-shaped corners.
-func _corner_box(p: Vector2, h: float, col: Color) -> void:
+func _corner_box(p: Vector2, h: float, col: Color, width: float = 1.5) -> void:
 	var a: float = h * 0.55
 	for k in [Vector2(-1, -1), Vector2(1, -1), Vector2(-1, 1), Vector2(1, 1)]:
 		var cn: Vector2 = p + Vector2(k.x * h, k.y * h)
-		sel_layer.draw_line(cn, cn - Vector2(k.x * a, 0.0), col, 1.5)
-		sel_layer.draw_line(cn, cn - Vector2(0.0, k.y * a), col, 1.5)
+		sel_layer.draw_line(cn, cn - Vector2(k.x * a, 0.0), col, width)
+		sel_layer.draw_line(cn, cn - Vector2(0.0, k.y * a), col, width)
 
 
 ## A hollow triangle (outline) centred at p. down=true points the apex down (at a unit).
@@ -2329,60 +2331,24 @@ func _draw_hud() -> void:
 	var acw: float = font.get_string_size(ac_txt, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x
 	sel_layer.draw_string(font, Vector2(win.x - 18.0 - acw, win.y - 74.0), ac_txt, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, ac_col)
 
-	# ISR scan status, bottom-left
-	if _scan_t < SCAN_REVEAL:
-		sel_layer.draw_string(font, Vector2(30.0, win.y - 196.0), "SCAN ACTIVE  %ds" % int(ceil(SCAN_REVEAL - _scan_t)), HORIZONTAL_ALIGNMENT_LEFT, -1, 13, HUD_COL)
-	elif _scan_t < SCAN_COOLDOWN:
-		sel_layer.draw_string(font, Vector2(30.0, win.y - 196.0), "SCAN  %ds" % int(ceil(SCAN_COOLDOWN - _scan_t)), HORIZONTAL_ALIGNMENT_LEFT, -1, 13, HUD_DIM)
-	else:
-		sel_layer.draw_string(font, Vector2(30.0, win.y - 196.0), "SCAN READY  [E]", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, HUD_COL)
-
-	# Passive-stance readout: your stance, or the reticle team's relationship to you.
-	if not _menu_active and _team_count > 1 and mission != null and mission.result == Mission.ONGOING:
-		var stance_txt: String = "STANCE  PASSIVE" if _passive else "STANCE  ENGAGE"
-		var stance_col: Color = TAG_ALLY if _passive else HUD_COL
-		var e: int = _rival_near_reticle()
-		if e >= 0:
-			if sim.allied.get(e, false):
-				stance_txt = "TEAM %d  ALLIED" % (e + 1)
-				stance_col = TAG_ALLY
-			elif _rival_open.get(e, false):
-				stance_txt = "TEAM %d  PASSIVE  [P]" % (e + 1)
-				stance_col = TAG_PASSIVE
-			else:
-				stance_txt = "TEAM %d  HOSTILE" % (e + 1)
-				stance_col = HUD_RED
-		sel_layer.draw_string(font, Vector2(30.0, win.y - 178.0), stance_txt, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, stance_col)
-
+	# (SCAN status now lives ON the SCAN button; the passive/stance line moved to the
+	#  top-left element roster + the PSV button.)
+	_draw_element_roster(win)
 	_draw_top_banner(font, win)
 	_draw_attitude(font, win)
 	_draw_threat(font, win)
 	_draw_strike()
 
 
-## Top-centre mission banner. Before/at evac: a countdown to the helo (T-minus), then the
-## on-station clock. Once the Sanitation force lands, that vanishes and a red-bloomed
-## RADIATION WARNING takes its place for as long as they're loose.
+## Top-centre evac clock: a countdown to the helo (T-minus), then the on-station timer.
+## (Once Sanitation lands this stops and the RADIATION WARNING takes over -- drawn on the
+## top overlay layer so it sits above the bars and everything else, see _draw_radiation_warning.)
 func _draw_top_banner(_font: Font, win: Vector2) -> void:
-	if _menu_active or mission == null or mission.result != Mission.ONGOING:
+	if _menu_active or mission == null or mission.result != Mission.ONGOING or _sani_deployed:
 		return
-	var font: Font = _hud_font                # the game HUD font, per the banner style
+	var font: Font = _hud_font
 	var cx: float = win.x * 0.5
 	var y: float = 72.0
-	if _sani_deployed:
-		var txt: String = "RADIATION WARNING  :  CAUTION  :  SANITATION FORCE DEPLOYED  :  CAUTION  :  EVACUATE IMMEDIATELY"
-		var fs: int = 14 if win.x >= 900.0 else 9
-		var tw: float = font.get_string_size(txt, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
-		var pad: float = 18.0
-		var box: Rect2 = Rect2(cx - tw * 0.5 - pad, y - 16.0, tw + pad * 2.0, 30.0)
-		var pulse: float = 0.5 + 0.5 * sin(frame_n * 0.11)          # a slow red throb behind it
-		for k in range(5, 0, -1):
-			sel_layer.draw_rect(box.grow(float(k) * 7.0), Color(1.0, 0.13, 0.10, 0.04 + 0.03 * pulse), true)
-		sel_layer.draw_rect(box, Color(0.07, 0.06, 0.07, 0.72), true)   # dark grey, transparent
-		sel_layer.draw_rect(box, Color(1.0, 0.28, 0.24, 0.6 + 0.4 * pulse), false, 2.0)   # red outline
-		sel_layer.draw_string(font, Vector2(cx - tw * 0.5, y + 4.0), txt, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, HUD_RED)
-		return
-	# evac timer: a countdown to arrival, then the on-station clock
 	var txt2: String
 	if mission.evac_open():
 		var left: int = int(ceil(Mission.EVAC_LEAVE - mission.t))
@@ -2397,6 +2363,70 @@ func _draw_top_banner(_font: Font, win: Vector2) -> void:
 	sel_layer.draw_rect(box2, Color(0.0, 0.03, 0.0, 0.5), true)
 	sel_layer.draw_rect(box2, Color(HUD_COL.r, HUD_COL.g, HUD_COL.b, 0.6), false, 1.5)
 	sel_layer.draw_string(font, Vector2(cx - tw2 * 0.5, y + 4.0), txt2, HORIZONTAL_ALIGNMENT_LEFT, -1, fs2, HUD_COL)
+
+
+## A compact roster of the teams in play, under the top-left readout: each element's colour
+## swatch, aggregate HP%, headcount, and A(rmor)/B(uff) tallies, plus a [P] when that team
+## is passive (allied) with you. Your team is marked YOU.
+func _draw_element_roster(win: Vector2) -> void:
+	if _menu_active or sim == null or _team_count <= 0:
+		return
+	var font: Font = _hud_font
+	var x: float = 26.0
+	var y: float = 236.0
+	sel_layer.draw_string(font, Vector2(x, y), "ELEMENTS", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, HUD_DIM)
+	y += 17.0
+	for e in _team_count:
+		var ids: Array = sim.element_ids(e)
+		var col: Color = _team_colors[e] if e < _team_colors.size() else HUD_COL
+		if ids.is_empty():
+			sel_layer.draw_string(font, Vector2(x + 13.0, y), ("YOU" if e == 0 else "T%d" % (e + 1)) + "  WIPED", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(0.5, 0.5, 0.5, 0.5))
+			y += 15.0
+			continue
+		var hp_sum: float = 0.0
+		var hp_max: float = 0.0
+		var armored: int = 0
+		var buffed: int = 0
+		for i in ids:
+			hp_sum += sim.hp[i]
+			hp_max += WorldSim.STATS[sim.kind[i]][1]
+			if sim.armor[i] > 0.0:
+				armored += 1
+			if sim.buff_t[i] > 0.0:
+				buffed += 1
+		var pct: int = int(round(100.0 * hp_sum / maxf(1.0, hp_max)))
+		sel_layer.draw_rect(Rect2(x, y - 8.0, 8.0, 8.0), col, true)          # team colour swatch
+		var line: String = "%s  %d%%  x%d" % ["YOU" if e == 0 else "T%d" % (e + 1), pct, ids.size()]
+		if armored > 0:
+			line += "  A%d" % armored
+		if buffed > 0:
+			line += "  B%d" % buffed
+		if e != 0 and sim.allied.get(e, false):
+			line += "  [P]"
+		sel_layer.draw_string(font, Vector2(x + 13.0, y), line, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, col)
+		y += 15.0
+
+
+## The Sanitation RADIATION WARNING -- drawn on the TOP overlay layer (above the bars and all
+## HUD), a dark-grey transparent header with a red outline + red bloom, present while the
+## wipe force is loose.
+func _draw_radiation_warning() -> void:
+	if _warn_ctrl == null or _menu_active or mission == null or mission.result != Mission.ONGOING or not _sani_deployed:
+		return
+	var win: Vector2 = _warn_ctrl.size
+	var cx: float = win.x * 0.5
+	var y: float = 72.0
+	var txt: String = "RADIATION WARNING  :  CAUTION  :  SANITATION FORCE DEPLOYED  :  CAUTION  :  EVACUATE IMMEDIATELY"
+	var fs: int = 14 if win.x >= 900.0 else 9
+	var tw: float = _hud_font.get_string_size(txt, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
+	var pad: float = 18.0
+	var box: Rect2 = Rect2(cx - tw * 0.5 - pad, y - 16.0, tw + pad * 2.0, 30.0)
+	var pulse: float = 0.5 + 0.5 * sin(frame_n * 0.11)
+	for k in range(5, 0, -1):
+		_warn_ctrl.draw_rect(box.grow(float(k) * 7.0), Color(1.0, 0.13, 0.10, 0.04 + 0.03 * pulse), true)
+	_warn_ctrl.draw_rect(box, Color(0.07, 0.06, 0.07, 0.78), true)
+	_warn_ctrl.draw_rect(box, Color(1.0, 0.28, 0.24, 0.6 + 0.4 * pulse), false, 2.0)
+	_warn_ctrl.draw_string(_hud_font, Vector2(cx - tw * 0.5, y + 4.0), txt, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, HUD_RED)
 
 
 ## The impact FX: a hot ring blooming out from the strike point, fading over ~0.7 s.
@@ -2563,9 +2593,7 @@ func _draw_flashes() -> void:
 ## Attitude gauge, bottom-left: a heading dial with the optic azimuth pointer, the
 ## optic elevation, and the pylon-turn state -- the AC-130's bank/attitude circle.
 func _draw_attitude(font: Font, win: Vector2) -> void:
-	if help != null and help.visible:
-		return                              # the controls card owns this corner -- yield to it
-	var gc: Vector2 = Vector2(66.0, win.y - 140.0)   # raised, clear of the readout stack above
+	var gc: Vector2 = Vector2(win.x - 60.0, win.y - 150.0)   # FAR RIGHT now (above the AC-130 status + bar)
 	var gr: float = 24.0
 	sel_layer.draw_arc(gc, gr, 0.0, TAU, 40, HUD_DIM, 1.5)
 	for a in range(0, 360, 30):
@@ -2576,8 +2604,9 @@ func _draw_attitude(font: Font, win: Vector2) -> void:
 	sel_layer.draw_line(gc, gc + hv * (gr - 3.0), HUD_COL, 2.0)
 	sel_layer.draw_circle(gc, 2.5, HUD_COL)
 	var hdg: int = (int(round(rad_to_deg(-cam_az))) % 360 + 360) % 360
-	sel_layer.draw_string(font, gc + Vector2(gr + 8.0, -4.0), "HDG %03d" % hdg, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, HUD_COL)
-	sel_layer.draw_string(font, gc + Vector2(gr + 8.0, 12.0), "EL %02d" % int(rad_to_deg(cam_el)), HORIZONTAL_ALIGNMENT_LEFT, -1, 12, HUD_COL)
+	# labels to the LEFT of the wheel (it sits against the right edge)
+	sel_layer.draw_string(font, gc + Vector2(-gr - 62.0, -4.0), "HDG %03d" % hdg, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, HUD_COL)
+	sel_layer.draw_string(font, gc + Vector2(-gr - 62.0, 12.0), "EL %02d" % int(rad_to_deg(cam_el)), HORIZONTAL_ALIGNMENT_LEFT, -1, 12, HUD_COL)
 
 
 ## Red threat box (INFESTATION-style): living hostiles + confirmed kills. Game HUD font.
@@ -2808,8 +2837,21 @@ func _cycle_unit_type() -> void:
 			found = true
 	if _cyc_btn != null:
 		_cyc_btn.text = String(want).to_upper()
+	if _all_btn != null:
+		_all_btn.modulate = Color(1, 1, 1, 1.0)     # an individual type is up -> ALL lights (return path)
 	if found:
 		Audio.comms("ack_affirmative", 2500)
+
+
+## Reflect the ALL-vs-individual selection on the buttons: when ALL is the current selection
+## the TYPE box reads ALL and the ALL button goes dark (it IS the state); a single type lights
+## the ALL button back up.
+func _update_type_all_buttons() -> void:
+	var all_sel: bool = _type_idx < 0
+	if _cyc_btn != null and all_sel:
+		_cyc_btn.text = "ALL"
+	if _all_btn != null:
+		_all_btn.modulate = Color(1, 1, 1, 0.35) if all_sel else Color(1, 1, 1, 1.0)
 
 
 ## The building under a ground point (AABB test), or -1. O(buildings), press-time only.
@@ -2998,9 +3040,9 @@ func _build_touch_bar(host: CanvasLayer) -> void:
 	_cyc_btn.add_theme_font_size_override("font_size", 26)   # bigger -- the most-tapped button, 3-letter labels
 	_cyc_btn.pressed.connect(_cycle_unit_type)
 	lbar.add_child(_cyc_btn)
-	var ball: Button = _hud_button("ALL", 62)
-	ball.pressed.connect(_select_all_squad)
-	lbar.add_child(ball)
+	_all_btn = _hud_button("ALL", 62)
+	_all_btn.pressed.connect(_select_all_squad)
+	lbar.add_child(_all_btn)
 	var bctrl: Button = _hud_button("CTRL")           # controls card lives on the LEFT, by the card it opens
 	bctrl.pressed.connect(_toggle_controls)
 	lbar.add_child(bctrl)
@@ -3010,9 +3052,9 @@ func _build_touch_bar(host: CanvasLayer) -> void:
 	# --- lower-right: command + camera + AC-130 ---
 	var rbar: HBoxContainer = HBoxContainer.new()
 	rbar.add_theme_constant_override("separation", 6)
-	var bscan: Button = _hud_button("SCAN")
-	bscan.pressed.connect(_request_scan)
-	rbar.add_child(bscan)
+	_scan_btn = _hud_button("SCAN", 74)          # shows the cooldown countdown, lit when ready
+	_scan_btn.pressed.connect(_request_scan)
+	rbar.add_child(_scan_btn)
 	# PSV: one passive-stance toggle (replaces WPN + PRLY). Two passive teams hold fire on
 	# each other and both keep firing on the infected + Sanitation.
 	_psv_btn = _hud_button("PSV")
@@ -3068,6 +3110,7 @@ func _build_touch_bar(host: CanvasLayer) -> void:
 	_bar_l.visible = not _menu_active
 	_bar_r.visible = not _menu_active
 	_update_ac_buttons()
+	_update_type_all_buttons()          # ALL selected by default -> TYPE reads ALL, ALL button dark
 	_place_touch_bar()
 
 
@@ -3137,6 +3180,25 @@ func _update_ac_buttons() -> void:
 	_fire_btn.modulate = Color(1, 1, 1, 1.0) if fire_on else Color(1, 1, 1, 0.32)
 
 
+## The SCAN button carries its own cooldown: "SCAN Ns" while the reveal is live, a plain
+## countdown (dark, disabled) while recharging, then "SCAN" lit again when it's ready.
+func _update_scan_button() -> void:
+	if _scan_btn == null:
+		return
+	if _scan_t < SCAN_REVEAL:
+		_scan_btn.text = "SCAN %ds" % int(ceil(SCAN_REVEAL - _scan_t))
+		_scan_btn.modulate = Color(1, 1, 1, 1.0)
+		_scan_btn.disabled = false
+	elif _scan_t < SCAN_COOLDOWN:
+		_scan_btn.text = "%ds" % int(ceil(SCAN_COOLDOWN - _scan_t))
+		_scan_btn.modulate = Color(1, 1, 1, 0.4)
+		_scan_btn.disabled = true
+	else:
+		_scan_btn.text = "SCAN"
+		_scan_btn.modulate = Color(1, 1, 1, 1.0)
+		_scan_btn.disabled = false
+
+
 ## STATUS button: toggle the squad readout (each trooper's role + HP).
 func _toggle_status() -> void:
 	if _status_panel == null:
@@ -3157,14 +3219,22 @@ const _ROLE_ABBR: Dictionary = {&"cdr": "CMD", &"cbt": "CBT", &"med": "MED", &"s
 func _update_status_panel() -> void:
 	if _status_panel == null or not _status_panel.visible or sim == null:
 		return
-	var rows: PackedStringArray = ["SQUAD STATUS", ""]
+	var rows: PackedStringArray = ["SQUAD STATUS", "ROLE  HP  ARMOR  BUFFS", ""]
 	for i in sim.count():
 		if sim.alive[i] and sim.team[i] == WorldSim.SQUAD and sim.element[i] == 0:
 			var nm: String = _ROLE_ABBR.get(sim.kind[i], String(sim.kind[i]).to_upper())
 			var maxhp: float = WorldSim.STATS[sim.kind[i]][1]
 			var hp_pct: int = int(round(100.0 * sim.hp[i] / maxf(1.0, maxhp)))
-			rows.append("%-4s %3d%%" % [nm, hp_pct])
-	if rows.size() == 2:
+			var armor_pct: int = int(round(sim.armor[i] * 100.0))
+			var buffs: String = ""
+			if sim.buff_t[i] > 0.0:
+				if sim.buff_dmg[i] > 1.0:
+					buffs += "DMGx%.1f " % sim.buff_dmg[i]
+				if sim.buff_res[i] > 0.0:
+					buffs += "RES%d%% " % int(round(sim.buff_res[i] * 100.0))
+				buffs += "(%ds)" % int(ceil(sim.buff_t[i]))
+			rows.append("%-4s %3d%%  %3d%%   %s" % [nm, hp_pct, armor_pct, buffs if buffs != "" else "--"])
+	if rows.size() == 3:
 		rows.append("-- NO SURVIVORS --")
 	rows.append("")
 	rows.append("HDD %d   HOSTILES DOWN %d" % [_hdd, _kills])
@@ -3186,9 +3256,11 @@ func _regroup() -> void:
 	_move_marker = {"pos": g, "ids": ids.duplicate()}
 
 
-## ALL: select every living unit in your squad.
+## ALL: select every living unit in your squad; the TYPE box reads ALL and this button darkens.
 func _select_all_squad() -> void:
 	_select_element(0)
+	_type_idx = -1
+	_update_type_all_buttons()
 	if not sim.selected_ids().is_empty():
 		Audio.comms("ack_affirmative", 2500)
 
@@ -3486,6 +3558,7 @@ func _start_game(count: int) -> void:
 	_menu_sim = false
 	_team_count = clampi(1 if _tutorial else count, 1, ELEMENTS)
 	active_element = 0
+	_randomize_team_colors()       # fresh distinct team colours each run
 	_kills = 0
 	_zombie_kills = 0
 	_score = 0

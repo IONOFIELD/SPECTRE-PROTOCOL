@@ -29,7 +29,7 @@ const MAT: Dictionary = {
 	"water":     {"t": 7.0, "sky": 19.0, "e": 0.96, "solar": 0.2, "d": 6, "dt": 0.40, "de": 0.02},   # clean cold sheet, near black
 	"beach":     {"t": 16.0, "sky": 4.0, "e": 0.94, "solar": 2.8, "d": 6, "dt": 1.3, "de": 0.03},   # bright sand fringe at the waterline
 	"ship":      {"t": 16.0, "sky": 5.5, "e": 0.92, "solar": 3.2, "d": 3, "dt": 1.4, "de": 0.03},   # steel hull
-	"bridge":    {"t": 19.0, "sky": 2.0, "e": 0.94, "solar": 2.6, "d": 3, "dt": 0.80, "de": 0.03},   # WARM deck: a bright ribbon over the sea
+	"bridge":    {"t": 15.5, "sky": 3.0, "e": 0.94, "solar": 2.2, "d": 3, "dt": 0.80, "de": 0.03},   # deck: distinct over the sea, but NOT blown-out bright (was a bright rectangle artifact)
 	"ground":    {"t": 14.5, "sky": 3.0, "e": 0.94, "solar": 2.4, "d": 2, "dt": 1.8, "de": 0.03},
 	"park":      {"t": 11.0, "sky": 9.5, "e": 0.97, "solar": 1.0, "d": 2, "dt": 2.2, "de": 0.02, "ms": Vector2(3.0, 3.0)},
 	"road":      {"t": 18.0, "sky": 2.5, "e": 0.93, "solar": 2.8, "d": 3, "dt": 1.8, "de": 0.05, "ms": Vector2(4.0, 2.586)},
