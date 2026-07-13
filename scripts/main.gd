@@ -176,13 +176,13 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] passive stance   [V] ar
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 112
+const BUILD_PUSHES: int = 113
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
-const TAG_ENEMY: Color = Color(1.00, 0.30, 0.30, 0.95)
+const TAG_ENEMY: Color = Color(0.82, 0.11, 0.11, 0.95)   # hostile -- deep blood red (richer/darker)
 const TAG_VEHICLE: Color = Color(0.96, 0.90, 0.32, 0.95)
-const TAG_ZED: Color = Color(0.72, 0.42, 0.95, 0.90)   # the horde, purple
+const TAG_ZED: Color = Color(0.50, 0.16, 0.74, 0.92)   # the horde -- deep saturated purple (richer/darker)
 const TAG_ALLY: Color = Color(0.40, 0.90, 0.95, 0.95)  # rival team at truce with you -- cyan
 const TAG_PASSIVE: Color = Color(0.98, 0.72, 0.28, 0.95) # rival open to a truce -- amber
 const TEAM_CARET_ZOOM: float = 780.0   # above this altitude, one team caret not per-unit boxes
@@ -339,9 +339,9 @@ const STRIKE_BOW: float = 0.26         # (legacy 2D bow -- unused now the round 
 const BURST_ROUNDS: int = 15           # rounds in one 25mm burst volley
 const BURST_INTERVAL: float = 0.085    # spacing between rounds in a volley
 const BURST_TOF: float = 1.4           # each burst round's flight -- slow enough to read as a streak
-const TRACER_ALT: float = 200.0        # 105mm muzzle altitude (world m) -- high, but close enough to read
-const TRACER_ALT_B: float = 135.0      # 25mm burst muzzle altitude
-const TRACER_OFF: Vector2 = Vector2(90.0, -70.0)     # muzzle offset from the impact (the gunship's quarter)
+const TRACER_ALT: float = 380.0        # 105mm muzzle altitude (world m) -- high + far so it starts off-frame
+const TRACER_ALT_B: float = 300.0      # 25mm burst muzzle altitude
+const MUZZLE_DIST: float = 720.0       # muzzle set this far BEYOND the impact (away from the optic) -> off-screen origin
 const TRACER_BOW: float = 7.0          # gentle world-space arc height (less extreme than before)
 const BURST_R: float = 6.0             # small impact radius
 const BURST_DMG: float = 260.0         # a burst round -- drops normal infected/troops, not the elite in one
@@ -1179,7 +1179,7 @@ func _randomize_team_colors() -> void:
 	var base: float = _rng.randf()
 	for e in ELEMENTS:
 		var h: float = fposmod(base + float(e) / float(ELEMENTS) + _rng.randf_range(-0.05, 0.05), 1.0)
-		_team_colors.append(Color.from_hsv(h, 0.68, 1.0, 0.95))
+		_team_colors.append(Color.from_hsv(h, 0.90, 0.80, 0.95))   # RICHER + DARKER -- deep saturated hues read best against the bright feed
 
 
 ## A squad unit's bracket colour is its team's assigned colour (stance now reads in the
@@ -1688,7 +1688,12 @@ func _fire_ac130_at(target: Vector2) -> void:
 		_strike_target = target
 		_strike_tof = 0.0
 		_strike_pending = true
-		_spawn_tracer3d(target, true)
+		# a SERIES of flaming bloom rays raining in from off-frame, converging on the target -- one
+		# carries the kill (the big ball on impact), the rest are pure fire streaks fanned around it.
+		_spawn_tracer3d(target, true, true, 0.0, 1.0)
+		for r in 3:
+			var sp: float = (float(r) - 1.0) * 60.0 + _rng.randf_range(-16.0, 16.0)
+			_spawn_tracer3d(target, true, false, sp, _rng.randf_range(0.82, 1.12))
 		_zombie_kills = 0
 		Audio.comms("open_fire", 0)
 	else:
@@ -2362,9 +2367,9 @@ func _alleg_color(t: int) -> Color:
 	match t:
 		WorldSim.SQUAD: return Color(0.90, 0.95, 1.00, 0.90)      # my units, white (green brackets)
 		WorldSim.SANITATION: return Color(0.05, 0.05, 0.06, 0.95) # black hull, red brackets
-		WorldSim.BANDIT: return Color(1.00, 0.30, 0.30, 0.90)     # loose combatant, red
-		WorldSim.SURVIVOR: return Color(1.00, 0.30, 0.30, 0.90)   # loose combatant, red
-		WorldSim.INFECTED: return Color(0.72, 0.42, 0.95, 0.80)   # the horde, purple
+		WorldSim.BANDIT: return Color(0.82, 0.11, 0.11, 0.92)     # loose combatant -- deep blood red
+		WorldSim.SURVIVOR: return Color(0.82, 0.11, 0.11, 0.92)   # loose combatant -- deep blood red
+		WorldSim.INFECTED: return Color(0.50, 0.16, 0.74, 0.85)   # the horde -- deep saturated purple
 		WorldSim.CIVILIAN: return Color(0.92, 0.94, 1.00, 0.60)   # civilian, white
 	return Color(0, 0, 0, 0)
 
@@ -2719,12 +2724,19 @@ func _advance_burst(delta: float) -> void:
 ## An inbound AC-130 round as a 3D THERMAL object in the world (so the sensor blooms it fuzzy-white,
 ## like the ground fires): a thin long hot streak that flies slowly from high overhead (the gunship's
 ## quarter) down to the impact, on a gentle arc. Big + long for the 105mm, small for a 25mm burst round.
-func _spawn_tracer3d(to: Vector2, big: bool) -> void:
+func _spawn_tracer3d(to: Vector2, big: bool, dmg: bool = true, spread: float = 0.0, tof_mul: float = 1.0) -> void:
 	if vp == null:
 		return
 	var alt: float = TRACER_ALT if big else TRACER_ALT_B
-	var from: Vector3 = Vector3(to.x + TRACER_OFF.x, alt, to.y + TRACER_OFF.y)
-	var dest: Vector3 = Vector3(to.x, 0.6, to.y)
+	# ORIGIN OFF-CAMERA: put the muzzle far BEYOND the impact (away from the optic) and high, with a
+	# lateral `spread` for a fan of rays, so the round streaks in from off the top of the frame instead
+	# of popping into view at a fixed on-screen point.
+	var cg: Vector2 = Vector2(cam.global_position.x, cam.global_position.z)
+	var away: Vector2 = to - cg
+	away = away.normalized() if away.length() > 1.0 else Vector2(0.0, -1.0)
+	var side: Vector2 = Vector2(-away.y, away.x)
+	var from: Vector3 = Vector3(to.x + away.x * MUZZLE_DIST + side.x * spread, alt, to.y + away.y * MUZZLE_DIST + side.y * spread)
+	var dest: Vector3 = Vector3(to.x, 0.6, to.y)             # all rays converge on the one impact point
 	var cap: CapsuleMesh = CapsuleMesh.new()
 	cap.radius = 1.2 if big else 0.7
 	cap.height = 20.0 if big else 9.0            # a THIN LONG streak (long for the missile)
@@ -2734,7 +2746,7 @@ func _spawn_tracer3d(to: Vector2, big: bool) -> void:
 	mi.mesh = cap
 	mi.material_override = ThermalLib.get_material("tracer", snap_res)
 	vp.add_child(mi)
-	_tracers.append({"node": mi, "from": from, "to": dest, "t": 0.0, "tof": (STRIKE_TOF if big else BURST_TOF), "big": big, "trail": 0.0})
+	_tracers.append({"node": mi, "from": from, "to": dest, "t": 0.0, "tof": (STRIKE_TOF if big else BURST_TOF) * tof_mul, "big": big, "dmg": dmg, "trail": 0.0})
 
 
 ## Fly each 3D round along its slow arc, aligned nose-first; the 105mm drips a white/orange trail
@@ -2764,21 +2776,27 @@ func _age_tracers(delta: float) -> void:
 				node.transform = Transform3D(Basis(xax, yax, xax.cross(yax)), pos)
 			else:
 				node.position = pos
-			if bool(tr["big"]):                              # 105mm: a dripping hot trail behind it
+			if bool(tr["big"]):                              # 105mm rays: a dense, dripping FLAMING trail
 				tr["trail"] = float(tr["trail"]) + delta
-				if float(tr["trail"]) >= 0.09:
+				if float(tr["trail"]) >= 0.055:
 					tr["trail"] = 0.0
-					_spawn_flash3d(Vector2(pos.x, pos.z), 1.3, 0.5, pos.y - 6.0)
+					_spawn_flash3d(Vector2(pos.x, pos.z), 1.9, 0.55, pos.y - 6.0)
 		if float(tr["t"]) >= float(tr["tof"]):
 			var pt: Vector2 = Vector2(dest.x, dest.z)
 			if is_instance_valid(node):
 				node.queue_free()
 			if bool(tr["big"]):
-				sim.air_strike(pt, STRIKE_R, STRIKE_DMG)
-				_spawn_flash3d(pt, STRIKE_R * 0.7, 0.55, 3.0)
-				_strike_pos = pt
-				_strike_t = 0.0
-				_strike_pending = false
+				if bool(tr.get("dmg", true)):
+					# THE BIG BALL: the killing round -- a large central fireball + expanding shells.
+					sim.air_strike(pt, STRIKE_R, STRIKE_DMG)
+					_spawn_flash3d(pt, STRIKE_R * 1.25, 0.75, STRIKE_R * 0.42)
+					_spawn_flash3d(pt, STRIKE_R * 0.85, 0.48, STRIKE_R * 0.7)
+					_spawn_flash3d(pt, STRIKE_R * 0.5, 0.30, 2.0)
+					_strike_pos = pt
+					_strike_t = 0.0
+					_strike_pending = false
+				else:
+					_spawn_flash3d(pt, STRIKE_R * 0.55, 0.42, 3.5)   # a converging ray folds into the ball
 			else:
 				sim.air_strike(pt, BURST_R, BURST_DMG)
 				_spawn_flash3d(pt, BURST_R * 0.55, 0.26, 1.6)     # a small explosion
