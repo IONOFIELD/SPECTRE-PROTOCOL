@@ -18,8 +18,9 @@ extends Node3D
 
 const FLOOR_H: float = 3.4
 const CELL: float = 44.0        # block cell -- one building each; ~6-10 m gaps read as the fine grid
-const ROAD_HALF: float = 22.0   # a cell whose centre is within this of an arterial carries a road
+const ROAD_HALF: float = 22.0   # buildings whose cell-centre is within this of an arterial are held off the roadway
 const ROAD_W: float = 15.0      # actual road WIDTH -- a narrow street, to the scale of the cars/buildings
+const ROAD_Y: float = 0.08      # roads ride a hair over the ground base (avoids z-fighting the ground quads)
 const BEACH_W: float = 24.0     # how far the sand reaches inland from the coastline
 const BEACH_SEA: float = 10.0   # ...and how far it laps out over the water
 
@@ -29,6 +30,7 @@ const BEACH_SEA: float = 10.0   # ...and how far it laps out over the water
 var _snap_res: Vector2i = Vector2i(640, 360)
 var buildings: Array[Dictionary] = []
 var _surfaces: Dictionary = {}   # material -> Array[Rect2], all disjoint, all y = 0
+var _road_tris: PackedVector3Array = PackedVector3Array()   # continuous road ribbons (free triangles, y = ROAD_Y)
 
 # geography, filled by generate() and read by main + the sim
 var land_poly: PackedVector2Array = PackedVector2Array()   # the SF coastline (irregular)
@@ -84,6 +86,20 @@ func _emit_surfaces() -> void:
 		mi.material_override = ThermalLib.get_material(mat, _snap_res)
 		add_child(mi)
 
+	# the road network: one continuous ribbon mesh laid over the ground along the arterials
+	if not _road_tris.is_empty():
+		var rst: SurfaceTool = SurfaceTool.new()
+		rst.begin(Mesh.PRIMITIVE_TRIANGLES)
+		for v in _road_tris:
+			rst.set_normal(Vector3.UP)
+			rst.set_uv(Vector2(v.x, v.z) * 0.02)
+			rst.add_vertex(v)
+		rst.generate_tangents()
+		var rmi: MeshInstance3D = MeshInstance3D.new()
+		rmi.mesh = rst.commit()
+		rmi.material_override = ThermalLib.get_material("road", _snap_res)
+		add_child(rmi)
+
 
 func _add_box(pos: Vector3, size: Vector3, mat_name: String) -> void:
 	var mesh: BoxMesh = BoxMesh.new()
@@ -99,6 +115,7 @@ func generate(snap_res: Vector2i) -> void:
 	_snap_res = snap_res
 	buildings.clear()
 	_surfaces.clear()
+	_road_tris.clear()
 	road_lines.clear()
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 	rng.seed = seed_value
@@ -134,7 +151,8 @@ func generate(snap_res: Vector2i) -> void:
 		for i in art.size() - 1:
 			road_lines.append([art[i], art[i + 1]])
 
-	_lay_city(rng)          # cell grid: parks / road corridors / building blocks
+	_lay_city(rng)          # cell grid: parks / ground base / building blocks (roadway kept clear)
+	_lay_roads()            # continuous road ribbons flowing along the arterials, over the ground
 	_scatter_trees(rng)     # trees + shrubs -- a real, vegetated environment
 	_emit_surfaces()
 
@@ -156,15 +174,13 @@ func _lay_city(rng: RandomNumberGenerator) -> void:
 			if _in_park(c):
 				_tile(cell, "park")
 				continue
-			# an arterial runs through this cell -> a NARROW road strip (axis-aligned, to the
-			# arterial's dominant direction) with ground verges either side, all disjoint. The
-			# diagonal avenues (Market St) come out as a staircase of strips -> read as a diagonal.
-			var axis: int = _arterial_axis(c)
-			if axis != 0:
-				_lay_road_cell(x, z, axis)
-				continue
-			# a building block: ground base under it (fills the inter-building gaps)
+			# a continuous GROUND base under every non-park cell (fills the inter-building gaps AND
+			# beds the road ribbons that are laid over the top in _lay_roads).
 			_tile(cell, "ground")
+			# hold buildings off the roadway: an arterial threads the middle of this cell, so leave
+			# it clear (the flowing road ribbon covers it). The building rows sit in the cells beside.
+			if _near_arterials(c, ROAD_HALF):
+				continue
 			if rng.randf() < 0.06:
 				_tile(Rect2(x + 3.0, z + 3.0, CELL - 6.0, CELL - 6.0), "lot")   # open lot, no building
 				continue
@@ -196,35 +212,50 @@ func _near_arterials(c: Vector2, half: float) -> bool:
 	return false
 
 
-## If an arterial runs within ROAD_HALF of c, return its dominant axis at that point:
-## 1 = E-W (horizontal road), 2 = N-S (vertical road); 0 = no road here.
-func _arterial_axis(c: Vector2) -> int:
-	var best: float = ROAD_HALF
-	var axis: int = 0
+## The road NETWORK, laid as continuous ribbons that FLOW along each arterial polyline and
+## OVERLAP where arterials cross -> one interconnected mesh, no fractured per-cell strips. Each
+## segment is an oriented quad of width ROAD_W; each vertex a rounded disc so turns join cleanly
+## (a diagonal like Market St now reads as a true diagonal avenue, not a staircase of steps).
+func _lay_roads() -> void:
+	var half: float = ROAD_W * 0.5
 	for art in arterials:
-		for i in art.size() - 1:
-			var a: Vector2 = art[i]
-			var b: Vector2 = art[i + 1]
-			var d: float = _dist_to_seg(c, a, b)
-			if d < best:
-				best = d
-				axis = 1 if absf(b.x - a.x) >= absf(b.y - a.y) else 2
-	return axis
+		var n: int = art.size()
+		for i in n - 1:
+			_road_seg(art[i], art[i + 1], half)
+		# a disc at every vertex fills the joint gap on turns and rounds the ends
+		for i in n:
+			_road_disc(art[i], half)
 
 
-## A road cell: a NARROW ROAD_W strip down the cell (axis-aligned) with ground verges either
-## side -- three disjoint axis-aligned tiles, so the street is street-scale, not a 44 m slab.
-func _lay_road_cell(x: float, z: float, axis: int) -> void:
-	if axis == 1:                                  # E-W road
-		var rz: float = z + (CELL - ROAD_W) * 0.5
-		_tile(Rect2(x, z, CELL, rz - z), "ground")
-		_tile(Rect2(x, rz, CELL, ROAD_W), "road")
-		_tile(Rect2(x, rz + ROAD_W, CELL, z + CELL - rz - ROAD_W), "ground")
-	else:                                          # N-S road
-		var rx: float = x + (CELL - ROAD_W) * 0.5
-		_tile(Rect2(x, z, rx - x, CELL), "ground")
-		_tile(Rect2(rx, z, ROAD_W, CELL), "road")
-		_tile(Rect2(rx + ROAD_W, z, x + CELL - rx - ROAD_W, CELL), "ground")
+## One straight ribbon quad down segment a->b, ROAD_W wide, at y = ROAD_Y. Corners ordered to the
+## same front-up winding as _emit_surfaces (right-of-a, right-of-b, left-of-b, left-of-a).
+func _road_seg(a: Vector2, b: Vector2, half: float) -> void:
+	var dv: Vector2 = b - a
+	if dv.length() < 0.001:
+		return
+	var dir: Vector2 = dv.normalized()
+	var nrm: Vector2 = Vector2(-dir.y, dir.x) * half     # unit perpendicular, scaled to half-width
+	var c0: Vector2 = a - nrm
+	var c1: Vector2 = b - nrm
+	var c2: Vector2 = b + nrm
+	var c3: Vector2 = a + nrm
+	_road_tris.append_array([
+		Vector3(c0.x, ROAD_Y, c0.y), Vector3(c1.x, ROAD_Y, c1.y), Vector3(c2.x, ROAD_Y, c2.y),
+		Vector3(c0.x, ROAD_Y, c0.y), Vector3(c2.x, ROAD_Y, c2.y), Vector3(c3.x, ROAD_Y, c3.y),
+	])
+
+
+## A filled disc (triangle fan) at a road vertex -- rounds the joint so consecutive segments and
+## crossing arterials merge into a continuous surface with no gap on the outside of the turn.
+func _road_disc(ctr: Vector2, r: float, segs: int = 10) -> void:
+	var prev: Vector2 = ctr + Vector2(r, 0.0)
+	for k in range(1, segs + 1):
+		var ang: float = TAU * float(k) / float(segs)
+		var cur: Vector2 = ctr + Vector2(cos(ang), sin(ang)) * r
+		_road_tris.append_array([
+			Vector3(ctr.x, ROAD_Y, ctr.y), Vector3(prev.x, ROAD_Y, prev.y), Vector3(cur.x, ROAD_Y, cur.y),
+		])
+		prev = cur
 
 
 ## The MAJOR San Francisco arterials, each a polyline in the map's coordinate space
