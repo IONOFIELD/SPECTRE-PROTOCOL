@@ -72,6 +72,12 @@ const SWARM_TOTAL_CAP: int = 620      # never push the total live unit count pas
 const SWARM_INTERVAL: float = 1.1     # seconds between upkeep passes
 const SWARM_BRIDGE_R: float = 440.0   # re-man a bridge deck once the squad is this close
 const SWARM_BRIDGE_MIN: int = 20      # ...up to this many infected on the reachable deck
+# Mobile perf preset lowers these three at boot (see _apply_mobile_preset); desktop keeps
+# the full const values. They're vars so the phone build can thin the horde + its respawn
+# ceiling for CPU headroom -- invisible through a 320-line optic. Default = the consts above.
+var _pop_scale: float = 1.0                     # multiplies the initial ecology spawn counts
+var _swarm_cap: int = SWARM_TOTAL_CAP           # live-unit ceiling the upkeep respects
+var _swarm_local: int = SWARM_LOCAL_TARGET      # squad-local infected top-up target
 const ELEMENTS: int = 4                 # max player teams (touch bar 1-4)
 var _team_count: int = 4                 # chosen at the startup menu (solo / 2 / 3 / 4)
 var _team_colors: Array[Color] = []      # per-element unit-icon colour, randomized every game (distinct hues)
@@ -173,13 +179,13 @@ const ELEMENT_ROSTER: Array = [&"cdr", &"cbt", &"med", &"snp", &"rec", &"eod"]  
 # the role is carried by HEAT + SIZE, not the model. false = minimalist thermal
 # shapes (the rymdkapsel read, matches v0.19); true = the PS1 .glb + idle rigs.
 const USE_MODELS: bool = false
-const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] passive stance   [V] arm  [B] AC-130 strike\n[TAB]/[Q] unit type   [1] select all   [E] scan   [SPACE] wide / ISR view\n[WASD] pan   [wheel] zoom   [T] palette   [C] snow   [H] hide\nEXFIL: cross a bridge, reach an evac LZ, or wipe the rival teams"
+const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] truce (after evac)   [V] arm  [B] AC-130 strike\n[TAB]/[Q] unit type   [1] select all   [E] scan   [SPACE] wide / ISR view\n[WASD] pan   [wheel] zoom   [T] palette   [C] snow   [H] hide\nEXFIL: cross a bridge, reach an evac LZ, or wipe the rival teams"
 
 # AC-130 gunship ISR HUD palette
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 125
+const BUILD_PUSHES: int = 126
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -422,6 +428,8 @@ func _ready() -> void:
 		_menu_sim = false          # captures/dev hooks show the real game, not the menu sweep
 		_menu_active = false       # straight into gameplay -- set BEFORE _spawn so the disembark stages
 		_intro_t = 0.0             # capture runs still play the intro (deploy hold -> wide pull)
+	if _is_mobile():
+		_apply_mobile_preset()     # phones: low detector res + no detail mesh + thinner horde
 	_init_res()                    # frame the feed to the window we were opened with
 	_build_tree()
 	_build_version_stamp()         # the build number, top-right, always on top
@@ -687,6 +695,24 @@ func _tdiag_meshes() -> void:
 	print("TDIAG total sheets: ", n)
 
 
+## True on an Android/iOS export (or when forced with SPECTRE_MOBILE=1 to preview the
+## phone build on a desktop dev box).
+func _is_mobile() -> bool:
+	return OS.has_feature("mobile") or OS.get_name() in ["Android", "iOS"] or OS.get_environment("SPECTRE_MOBILE") != ""
+
+
+## Phones run the FLIR at the low detector resolution, skip the fine detail-mesh pass, and
+## thin the horde + its respawn ceiling for CPU+GPU headroom -- all of it invisible through a
+## 320-line thermal optic. Desktop keeps the full-fat consts. Players can still bump the
+## resolution back up in-game with the res-cycle key; this is only the boot default.
+func _apply_mobile_preset() -> void:
+	res_idx = 0                       # 320x180 detector (desktop boots at 640x360)
+	ThermalLib.detail_on = false      # drop the fine detail-mesh shader pass
+	_pop_scale = 0.6                  # ~60% of the ambient ecology at spawn
+	_swarm_cap = 340                  # live-unit respawn ceiling (desktop: 620)
+	_swarm_local = 24                 # squad-local infected top-up target (desktop: 32)
+
+
 func _init_res() -> void:
 	var win: Vector2i = get_window().size
 	if win.x <= 0 or win.y <= 0:
@@ -885,7 +911,7 @@ func _populate_world() -> void:
 	rng.randomize()
 	# Tutorial is a calm map to learn on -- a fraction of the ecology, no hordes/gauntlet.
 	# The menu backdrop instead deploys a heavy Sanitation sweep to 'sanitize' the city.
-	var s: float = 0.16 if _tutorial else 1.0
+	var s: float = (0.16 if _tutorial else 1.0) * _pop_scale
 	sim.populate(int(POP_INFECTED * s), int(POP_CIV * s), 0, city.land)   # ecology only; san is a cluster
 	if _menu_sim:
 		# the menu sweep: a big Sanitation force spawned as one TIGHT pack, not scattered
@@ -1789,6 +1815,7 @@ func _process(delta: float) -> void:
 	_update_move_marker()
 	_update_ac_buttons()
 	_update_scan_button()
+	_update_psv_button()
 	_update_status_panel()
 	if _bar_l != null:
 		# control bars: hidden at the menu and once the game is over (debrief needs no controls)
@@ -3357,17 +3384,17 @@ func _swarm_upkeep(delta: float) -> void:
 		total += 1
 		if sim.team[i] == WorldSim.INFECTED and here.distance_squared_to(sim.pos[i]) < SWARM_LOCAL_R * SWARM_LOCAL_R:
 			local += 1
-	if total >= SWARM_TOTAL_CAP:
+	if total >= _swarm_cap:
 		return
 	# thin around the squad? emerge a small knot from a building off in the middle distance.
-	if local < SWARM_LOCAL_TARGET:
+	if local < _swarm_local:
 		var b: int = _building_near_ring(here, 130.0, 470.0)
 		if b >= 0:
 			var bd: Dictionary = city.buildings[b]
 			var c: Vector2 = Vector2(bd["x"] + bd["w"] * 0.5, bd["z"] + bd["d"] * 0.5)
 			var n: int = 2 + (_rng.randi() % 3)                 # 2-4 emerge
 			for _z in n:
-				if total >= SWARM_TOTAL_CAP:
+				if total >= _swarm_cap:
 					break
 				var hw: float = bd["w"] * 0.5 + 3.0
 				var hd: float = bd["d"] * 0.5 + 3.0
@@ -3384,7 +3411,7 @@ func _swarm_upkeep(delta: float) -> void:
 				on_deck += 1
 		if on_deck < SWARM_BRIDGE_MIN:
 			for _z in 5:
-				if total >= SWARM_TOTAL_CAP:
+				if total >= _swarm_cap:
 					break
 				var r: Rect2 = deck
 				var p: Vector2 = Vector2(_rng.randf_range(r.position.x, r.end.x), _rng.randf_range(r.position.y, r.end.y))
@@ -3467,10 +3494,22 @@ func _cycle_palette() -> void:
 		_menu_thermal_btn.text = "THERMAL: " + MODE_NAMES[mode]
 
 
+## A truce only becomes possible once the last evac helo has lifted off (T+EVAC_LEAVE) and
+## the Sanitation force is committed. Until that moment it's every team for itself and the
+## passive stance is locked.
+func _truce_unlocked() -> bool:
+	return mission != null and mission.t >= Mission.EVAC_LEAVE
+
+
 ## PSV: toggle your team's passive stance. While passive, any RIVAL team that's also
 ## running passive is held as an ally -- you don't fire on each other, and both keep
 ## engaging the infected + Sanitation. Drop it and you're free-fire on every team again.
+## Locked until the evac window closes -- see _truce_unlocked().
 func _toggle_passive() -> void:
+	if not _truce_unlocked():
+		var wait: int = int(ceil(Mission.EVAC_LEAVE - mission.t)) if mission != null else int(Mission.EVAC_LEAVE)
+		_loot_say("TRUCE LOCKED  --  EVAC STILL INBOUND (%ds)" % wait)
+		return
 	_passive = not _passive
 	_recompute_alliances()
 	if _psv_btn != null:
@@ -3657,6 +3696,22 @@ func _update_scan_button() -> void:
 		_scan_btn.text = "SCAN"
 		_scan_btn.modulate = Color(1, 1, 1, 1.0)
 		_scan_btn.disabled = false
+
+
+## PSV carries a lock: a truce between rival teams is only allowed once the last evac helo
+## has cleared (T+EVAC_LEAVE). Until then the button sits dark and disabled; after, it lights
+## and toggles the passive stance (bright while passive, dim while free-fire).
+func _update_psv_button() -> void:
+	if _psv_btn == null:
+		return
+	if not _truce_unlocked():
+		_psv_btn.text = "LOCK"
+		_psv_btn.modulate = Color(1, 1, 1, 0.30)
+		_psv_btn.disabled = true
+	else:
+		_psv_btn.text = "PSV"
+		_psv_btn.modulate = Color(1, 1, 1, 1.0) if _passive else Color(1, 1, 1, 0.7)
+		_psv_btn.disabled = false
 
 
 ## STATUS button: toggle the squad readout (each trooper's role + HP).

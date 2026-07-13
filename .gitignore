@@ -3,6 +3,9 @@
 .godot/
 /android/
 
+# Exported builds (APK/AAB output from export_presets.cfg). Rebuilt on demand.
+/build/
+
 # --- Spectre capture rig ---
 # Screenshot output from the SPECTRE_SHOT automated capture path.
 /_verify_*/
