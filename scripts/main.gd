@@ -159,7 +159,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] passive stance   [V] ar
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 92
+const BUILD_PUSHES: int = 93
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -1857,7 +1857,7 @@ func _draw_selection() -> void:
 		return
 	if mission != null and mission.result != Mission.ONGOING:
 		return                      # mission over: clear the sensor clutter for the debrief
-	_draw_streets()
+	# (no drawn road overlay -- the asphalt road corridors in the map speak for themselves)
 	_draw_loot()
 	_draw_hdd_pickups()
 	_draw_landmarks()
@@ -1875,25 +1875,6 @@ func _draw_selection() -> void:
 		sel_layer.draw_rect(Rect2(drag_start, m - drag_start), SEL_COL, false, 1.0)
 	_draw_escapes()
 	_draw_evac()
-
-
-## The MAJOR ARTERIALS as map lines (Google-Maps style) -- the SF road network. Only a
-## few dozen segments now (the majors, not a dense grid), so they read as the road map at
-## the strategic view instead of cluttering. Faded in past the tactical close-up, then held
-## on (no fade-out) so the wide gunship view shows the whole road network.
-func _draw_streets() -> void:
-	if city == null:
-		return
-	var a: float = clampf((cam_dist - 300.0) / 240.0, 0.0, 1.0) * 0.42
-	if a <= 0.01:
-		return
-	var col: Color = Color(0.40, 0.72, 0.50, a)
-	for seg in city.road_lines:
-		var a3: Vector3 = Vector3(seg[0].x, 0.15, seg[0].y)
-		var b3: Vector3 = Vector3(seg[1].x, 0.15, seg[1].y)
-		if cam.is_position_behind(a3) or cam.is_position_behind(b3):
-			continue
-		sel_layer.draw_line(_screen_point(a3), _screen_point(b3), col, 1.6)
 
 
 ## The ISR scan sweep: a green ring expanding from the reticle out past the corners,
