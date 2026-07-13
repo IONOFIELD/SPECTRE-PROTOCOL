@@ -450,6 +450,22 @@ func _lay_islands() -> void:
 		_fill_polygon(poly, "ground", -0.05)
 
 
+## A copy of `poly` rotated by `ang` (about its own centroid) and re-centred on `ctr` -- used to
+## reuse one landmass shape at another spot (the Marin blob becomes the Oakland blob at the Bay end).
+func _placed_copy(poly: PackedVector2Array, ang: float, ctr: Vector2) -> PackedVector2Array:
+	var src: Vector2 = Vector2.ZERO
+	for v in poly:
+		src += v
+	src /= float(poly.size())
+	var ca: float = cos(ang)
+	var sa: float = sin(ang)
+	var out: PackedVector2Array = PackedVector2Array()
+	for v in poly:
+		var r: Vector2 = v - src
+		out.append(Vector2(r.x * ca - r.y * sa, r.x * sa + r.y * ca) + ctr)
+	return out
+
+
 ## Fill a simple polygon with a flat mesh of `mat` at height y. Triangles are forced to the same
 ## front-up winding as _emit_surfaces (+ tangents), so it renders under the thermal shader.
 func _fill_polygon(poly: PackedVector2Array, mat: String, y: float) -> void:
@@ -553,8 +569,12 @@ func _lay_geography() -> void:
 			Vector2(1365, 495), Vector2(1330, 530), Vector2(1270, 528), Vector2(1245, 480),
 		]),
 	]
+	# OAKLAND / East Bay: a COPY of the Marin landmass, rotated 135deg so its bulk points SE (its shore
+	# faces the bridge) and dropped at the far end of the Bay Bridge's dogleg span -- so that bridge also
+	# terminates on real land, like the Golden Gate does. Renders + gets foliage as any far land.
+	far_lands.append(_placed_copy(far_lands[0], 2.356, Vector2(1850.0, 1000.0)))
 	# Past Treasure Island the Bay Bridge continues -- a SECOND copy of the bridge model runs off its
-	# SE shoulder at ~45deg and trails off the map to Oakland (never reached). See _lay_bay_bridge.
+	# SE shoulder at ~45deg to the Oakland landmass above (never reached). See _lay_bay_bridge.
 
 	map_lo = poly_lo
 	map_hi = poly_hi
