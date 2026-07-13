@@ -176,7 +176,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] passive stance   [V] ar
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 118
+const BUILD_PUSHES: int = 119
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -2622,13 +2622,33 @@ func _draw_element_roster(win: Vector2) -> void:
 		return
 	var font: Font = _hud_font
 	var fs: int = 12
-	var entries: Array = []
+	# A FIXED-size box with one team per ROW, and every field at a FIXED COLUMN. Nothing is measured
+	# from the text or laid out relative to the previous field, so updating a number (HP% / count /
+	# flags) never reflows or re-centres the box -- the text stays put.
+	var pad: float = 12.0
+	var pad_v: float = 7.0
+	var row_h: float = 16.0
+	var box_w: float = 184.0
+	var box_h: float = float(_team_count) * row_h + pad_v * 2.0
+	var bx: float = win.x * 0.5 - box_w * 0.5
+	var by: float = win.y - 16.0 - box_h
+	sel_layer.draw_rect(Rect2(bx, by, box_w, box_h), Color(0.0, 0.045, 0.0, 0.85), true)
+	sel_layer.draw_rect(Rect2(bx, by, box_w, box_h), Color(HUD_COL.r, HUD_COL.g, HUD_COL.b, 0.9), false, 1.5)
+	var cx0: float = bx + pad
+	var col_tag: float = cx0 + 14.0
+	var col_hp: float = cx0 + 48.0
+	var col_cnt: float = cx0 + 96.0
+	var col_flg: float = cx0 + 134.0
+	var dim: Color = Color(0.55, 0.55, 0.55, 0.6)
 	for e in _team_count:
+		var ry: float = by + pad_v + float(e) * row_h + 12.0     # text baseline for this row
 		var ids: Array = sim.element_ids(e)
 		var tag: String = "YOU" if e == 0 else "T%d" % (e + 1)
 		if ids.is_empty():
-			entries.append({"text": tag + " WIPED", "col": Color(0.55, 0.55, 0.55, 0.6), "swatch": false})
+			sel_layer.draw_string(font, Vector2(col_tag, ry), tag, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, dim)
+			sel_layer.draw_string(font, Vector2(col_hp, ry), "WIPED", HORIZONTAL_ALIGNMENT_LEFT, -1, fs, dim)
 			continue
+		var col: Color = _team_colors[e] if e < _team_colors.size() else HUD_COL
 		var hp_sum: float = 0.0
 		var hp_max: float = 0.0
 		var buffed: int = 0
@@ -2637,37 +2657,17 @@ func _draw_element_roster(win: Vector2) -> void:
 			hp_max += WorldSim.STATS[sim.kind[i]][1]
 			if sim.armor[i] > 0.0 or sim.buff_t[i] > 0.0:
 				buffed += 1
-		var line: String = "%s %d%% x%d" % [tag, int(round(100.0 * hp_sum / maxf(1.0, hp_max))), ids.size()]
+		sel_layer.draw_rect(Rect2(cx0, ry - 9.0, 9.0, 9.0), col, true)   # team-colour swatch
+		sel_layer.draw_string(font, Vector2(col_tag, ry), tag, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, col)
+		sel_layer.draw_string(font, Vector2(col_hp, ry), "%d%%" % int(round(100.0 * hp_sum / maxf(1.0, hp_max))), HORIZONTAL_ALIGNMENT_LEFT, -1, fs, col)
+		sel_layer.draw_string(font, Vector2(col_cnt, ry), "x%d" % ids.size(), HORIZONTAL_ALIGNMENT_LEFT, -1, fs, col)
+		var flg: String = ""
 		if buffed > 0:
-			line += "+"                                          # a unit is armoured/buffed
+			flg += "+"                                            # a unit is armoured/buffed
 		if e != 0 and sim.allied.get(e, false):
-			line += " [P]"
-		entries.append({"text": line, "col": _team_colors[e] if e < _team_colors.size() else HUD_COL, "swatch": true})
-	# measure the strip, then centre it along the bottom
-	var gap: float = 15.0
-	var widths: Array = []
-	var total: float = 0.0
-	for en in entries:
-		var w: float = (12.0 if en["swatch"] else 0.0) + font.get_string_size(en["text"], HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
-		widths.append(w)
-		total += w
-	total += gap * float(maxi(0, entries.size() - 1))
-	var pad: float = 12.0
-	var box_w: float = total + pad * 2.0
-	var box_h: float = 26.0
-	var bx: float = win.x * 0.5 - box_w * 0.5
-	var by: float = win.y - 18.0 - box_h                         # along the very bottom
-	# green box with a dark, semi-opaque backing
-	sel_layer.draw_rect(Rect2(bx, by, box_w, box_h), Color(0.0, 0.045, 0.0, 0.85), true)
-	sel_layer.draw_rect(Rect2(bx, by, box_w, box_h), Color(HUD_COL.r, HUD_COL.g, HUD_COL.b, 0.9), false, 1.5)
-	var ex: float = bx + pad
-	var ty: float = by + box_h * 0.5 + 4.5
-	for i in entries.size():
-		var en: Dictionary = entries[i]
-		if en["swatch"]:
-			sel_layer.draw_rect(Rect2(ex, ty - 10.0, 9.0, 9.0), en["col"], true)
-		sel_layer.draw_string(font, Vector2(ex + (12.0 if en["swatch"] else 0.0), ty), en["text"], HORIZONTAL_ALIGNMENT_LEFT, -1, fs, en["col"])
-		ex += float(widths[i]) + gap
+			flg += " [P]"
+		if flg != "":
+			sel_layer.draw_string(font, Vector2(col_flg, ry), flg, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, col)
 
 
 ## The Sanitation RADIATION WARNING -- drawn on the TOP overlay layer (above the bars and all
