@@ -438,3 +438,18 @@ func _building(rng: RandomNumberGenerator, x: float, z: float, w: float, d: floa
 		_add_box(Vector3(x + w * 0.5, h, z + d - t * 0.5), Vector3(w, 0.9, t), "parapet")
 		_add_box(Vector3(x + t * 0.5, h, z + d * 0.5), Vector3(t, 0.9, d), "parapet")
 		_add_box(Vector3(x + w - t * 0.5, h, z + d * 0.5), Vector3(t, 0.9, d), "parapet")
+
+	# LOOTABLE buildings wear a small hot rooftop beacon that strobes + blooms on the feed, so
+	# you can pick out what's worth breaching (skyscrapers don't get one -- they're not lootable).
+	if not tall:
+		var beacon: MeshInstance3D = MeshInstance3D.new()
+		var bm: SphereMesh = SphereMesh.new()
+		bm.radius = 0.7
+		bm.height = 1.4
+		bm.radial_segments = 6
+		bm.rings = 3
+		beacon.mesh = bm
+		beacon.position = Vector3(x + w * 0.5, h + 1.1, z + d * 0.5)
+		beacon.material_override = ThermalLib.get_material("loot_beacon", _snap_res)
+		beacon.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(beacon)

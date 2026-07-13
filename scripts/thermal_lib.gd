@@ -68,6 +68,7 @@ const MAT: Dictionary = {
 	"suit_elite":{"t": 21.5, "sky": 1.0, "e": 0.93, "solar": 0.0, "d": 0, "dt": 0.0, "de": 0.0},
 	"zed":       {"t": 17.5, "sky": 1.0, "e": 0.96, "solar": 0.0, "d": 0, "dt": 0.0, "de": 0.0},
 	"tracer":    {"t": 240.0, "sky": 0.0, "e": 1.00, "solar": 0.0, "d": 0, "dt": 0.0, "de": 0.0},   # AC-130 round in flight: a clean hot streak that blooms fuzzy-white (no writhe)
+	"loot_beacon": {"t": 135.0, "sky": 0.0, "e": 1.00, "solar": 0.0, "d": 0, "dt": 0.0, "de": 0.0, "flick": 1.0},   # rooftop marker on LOOTABLE buildings: strobes (flicker) + blooms gold/white on the feed
 	"fire":      {"t": 255.0, "sky": 0.0, "e": 1.00, "solar": 0.0, "d": 0, "dt": 0.0, "de": 0.0, "flick": 1.0, "writhe": 1.0},   # hot enough to bloom white, low enough that the shimmer's dark tongues still read
 	"burning":   {"t": 190.0, "sky": 0.0, "e": 0.97, "solar": 0.0, "d": 4, "dt": 22.0, "de": 0.05, "flick": 1.0},  # a wreck on fire
 }
