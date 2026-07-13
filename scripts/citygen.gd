@@ -38,6 +38,7 @@ var water: Array[Rect2] = []     # (unused with a polygon; the ocean plane is th
 var bridges: Array[Rect2] = []   # walkable decks, movement-slowed -- the only ways off the peninsula
 var escapes: Array[Rect2] = []   # bridge far ends: step inside to get off the map
 var far_lands: Array = []        # large model-free landmasses the bridges run to (illusion of a wider world)
+var dogleg: PackedVector2Array = PackedVector2Array()   # Bay Bridge's 45deg span past Treasure Island (visual deck)
 var parks: Array[Rect2] = []     # Golden Gate Park, the Presidio, the Panhandle, Twin Peaks, ...
 var arterials: Array = []        # the major roads, each a PackedVector2Array polyline -- cars ride these
 var road_lines: Array = []       # arterial centrelines [a, b] for the map overlay (main draws them)
@@ -145,8 +146,10 @@ func generate(snap_res: Vector2i) -> void:
 	# bridge decks over the water (a mid-tone between water and land, so they read)
 	for b in bridges:
 		_tile(b, "bridge")
-	_bridge_towers(bridges[0], true)     # Golden Gate runs north -- towers span x
-	_bridge_towers(bridges[1], false)    # Bay Bridge runs east -- towers span z
+	if not dogleg.is_empty():
+		_fill_polygon(dogleg, "bridge", 0.0)   # the Bay Bridge's off-screen dogleg past Treasure Island
+	_bridge_towers(bridges[1], false)    # Bay Bridge towers (procedural); the Golden Gate's come from the GLB
+	_lay_gg_bridge()                     # the iconic Golden Gate, a low-poly GLB reskinned as cold steel
 
 	# the arterials, as overlay centrelines (main draws these as the "black line" roads)
 	for art in arterials:
@@ -508,29 +511,36 @@ func _lay_geography() -> void:
 		Rect2(727, 892, 100, 100),   # McLaren Park -- SE
 		Rect2(435, 690, 110, 110),   # Twin Peaks / Mount Sutro -- the central hills
 	]
-	# The escape bridges, EXTENDED past their old ends to plug into the far landmasses below, so the
-	# world reads as connected instead of the decks stopping over open water. The WIN trigger is still
-	# `escapes` at the OLD deck ends -- everything past it (deck + landmass) is illusion you never reach.
+	# BRIDGES. The Golden Gate runs north to a big MARIN landmass (a low-poly GLB sits on this deck);
+	# the Bay Bridge runs east to TREASURE ISLAND, then doglegs ~45deg and trails off the map to
+	# Oakland (never reached). The walkable decks (nav / gauntlet / escape) are the axis-aligned Rect2s
+	# below; the dogleg past Treasure Island is a VISUAL deck only. WIN zones sit on the reachable decks.
 	bridges = [
-		Rect2(235, -450, 66, 630),   # Golden Gate, north: coast (~z150) -> north-bay island (~z-440)
-		Rect2(950, 435, 560, 72),    # Bay Bridge, east: coast (~x940) -> east-bay mainland (~x1510)
+		Rect2(251, -450, 34, 630),   # Golden Gate, north: SF coast (~z150) -> Marin (~z-405). Narrow -- the GLB rides here.
+		Rect2(950, 435, 340, 72),    # Bay Bridge, east: SF coast (~x940) -> Treasure Island (~x1290)
 	]
 	escapes = [
-		Rect2(235, -120, 66, 46),    # Marin end -- UNCHANGED win zone (now mid-deck; the rest is illusion)
-		Rect2(1246, 435, 44, 72),    # Oakland end -- UNCHANGED win zone
+		Rect2(251, -120, 34, 46),    # Marin end -- win zone on the GG deck (unchanged position, narrowed to the deck)
+		Rect2(1246, 435, 44, 72),    # Treasure Island end -- win zone on the Bay deck (UNCHANGED)
 	]
-	# Large, MODEL-FREE landmasses the bridges run to. NOT part of land_poly -> nothing spawns or walks
-	# there; they exist only to sell an interconnected world at the far bridge ends.
+	# Large, MODEL-FREE landmasses (NOT in land_poly -> nothing spawns or walks there; pure backdrop).
 	far_lands = [
-		PackedVector2Array([   # NORTH BAY island (Marin), beyond the Golden Gate
-			Vector2(80, -440), Vector2(120, -650), Vector2(320, -720), Vector2(520, -650),
-			Vector2(545, -470), Vector2(360, -430), Vector2(200, -440),
+		PackedVector2Array([   # MARIN -- big, fills the north horizon well beyond the widest view
+			Vector2(-360, -410), Vector2(-320, -820), Vector2(-120, -1240), Vector2(280, -1400),
+			Vector2(680, -1330), Vector2(970, -1000), Vector2(1010, -640), Vector2(840, -420),
+			Vector2(520, -395), Vector2(120, -405),
 		]),
-		PackedVector2Array([   # EAST BAY mainland (Oakland), beyond the Bay Bridge
-			Vector2(1500, 460), Vector2(1560, 250), Vector2(1780, 210), Vector2(1975, 320),
-			Vector2(1990, 560), Vector2(1880, 720), Vector2(1660, 705), Vector2(1515, 545),
+		PackedVector2Array([   # TREASURE ISLAND -- a modest island midway on the Bay Bridge
+			Vector2(1090, 360), Vector2(1150, 340), Vector2(1290, 350), Vector2(1330, 440),
+			Vector2(1310, 520), Vector2(1210, 545), Vector2(1100, 520), Vector2(1075, 440),
 		]),
 	]
+	# Past Treasure Island the Bay Bridge turns ~45deg and runs off the map SE (Oakland, never reached).
+	# A VISUAL deck only -- a diagonal quad over the water, trailing beyond the map bounds "into nothing".
+	var dl_a: Vector2 = Vector2(1305, 500)          # off Treasure Island's SE shoulder
+	var dl_b: Vector2 = Vector2(1820, 1015)         # off-screen SE, past the map edge
+	var dl_n: Vector2 = (dl_b - dl_a).normalized().orthogonal() * 36.0    # half the deck width
+	dogleg = PackedVector2Array([dl_a - dl_n, dl_b - dl_n, dl_b + dl_n, dl_a + dl_n])
 
 	map_lo = poly_lo
 	map_hi = poly_hi
@@ -578,6 +588,22 @@ func _bridge_towers(deck: Rect2, north_running: bool) -> void:
 			var xc: float = deck.position.x + deck.size.x * f
 			_add_box(Vector3(xc, 0.0, deck.position.y + 1.6), Vector3(3.2, h, 3.2), "parapet")
 			_add_box(Vector3(xc, 0.0, deck.end.y - 1.6), Vector3(3.2, h, 3.2), "parapet")
+
+
+## The Golden Gate as a HERO PROP: a low-poly GLB reskinned to cold steel (`parapet`), scaled to span
+## its deck and grounded, so the bridge reads as the icon instead of a bare grey slab + boxy towers.
+## The walkable deck tile underneath stays (units cross it at y=0); this is the superstructure on top.
+func _lay_gg_bridge() -> void:
+	var deck: Rect2 = bridges[0]
+	var model: Vector3 = Vector3(18.5, 74.1, 392.7)     # measured GLB bounds (metres)
+	var s: float = deck.size.y / model.z                # deck runs N-S (z) -- uniform-fit to its length
+	var node: Node3D = ThermalModel.spawn_fit(
+		"res://models/buildings and scenery/golden_gate_bridge.glb", "parapet", _snap_res, model * s, 0.0)
+	if node == null:
+		return
+	node.position.x = deck.position.x + deck.size.x * 0.5   # centre on the deck; spawn_fit already grounded y
+	node.position.z = deck.position.y + deck.size.y * 0.5
+	add_child(node)
 
 
 ## Single-mesh / low-mat PSX shells only. NEVER the mega-packs (tacos, laundry,

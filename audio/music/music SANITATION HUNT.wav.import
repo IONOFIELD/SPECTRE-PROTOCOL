@@ -1,0 +1,24 @@
+[remap]
+
+importer="wav"
+type="AudioStreamWAV"
+uid="uid://bbdb0p8vhmiah"
+path="res://.godot/imported/music SANITATION HUNT.wav-ea3a95d05c49bccfaffbfdbd13fb76ee.sample"
+
+[deps]
+
+source_file="res://audio/music/music SANITATION HUNT.wav"
+dest_files=["res://.godot/imported/music SANITATION HUNT.wav-ea3a95d05c49bccfaffbfdbd13fb76ee.sample"]
+
+[params]
+
+force/8_bit=false
+force/mono=false
+force/max_rate=false
+force/max_rate_hz=44100
+edit/trim=false
+edit/normalize=false
+edit/loop_mode=0
+edit/loop_begin=0
+edit/loop_end=-1
+compress/mode=2

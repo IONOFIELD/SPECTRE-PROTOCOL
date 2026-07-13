@@ -28,7 +28,8 @@ const INTRO_HOLD: float = 4.5         # seconds holding CLOSE on the drop before
 const ZOOM_MIN: float = 240.0         # closest: the ISR narrow-view distance -- you can't zoom in past the tactical frame
 const ZOOM_MAX: float = 1650.0        # farthest: the whole peninsula frames; ocean, never void, beyond
 const MUSIC_MENU: String = "res://audio/music/music 1.wav"     # the menu / startup theme (loops)
-const MUSIC_DEPLOY: String = "res://audio/music/music 2.wav"   # kicks in the moment you deploy (loops)
+# gameplay beds -- one is picked at random on deploy for variety (both loop)
+const MUSIC_DEPLOY: Array = ["res://audio/music/music 2.wav", "res://audio/music/music 3.wav"]
 const AMBIENCE_BED: String = "res://audio/ambience/ghost_town.wav"   # ghost-town bed
 const HUD_FONT: String = "res://fonts/inversionz_unboxed.ttf"   # Inversionz Unboxed, Darrell Flood
 
@@ -165,7 +166,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] passive stance   [V] ar
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 108
+const BUILD_PUSHES: int = 109
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -249,8 +250,10 @@ var _deploy_emerge: Vector2 = Vector2.ZERO   # where element-0 troops emerge FRO
 var _intro_t: float = -1.0             # >=0: the intro camera is holding close on the drop before pulling out wide
 var _nuke_fired: bool = false          # hoarding 50 HDDs trips a nuke -- total loss
 const NUKE_HDD: int = 50               # drives that draw the strike that ends everything
-# The Sanitation theme layer -- drop one of these in and it rides in by proximity on deploy.
-const MUSIC_SANI: Array = ["res://audio/music/musicSANI.ogg", "res://audio/music/musicSANI.wav"]
+# The Sanitation theme layer -- the HUNT bed rides in by proximity while the wipe force is loose;
+# the DEPLOY sting hits once, the moment they drop in.
+const MUSIC_SANI: Array = ["res://audio/music/music SANITATION HUNT.wav"]
+const MUSIC_SANI_DEPLOY: String = "res://audio/music/music SANITATION DEPLOY.wav"
 const SANI_MUS_NEAR: float = 30.0      # within this many metres the theme is at full presence
 const SANI_MUS_FAR: float = 240.0      # past this the theme fades toward the floor
 var banner: Label                      # win / lose card, hidden until the mission ends
@@ -1197,8 +1200,10 @@ func _deploy_sanitation() -> void:
 			vp.add_child(v)
 		views.append(v)
 		_anim.append(Animator.new(v, _rng) if v != null else null)
-	# Fire up the wipe-force theme layer (rides in by proximity below). Silent no-op
-	# until the asset is provided; tries .ogg then .wav.
+	# A one-shot DEPLOY sting the instant the wipe force drops in, then the HUNT bed rides in by
+	# proximity below (silent no-op if an asset is missing).
+	if ResourceLoader.exists(MUSIC_SANI_DEPLOY):
+		Audio.sfx(load(MUSIC_SANI_DEPLOY), 4.0)
 	_sani_music_on = false
 	for path in MUSIC_SANI:
 		if Audio.sani_theme(path):
@@ -3881,7 +3886,7 @@ func _start_game(count: int) -> void:
 		_menu_layer.queue_free()
 		_menu_layer = null
 	_menu_active = false
-	Audio.play_music(MUSIC_DEPLOY, 0.0)   # hard cut to the deploy track the instant you drop
+	Audio.play_music(MUSIC_DEPLOY[randi() % MUSIC_DEPLOY.size()], 0.0)   # hard cut to a deploy bed the instant you drop
 	_layout_controls()                 # (bars auto-show in _process once _menu_active is false)
 	await _rebuild_world()          # respawn with the chosen team count at the edges
 	feed = "deploy"
