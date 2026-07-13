@@ -44,7 +44,8 @@ func generate(snap_res: Vector2i, city: CityGen, count: int, seed_value: int = -
 		rng.seed = seed_value
 
 	var mat: ShaderMaterial = ThermalLib.get_material(BODY_MAT, snap_res)
-	var span: float = float(city.grid_n) * (CityGen.BLOCK + CityGen.STREET)
+	var lo: Vector2 = city.poly_lo
+	var hi: Vector2 = city.poly_hi
 
 	var placed: int = 0
 	var tries: int = 0
@@ -52,13 +53,13 @@ func generate(snap_res: Vector2i, city: CityGen, count: int, seed_value: int = -
 		tries += 1
 		# organic: ~55% lone bodies, else a small huddle that fell together
 		var huddle: int = 1 if rng.randf() < 0.55 else 2 + rng.randi() % 4
-		var cx: float = rng.randf_range(0.0, span)
-		var cz: float = rng.randf_range(0.0, span)
+		var cx: float = rng.randf_range(lo.x, hi.x)
+		var cz: float = rng.randf_range(lo.y, hi.y)
 		for _k in huddle:
 			if placed >= count:
 				break
 			var at: Vector2 = Vector2(cx + rng.randfn(0.0, 1.2), cz + rng.randfn(0.0, 1.2))
-			if _in_building(at):
+			if _in_building(at) or not Geometry2D.is_point_in_polygon(at, city.land_poly):
 				continue
 			_place(at, rng, mat)
 			placed += 1
