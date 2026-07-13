@@ -909,7 +909,11 @@ func _building(rng: RandomNumberGenerator, x: float, z: float, w: float, d: floa
 	# 0° / 90° only — keeps stretched footprints aligned to the parcel axes (and off the
 	# rotated-mesh bright-quad bug).
 	var yaw: float = PI * 0.5 if rng.randf() < 0.5 else 0.0
-	var shell: Node3D = ThermalModel.spawn_fit(path, wall_mat, _snap_res, Vector3(w, h, d), yaw)
+	# spawn_fit scales to size_m in LOCAL space THEN yaws, so at 90deg the world footprint comes out
+	# SWAPPED (d x w). The collision box is (w x d), so SWAP size_m here to match -- otherwise the
+	# visual walls overhang the collision on rotated shells and units walk right through them.
+	var fit: Vector3 = Vector3(d, h, w) if yaw != 0.0 else Vector3(w, h, d)
+	var shell: Node3D = ThermalModel.spawn_fit(path, wall_mat, _snap_res, fit, yaw)
 	if shell != null:
 		# spawn_fit already grounded the base to y=0 (via _align_bottom_to_y0) -- KEEP that y and
 		# only place it in XZ. Overwriting y with 0.0 (the old bug) discarded the grounding, so any

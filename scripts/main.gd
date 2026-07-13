@@ -37,6 +37,8 @@ const MUSIC_DEPLOY: Array = ["res://audio/music/music 2.wav", "res://audio/music
 # synchronously at the deploy instant hitched/failed on mobile (no gameplay music). Preloading
 # them at startup -- same as the menu bed -- makes the deploy switch instant + reliable.
 var _deploy_streams: Array = []
+var _sani_hunt_stream: AudioStream            # the Sanitation HUNT bed -- preloaded so the deploy switch is instant
+var _sani_deploy_stream: AudioStream          # the Sanitation DEPLOY sting
 const AMBIENCE_BED: String = "res://audio/ambience/ghost_town.wav"   # ghost-town bed
 const HUD_FONT: String = "res://fonts/inversionz_unboxed.ttf"   # Inversionz Unboxed, Darrell Flood
 
@@ -189,7 +191,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] truce (after evac)   [V
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 129
+const BUILD_PUSHES: int = 130
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -467,6 +469,10 @@ func _ready() -> void:
 	for mp in MUSIC_DEPLOY:              # preload the gameplay beds so the deploy switch is instant
 		if ResourceLoader.exists(mp):
 			_deploy_streams.append(load(mp))
+	if ResourceLoader.exists(MUSIC_SANI_HUNT):     # preload the Sanitation beds too (runtime-loading a big
+		_sani_hunt_stream = load(MUSIC_SANI_HUNT)   # WAV at the deploy instant hitched/failed -> no hunt music)
+	if ResourceLoader.exists(MUSIC_SANI_DEPLOY):
+		_sani_deploy_stream = load(MUSIC_SANI_DEPLOY)
 	_hud_font = load(HUD_FONT)          # the game font, for the drawn banners + threat box
 	# Players get the startup menu (music1 already playing) over a slowly-rotating feed;
 	# captures/dev hooks (which cleared _menu_active above) drop straight into gameplay.
@@ -1291,11 +1297,11 @@ func _deploy_sanitation() -> void:
 		_anim.append(Animator.new(v, _rng) if v != null else null)
 	# The instant the wipe force drops in: a one-shot DEPLOY sting, and whatever gameplay track is
 	# playing CROSSFADES OUT to the HUNT bed, which then loops as the only music until the mission ends.
-	if ResourceLoader.exists(MUSIC_SANI_DEPLOY):
-		Audio.sfx(load(MUSIC_SANI_DEPLOY), 4.0)
+	if _sani_deploy_stream != null:
+		Audio.sfx(_sani_deploy_stream, 4.0)
 	_sani_music_on = false
-	if ResourceLoader.exists(MUSIC_SANI_HUNT):
-		Audio.play_music(MUSIC_SANI_HUNT, 2.0)   # gameplay bed fades out, HUNT fades in + loops
+	if _sani_hunt_stream != null:
+		Audio.play_music(_sani_hunt_stream, 2.0)   # gameplay bed fades out, HUNT fades in + loops
 		_sani_music_on = true
 
 
@@ -1647,18 +1653,18 @@ func _advance_panic(delta: float) -> void:
 				pc["t"] = 0.0
 				if is_instance_valid(pc["body"]):
 					pc["body"].material_override = ThermalLib.get_material("burning", snap_res)
-				var fm: BoxMesh = BoxMesh.new()
-				fm.size = Vector3(2.4, 3.2, 2.8)
-				var fire: MeshInstance3D = MeshInstance3D.new()
-				fire.mesh = fm
-				fire.position = Vector3(pc["pos"].x, 2.4, pc["pos"].y)
-				fire.material_override = ThermalLib.get_material("fire", snap_res)
-				vp.add_child(fire)
-				pc["fire"] = fire
+				pc["emit"] = 0.0
 				_sfx_at(Vector3(pc["pos"].x, 1.0, pc["pos"].y), _sfx_expl, -2.0)
 				_spawn_fireball(pc["pos"], 4.5, 0.45, 8, 1.6)   # the car brews up in a churning fireball
-		elif pc["t"] > PANIC_BURN:
-			done.append(pc)
+		else:
+			# BURNING: a live writhing flame COLUMN off the wreck (rising, churning particles) rather than a
+			# single static box that read as an "ice cream cone". The car body already glows (burning mat).
+			pc["emit"] = float(pc.get("emit", 0.0)) - delta
+			if pc["emit"] <= 0.0:
+				pc["emit"] = 0.13
+				_spawn_flame_column(pc["pos"])
+			if pc["t"] > PANIC_BURN:
+				done.append(pc)
 	for pc in done:
 		_free_panic(pc)
 		_panics.erase(pc)
@@ -1895,7 +1901,7 @@ func _process(delta: float) -> void:
 	var mv: Vector2 = Vector2(
 		float(Input.is_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT)) - float(Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT)),
 		float(Input.is_key_pressed(KEY_W) or Input.is_key_pressed(KEY_UP)) - float(Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN)))
-	if mv != Vector2.ZERO and not _menu_active:
+	if mv != Vector2.ZERO and not _menu_active and _can_pan():
 		cam_manual = true
 		var s: float = cam_dist * 0.9 * delta
 		var fwd: Vector2 = Vector2(cos(cam_az), sin(cam_az))    # into the screen
@@ -1910,6 +1916,15 @@ func _process(delta: float) -> void:
 		cam_tz = lerpf(cam_tz, c.z, minf(1.0, delta * 1.6))
 	if f.orbit > 0.0 and cut_t < 0.0:
 		cam_az += f.orbit * delta            # the gunship always pylon-turns -- no static view
+
+	# The wide ORBIT view stays LOCKED on the city centre until you zoom IN (pinch/wheel) -- so at the
+	# widest zoom the whole SF peninsula is always framed and you can never pan out to where the far
+	# landmasses end. Zoom in past the pan threshold and it frees up.
+	if feed == "orbit" and not _can_pan() and city != null:
+		var ctr: Vector2 = city.land.get_center()
+		cam_tx = lerpf(cam_tx, ctr.x, minf(1.0, delta * 3.0))
+		cam_tz = lerpf(cam_tz, ctr.y, minf(1.0, delta * 3.0))
+		cam_manual = false
 
 	# Clamp the optic to the PENINSULA + its bridge decks (NOT the full map bounds, which include
 	# the far landmasses), and to the zoom band -- so the view can follow a unit onto a bridge to
@@ -2976,6 +2991,16 @@ func _spawn_fireball(pos: Vector2, radius: float, life: float, n: int, h: float 
 		_spawn_flash3d(pos + off, sz, life * _rng.randf_range(0.6, 1.05), h + lift, v3)
 
 
+## A short writhing flame COLUMN off a burning wreck -- a few small hot particles rising + churning,
+## re-emitted every ~0.13 s while it burns (see _advance_panic) so the fire lives instead of sitting static.
+func _spawn_flame_column(pos: Vector2) -> void:
+	for _k in 3:
+		var off: Vector2 = Vector2(_rng.randf_range(-1.3, 1.3), _rng.randf_range(-1.3, 1.3))
+		var sz: float = _rng.randf_range(1.1, 2.3)
+		var v3: Vector3 = Vector3(_rng.randf_range(-1.2, 1.2), _rng.randf_range(4.5, 7.5), _rng.randf_range(-1.2, 1.2))
+		_spawn_flash3d(pos + off, sz, _rng.randf_range(0.4, 0.7), 1.4 + _rng.randf_range(0.0, 1.6), v3)
+
+
 ## Sanitation flamethrower: a streaming jet of hot particles. A single burst sprays a
 ## cone of fire-blobs from the nozzle that FLY outward along the aim and drift upward as
 ## they fade, so the tongue licks and rolls (vs. the old four static blobs). The thermal
@@ -3098,6 +3123,13 @@ func _zoom_max() -> float:
 	return ZOOM_MAX_ORBIT if feed == "orbit" else ZOOM_MAX_DEPLOY
 
 
+## Panning is only allowed once you've zoomed IN (pinch/wheel). At the widest ORBIT zoom the view stays
+## locked on the city centre, so the whole SF peninsula is always framed + you can't drift out to where
+## the far landmasses end. The close DEPLOY/GROUND view always pans (it follows the squad anyway).
+func _can_pan() -> bool:
+	return feed != "orbit" or cam_dist < _zoom_max() * 0.80
+
+
 func _channel_change(to: String) -> void:
 	if cut_t >= 0.0:
 		return
@@ -3125,7 +3157,7 @@ func _input(e: InputEvent) -> void:
 	if _menu_active:
 		return                     # the menu buttons handle their own clicks; no gameplay input
 	if e is InputEventMouseMotion and (e.button_mask & MOUSE_BUTTON_MASK_MIDDLE or (e.button_mask & MOUSE_BUTTON_MASK_LEFT and Input.is_key_pressed(KEY_SHIFT))):
-		if Input.is_key_pressed(KEY_CTRL):
+		if Input.is_key_pressed(KEY_CTRL) and _can_pan():
 			cam_manual = true
 			var ca: float = cos(cam_az)
 			var sa: float = sin(cam_az)
@@ -3234,7 +3266,7 @@ func _input(e: InputEvent) -> void:
 			if _pinch_prev > 1.0 and d > 1.0:
 				cam_dist = clampf(cam_dist * (_pinch_prev / d), ZOOM_MIN, _zoom_max())
 			_pinch_prev = d
-		else:
+		elif _can_pan():
 			_touch_moved += e.relative.length()
 			cam_manual = true
 			var ca: float = cos(cam_az)
@@ -3242,6 +3274,8 @@ func _input(e: InputEvent) -> void:
 			var k: float = cam_dist * 0.0022
 			cam_tx += (-e.relative.x * sa - e.relative.y * ca) * k
 			cam_tz += (e.relative.x * ca - e.relative.y * sa) * k
+		else:
+			_touch_moved += e.relative.length()   # still count travel so a locked drag reads as a pan, not a tap
 
 
 func _two_touch_dist() -> float:
