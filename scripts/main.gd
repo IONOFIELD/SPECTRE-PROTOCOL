@@ -162,7 +162,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] passive stance   [V] ar
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 96
+const BUILD_PUSHES: int = 97
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -242,6 +242,7 @@ const HELI_ALT: float = 19.0           # heli altitude scale (max ~42 m at v0.19
 const ROTOR_SPD: float = 22.0          # main-rotor spin, rad/s (v0.19 elapsed*22)
 var _deploy_stagger: Array = []        # [{i, at, form}]: element-0 troopers disembarking one by one
 var _deploy_clock: float = 0.0         # seconds since the drop, drives the disembark stagger
+var _deploy_emerge: Vector2 = Vector2.ZERO   # where element-0 troops emerge FROM -- the vehicle's own spot
 var _intro_t: float = -1.0             # >=0: the intro camera is holding close on the drop before pulling out wide
 var _nuke_fired: bool = false          # hoarding 50 HDDs trips a nuke -- total loss
 const NUKE_HDD: int = 50               # drives that draw the strike that ends everything
@@ -316,11 +317,15 @@ const LC_BIO: int = 3
 const AC_UNLOCK: int = 100             # INFECTED kills to unlock a fire mission (killstreak)
 const STRIKE_R: float = 16.0           # 105mm kill radius, metres
 const STRIKE_DMG: float = 1200.0       # one round flattens even the buffed Sanitation elite
-const STRIKE_TOF: float = 3.5          # round time-of-flight, seconds -- a long flight sells the distance
-const STRIKE_BOW: float = 0.26         # arc height of the inbound round, as a fraction of its screen run
+const STRIKE_TOF: float = 5.0          # 105mm time-of-flight -- a long, slow flight that reads as distance
+const STRIKE_BOW: float = 0.26         # (legacy 2D bow -- unused now the round is a 3D object)
 const BURST_ROUNDS: int = 15           # rounds in one 25mm burst volley
-const BURST_INTERVAL: float = 0.075    # spacing between rounds in a volley (~1.1 s)
-const BURST_TOF: float = 0.55          # each burst round's short flight time
+const BURST_INTERVAL: float = 0.085    # spacing between rounds in a volley
+const BURST_TOF: float = 1.4           # each burst round's flight -- slow enough to read as a streak
+const TRACER_ALT: float = 200.0        # 105mm muzzle altitude (world m) -- high, but close enough to read
+const TRACER_ALT_B: float = 135.0      # 25mm burst muzzle altitude
+const TRACER_OFF: Vector2 = Vector2(90.0, -70.0)     # muzzle offset from the impact (the gunship's quarter)
+const TRACER_BOW: float = 7.0          # gentle world-space arc height (less extreme than before)
 const BURST_R: float = 6.0             # small impact radius
 const BURST_DMG: float = 260.0         # a burst round -- drops normal infected/troops, not the elite in one
 const BURST_SPREAD: float = 9.0        # rounds walk within this of the aim point
@@ -344,7 +349,7 @@ const FLASH_LIFE: float = 0.12         # seconds a muzzle flash stays lit
 const FLASH_MAX: int = 80              # cap, so a big firefight can't flood the overlay
 # 3D thermal blasts: hot emissive blobs in the feed that bloom + fade -- reused
 # for the AC-130 strike, EOD grenades, the sanitation flamethrower + flash-nades.
-const FLASH3D_POOL: int = 56               # a flamethrower burst sprays 11 streaming blobs; run deep
+const FLASH3D_POOL: int = 80               # flamethrower jets + AC-130 round trails; run deep
 var _flash3d: Array[MeshInstance3D] = []   # free pool
 var _flash3d_busy: Array = []              # active: [{node, t, life, peak}]
 const FLAME_LEN: float = 11.0              # visible reach of the fire jet, m
@@ -941,6 +946,7 @@ func _deploy_vehicle(base: Vector2, e: int, mode: int) -> void:
 			body.position = Vector3(base.x, 1.4 + HELI_ALT * 2.2, base.y)   # start high (v0.19 lift 2.2)
 			rotor.position = body.position + Vector3(0.0, 1.7, 0.0)
 			_deploy_anim = {"body": body, "rotor": rotor, "mode": 0, "base": Vector3(base.x, 0.0, base.y), "t": 0.0}
+			_deploy_emerge = base                                          # troops pour out of the heli (on the drop)
 		else:
 			body.position = Vector3(base.x, 1.4, base.y)                    # rival: landed, static
 			rotor.position = body.position + Vector3(0.0, 1.7, 0.0)
@@ -960,6 +966,7 @@ func _deploy_vehicle(base: Vector2, e: int, mode: int) -> void:
 		city.add_child(veh)
 		if e == 0:
 			_deploy_anim = {"body": veh, "rotor": null, "mode": 1, "base": rest, "ex": ex, "t": 0.0}
+			_deploy_emerge = Vector2(rest.x, rest.z)                      # troops disembark AT the truck/boat
 
 
 func _heli_body() -> MeshInstance3D:
@@ -999,14 +1006,20 @@ func _setup_deploy_stagger(base: Vector2) -> void:
 	# disembark timing by mode: heli t0 2.0 (once it lands), truck/boat 2.6 (once they arrive).
 	var t0: float = 2.0 if _deploy_mode == DEPLOY_HELI else 2.6
 	var step: float = 0.10
+	var emerge: Vector2 = _deploy_emerge if _deploy_emerge != Vector2.ZERO else base
+	# form up a little INLAND of the drop, so the troops climb out of the vehicle and MOVE OFF it
+	# (toward the objective) instead of piling around it.
+	var inland: Vector2 = (city.land.get_center() - emerge) if city != null else Vector2(0, -1)
+	inland = inland.normalized() if inland.length() > 0.1 else Vector2(0, -1)
+	var form_ctr: Vector2 = base + inland * 10.0
 	for k in ids.size():
 		var i: int = ids[k]
 		var ang: float = float(k) / maxf(1.0, float(ids.size())) * TAU
-		var rad: float = 7.0 + float(k % 4) * 3.5                 # a few loose rings, not a stack
-		var form: Vector2 = base + Vector2(cos(ang), sin(ang)) * rad
+		var rad: float = 4.0 + float(k % 3) * 3.0                 # a loose blob ahead of the vehicle
+		var form: Vector2 = form_ctr + Vector2(cos(ang), sin(ang)) * rad
 		var at: float = t0 + float(k) * step                     # disembark one by one
 		_deploy_stagger.append({"i": i, "at": at, "form": form})
-		sim.pos[i] = base                                         # aboard the vehicle at the drop
+		sim.pos[i] = emerge                                       # aboard the vehicle (its own spot)
 		if i < views.size() and views[i] != null:
 			views[i].visible = false                             # inside -- revealed on disembark
 
@@ -1057,7 +1070,10 @@ func _advance_deploy(delta: float) -> void:
 		var i: int = s["i"]
 		if i < views.size() and views[i] != null and sim.alive[i]:
 			views[i].visible = true
-			sim.pos[i] += Vector2(_rng.randf_range(-1.6, 1.6), _rng.randf_range(-1.6, 1.6))
+			# appear AT the vehicle (tiny jitter) and only then walk out to formation -- so they
+			# read as climbing out of it, not popping onto the ground beside it.
+			var em: Vector2 = _deploy_emerge if _deploy_emerge != Vector2.ZERO else s["form"]
+			sim.pos[i] = em + Vector2(_rng.randf_range(-1.3, 1.3), _rng.randf_range(-1.3, 1.3))
 			sim.order_move([i], s["form"])                        # walk out to the formation slot
 		out.append(s)
 	for s in out:
@@ -1651,7 +1667,7 @@ func _fire_ac130_at(target: Vector2) -> void:
 		_strike_target = target
 		_strike_tof = 0.0
 		_strike_pending = true
-		_tracers.append({"to": target, "t": 0.0, "tof": STRIKE_TOF, "big": true})
+		_spawn_tracer3d(target, true)
 		_zombie_kills = 0
 		Audio.comms("open_fire", 0)
 	else:
@@ -1816,7 +1832,10 @@ func _process(delta: float) -> void:
 	# ocean frame drops the scene median, collapses the bloom threshold, and the whole city
 	# blooms over the sea -- washing out the land/water/bridge read. Taper it right down with
 	# altitude so the map stays legible. (_map_overview forces it to 0 for captures.)
-	sensor_mat.set_shader_parameter("bloom", lerpf(0.50, 0.05, clampf((cam_dist - 380.0) / 800.0, 0.0, 1.0)))
+	# keep a healthy bloom FLOOR at altitude: the threshold (scene_median x2.2) already excludes the
+	# buildings, so only the very-hot things (fires, AC-130 rounds) glow -- and they should glow at
+	# every zoom, like the ground fires. (Full at tactical; eased to 0.30 wide, not to nothing.)
+	sensor_mat.set_shader_parameter("bloom", lerpf(0.50, 0.30, clampf((cam_dist - 380.0) / 800.0, 0.0, 1.0)))
 
 	cut_mat.set_shader_parameter("cut_p", p)
 	cut_mat.set_shader_parameter("frame_n", frame_n)
@@ -2587,11 +2606,11 @@ func _draw_element_roster(win: Vector2) -> void:
 		if e != 0 and sim.allied.get(e, false):
 			line += "  [P]"
 		rows.append({"text": line, "col": _team_colors[e] if e < _team_colors.size() else HUD_COL, "swatch": true})
-	# second pass: centre the whole block on the screen (centre middle)
+	# second pass: centre the block horizontally, sit it at the BOTTOM (just above the bars)
 	var line_h: float = 15.0
 	var block_h: float = 17.0 + float(rows.size()) * line_h
 	var cx: float = win.x * 0.5
-	var y: float = win.y * 0.5 - block_h * 0.5
+	var y: float = win.y - 84.0 - block_h
 	var hw: float = font.get_string_size("ELEMENTS", HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x * 0.5
 	sel_layer.draw_string(font, Vector2(cx - hw, y), "ELEMENTS", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, HUD_DIM)
 	y += 17.0
@@ -2644,28 +2663,76 @@ func _draw_strike() -> void:
 
 
 ## Walk out the 25mm burst -- one round every BURST_INTERVAL, each aimed within BURST_SPREAD of
-## the designated point, queued as an inbound tracer. When the last round is away, the volley ends.
+## the designated point, sent as a 3D tracer. When the last round is away, the volley ends.
 func _advance_burst(delta: float) -> void:
 	if not _burst_active:
 		return
 	_burst_t += delta
 	while _burst_fired < BURST_ROUNDS and _burst_t >= float(_burst_fired) * BURST_INTERVAL:
 		var jit: Vector2 = Vector2(_rng.randf_range(-BURST_SPREAD, BURST_SPREAD), _rng.randf_range(-BURST_SPREAD, BURST_SPREAD))
-		_tracers.append({"to": _burst_target + jit, "t": 0.0, "tof": BURST_TOF, "big": false})
+		_spawn_tracer3d(_burst_target + jit, false)
 		_burst_fired += 1
 	if _burst_fired >= BURST_ROUNDS:
 		_burst_active = false
 
 
-## Age each inbound round; on arrival it detonates -- the 105mm flattens its ring, a 25mm round
-## pops a small one -- and clears from the flight list.
+## An inbound AC-130 round as a 3D THERMAL object in the world (so the sensor blooms it fuzzy-white,
+## like the ground fires): a thin long hot streak that flies slowly from high overhead (the gunship's
+## quarter) down to the impact, on a gentle arc. Big + long for the 105mm, small for a 25mm burst round.
+func _spawn_tracer3d(to: Vector2, big: bool) -> void:
+	if vp == null:
+		return
+	var alt: float = TRACER_ALT if big else TRACER_ALT_B
+	var from: Vector3 = Vector3(to.x + TRACER_OFF.x, alt, to.y + TRACER_OFF.y)
+	var dest: Vector3 = Vector3(to.x, 0.6, to.y)
+	var cap: CapsuleMesh = CapsuleMesh.new()
+	cap.radius = 1.2 if big else 0.7
+	cap.height = 20.0 if big else 9.0            # a THIN LONG streak (long for the missile)
+	cap.radial_segments = 6
+	cap.rings = 2
+	var mi: MeshInstance3D = MeshInstance3D.new()
+	mi.mesh = cap
+	mi.material_override = ThermalLib.get_material("tracer", snap_res)
+	vp.add_child(mi)
+	_tracers.append({"node": mi, "from": from, "to": dest, "t": 0.0, "tof": (STRIKE_TOF if big else BURST_TOF), "big": big, "trail": 0.0})
+
+
+## Fly each 3D round along its slow arc, aligned nose-first; the 105mm drips a white/orange trail
+## behind it. On arrival it detonates (105mm big ring, 25mm small pop) and the streak is freed.
 func _age_tracers(delta: float) -> void:
 	var i: int = _tracers.size() - 1
 	while i >= 0:
 		var tr: Dictionary = _tracers[i]
 		tr["t"] += delta
-		if tr["t"] >= float(tr["tof"]):
-			var pt: Vector2 = tr["to"]
+		var k: float = clampf(float(tr["t"]) / float(tr["tof"]), 0.0, 1.0)
+		var node: MeshInstance3D = tr["node"]
+		var from: Vector3 = tr["from"]
+		var dest: Vector3 = tr["to"]
+		if is_instance_valid(node):
+			var pos: Vector3 = from.lerp(dest, k)
+			pos.y += sin(k * PI) * TRACER_BOW
+			var nk: float = minf(1.0, k + 0.02)
+			var nxt: Vector3 = from.lerp(dest, nk)
+			nxt.y += sin(nk * PI) * TRACER_BOW
+			var dir: Vector3 = nxt - pos
+			if dir.length() > 0.001:
+				var yax: Vector3 = dir.normalized()          # capsule long axis = local Y -> align to velocity
+				var xax: Vector3 = Vector3.UP.cross(yax)
+				if xax.length() < 0.001:
+					xax = Vector3.RIGHT
+				xax = xax.normalized()
+				node.transform = Transform3D(Basis(xax, yax, xax.cross(yax)), pos)
+			else:
+				node.position = pos
+			if bool(tr["big"]):                              # 105mm: a dripping hot trail behind it
+				tr["trail"] = float(tr["trail"]) + delta
+				if float(tr["trail"]) >= 0.09:
+					tr["trail"] = 0.0
+					_spawn_flash3d(Vector2(pos.x, pos.z), 1.3, 0.5, pos.y - 6.0)
+		if float(tr["t"]) >= float(tr["tof"]):
+			var pt: Vector2 = Vector2(dest.x, dest.z)
+			if is_instance_valid(node):
+				node.queue_free()
 			if bool(tr["big"]):
 				sim.air_strike(pt, STRIKE_R, STRIKE_DMG)
 				_spawn_flash3d(pt, STRIKE_R * 0.7, 0.55, 3.0)
@@ -2679,42 +2746,15 @@ func _age_tracers(delta: float) -> void:
 		i -= 1
 
 
-## Every inbound round drawn the SAME way: a hot THERMAL streak head leading a WHITE tracer tail,
-## running from the gunship (high on the right edge) to its impact point. Big for the 105mm, small
-## + fast for the 25mm burst; a danger-close ring marks the 105mm impact, plus a muzzle flash.
+## A danger-close ring on the ground at a pending 105mm impact, so you can see where it'll land
+## while the round is in its long flight.
 func _draw_tracers() -> void:
-	if _tracers.is_empty():
+	if not _strike_pending:
 		return
-	var win: Vector2 = Vector2(get_viewport().get_visible_rect().size)
-	var muzzle: Vector2 = Vector2(win.x - 40.0, win.y * 0.22)   # the orbiting gunship's gun
-	var flash: float = 0.0
-	for tr in _tracers:
-		var g3: Vector3 = Vector3((tr["to"] as Vector2).x, 0.3, (tr["to"] as Vector2).y)
-		if cam.is_position_behind(g3):
-			continue
-		var impact: Vector2 = _screen_point(g3)
-		var k: float = clampf(float(tr["t"]) / float(tr["tof"]), 0.0, 1.0)
-		var big: bool = bool(tr["big"])
-		if float(tr["t"]) < 0.10:
-			flash = maxf(flash, 1.0 - float(tr["t"]) / 0.10)
-		if big:
-			var edge: Vector2 = _screen_point(Vector3((tr["to"] as Vector2).x + STRIKE_R, 0.3, (tr["to"] as Vector2).y))
-			sel_layer.draw_arc(impact, maxf(6.0, impact.distance_to(edge)), 0.0, TAU, 32, Color(1.0, 0.42, 0.30, 0.5), 1.5)
-		# WHITE tracer tail: a few fading segments trailing the round
-		var taillen: float = 0.18 if big else 0.12
-		var segs: int = 5
-		var prev: Vector2 = muzzle.lerp(impact, maxf(0.0, k - taillen))
-		for s in range(1, segs + 1):
-			var q: Vector2 = muzzle.lerp(impact, maxf(0.0, k - taillen + taillen * float(s) / float(segs)))
-			sel_layer.draw_line(prev, q, Color(1.0, 1.0, 1.0, (0.12 + 0.55 * float(s) / float(segs)) * (1.0 if big else 0.75)), 2.6 if big else 1.5)
-			prev = q
-		# hot THERMAL streak head
-		var head: Vector2 = muzzle.lerp(impact, k)
-		var hr: float = 6.5 if big else 2.6
-		sel_layer.draw_circle(head, hr, Color(1.0, 0.64, 0.26, 0.9))       # thermal-hot
-		sel_layer.draw_circle(head, hr * 0.5, Color(1.0, 1.0, 0.96, 1.0))  # white-hot core
-	if flash > 0.0:
-		sel_layer.draw_circle(muzzle, 6.0 + flash * 22.0, Color(1.0, 0.95, 0.82, flash * 0.85))
+	var g3: Vector3 = Vector3(_strike_target.x, 0.4, _strike_target.y)
+	if cam.is_position_behind(g3):
+		return
+	_draw_ground_ring(_strike_target, STRIKE_R, Color(1.0, 0.42, 0.30, 0.55), 1.5)
 
 
 func _age_flashes(delta: float) -> void:
@@ -3800,6 +3840,9 @@ func _start_game(count: int) -> void:
 	_burst_fired = 0
 	_strike_pending = false
 	_ac_unlocked_prev = false
+	for tr in _tracers:
+		if tr.has("node") and is_instance_valid(tr["node"]):
+			tr["node"].queue_free()
 	_tracers.clear()
 	_score = 0
 	_san_kills = 0
