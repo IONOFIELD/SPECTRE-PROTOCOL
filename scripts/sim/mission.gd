@@ -43,14 +43,22 @@ func update(sim: WorldSim, dt: float, sani_deployed: bool) -> void:
 		return
 	t += dt
 	var mine: Array = sim.element_ids(player_element)   # living, not-yet-extracted
+	# EXFIL ON FOOT: a unit boards (extracts) the instant it reaches an escape zone -- you no longer
+	# have to bunch the whole squad onto the ring in one frame (the deck runs PAST it now, so the lead
+	# units would cross off the far side before the stragglers arrived and "all-in-at-once" never hit).
+	# Win once the last of the team is off; lose only if the team is wiped before that.
+	if not escapes.is_empty():
+		for i in mine:
+			if _in_any(sim.pos[i], escapes):
+				sim.extract(i)
+		mine = sim.element_ids(player_element)          # refresh: the boarded units drop out
 	if mine.is_empty():
-		result = LOST
-		reason = "TEAM OVERRUN"
-		return
-	if _all_in(sim, mine, escapes):
-		_board(sim, mine)
-		result = WON
-		reason = "EXFIL ON FOOT"
+		if _any_extracted(sim, player_element):
+			result = WON
+			reason = "EXFIL ON FOOT"
+		else:
+			result = LOST
+			reason = "TEAM OVERRUN"
 		return
 	if sani_deployed:
 		# apex loose: escape (above) is the only exit unless you wipe the whole force.
@@ -104,5 +112,21 @@ func _all_in(sim: WorldSim, ids: Array, zones: Array[Rect2]) -> bool:
 func _any_alive(sim: WorldSim, team_id: int) -> bool:
 	for i in sim.count():
 		if sim.alive[i] and sim.team[i] == team_id and not sim.extracted[i]:
+			return true
+	return false
+
+
+func _in_any(p: Vector2, zones: Array[Rect2]) -> bool:
+	for z in zones:
+		if z.has_point(p):
+			return true
+	return false
+
+
+## Has any unit of element e already boarded on foot (extracted, not dead)? Distinguishes a team
+## that has fully EXFIL'd (win) from one that was wiped (loss) when no living units remain.
+func _any_extracted(sim: WorldSim, e: int) -> bool:
+	for i in sim.count():
+		if sim.element[i] == e and sim.extracted[i]:
 			return true
 	return false
