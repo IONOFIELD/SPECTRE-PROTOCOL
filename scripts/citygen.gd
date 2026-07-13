@@ -14,6 +14,7 @@ const FLOOR_H: float = 3.4
 const CELL: float = 44.0        # fine grid for the ground/park base tiles
 const BLOCK: float = 92.0       # STREET GRID pitch -- street centre to street centre (a city block)
 const SETBACK: float = 3.5      # building set-back past the kerb into the block
+const PERIM_INSET: float = 30.0 # the coastal RING road runs this far inside the shoreline (a clean outer loop)
 const STREET_DY: float = 0.14   # N-S streets ride this much above E-W so crossings never z-fight
 const ROAD_W: float = 15.0      # street WIDTH -- a narrow 2-lane street, to the scale of the cars/buildings
 const ROAD_Y: float = 0.22      # roads sit clearly above the ground base -- the depth buffer only resolves
@@ -40,6 +41,7 @@ var escapes: Array[Rect2] = []   # bridge far ends: step inside to get off the m
 var far_lands: Array = []        # large model-free landmasses the bridges run to (illusion of a wider world)
 var parks: Array[Rect2] = []     # Golden Gate Park, the Presidio, the Panhandle, Twin Peaks, ...
 var road_lines: Array = []       # street centrelines [a, b] -- cars ride these; truck deploy snaps to them
+var ring_poly: PackedVector2Array = PackedVector2Array()   # the coastal RING road path (inset land_poly); city fits inside it
 var land: Rect2 = Rect2()        # polygon bounding box, for ambient population scatter
 var poly_lo: Vector2 = Vector2.ZERO
 var poly_hi: Vector2 = Vector2.ZERO
@@ -166,6 +168,7 @@ func generate(snap_res: Vector2i) -> void:
 ## blocks between them (aligned to the streets). Ground/park base under everything (fine cells). This
 ## replaces the old sparse arterials -- sensible perpendicular intersections + road-aligned buildings.
 func _lay_city(rng: RandomNumberGenerator) -> void:
+	_compute_ring()                                            # the coastal RING path (land_poly, inset)
 	var sxs: Array = _street_positions(poly_lo.x, poly_hi.x)   # N-S street centre x's
 	var szs: Array = _street_positions(poly_lo.y, poly_hi.y)   # E-W street centre z's
 	_grid_road_lines(sxs, szs)                                 # centrelines for cars / truck deploy
@@ -180,8 +183,9 @@ func _lay_city(rng: RandomNumberGenerator) -> void:
 			if not _in_land(c):
 				continue
 			_tile(Rect2(x, z, CELL, CELL), "park" if _in_park(c) else "ground")
-	_lay_grid_roads(sxs, szs)      # the street mesh, over the ground
-	_lay_blocks(rng, sxs, szs)     # buildings filling each block between the streets
+	_lay_grid_roads(sxs, szs)      # the street mesh (clipped to the ring), over the ground
+	_lay_perimeter_loop()          # ONE big coastal loop road around the outside -- no perimeter dead-ends
+	_lay_blocks(rng, sxs, szs)     # buildings filling each block, inside the ring
 
 
 ## Evenly spaced street centres from lo..hi on a BLOCK pitch (half a block of margin at each end).
@@ -194,12 +198,15 @@ func _street_positions(lo: float, hi: float) -> Array:
 	return out
 
 
-## Street centrelines (whole spans) for car placement + truck-deploy snapping.
+## Street centrelines (whole spans) for car placement + truck-deploy snapping -- the grid + the ring.
 func _grid_road_lines(sxs: Array, szs: Array) -> void:
 	for sx in sxs:
 		road_lines.append([Vector2(sx, poly_lo.y), Vector2(sx, poly_hi.y)])
 	for sz in szs:
 		road_lines.append([Vector2(poly_lo.x, sz), Vector2(poly_hi.x, sz)])
+	var n: int = ring_poly.size()
+	for i in n:
+		road_lines.append([ring_poly[i], ring_poly[(i + 1) % n]])
 
 
 ## Lay the grid streets, clipped to land + out of parks. N-S streets ride STREET_DY ABOVE the E-W
@@ -213,7 +220,7 @@ func _lay_grid_roads(sxs: Array, szs: Array) -> void:
 		while z < poly_hi.y - 0.5:
 			var e: float = minf(z + step, poly_hi.y)
 			var mid: Vector2 = Vector2(sx, (z + e) * 0.5)
-			if _in_land(mid) and not _in_park(mid):
+			if _in_ring(mid) and not _in_park(mid):
 				_road_seg(Vector2(sx, z), Vector2(sx, e), half, STREET_DY)
 			z = e
 	for sz in szs:
@@ -221,7 +228,7 @@ func _lay_grid_roads(sxs: Array, szs: Array) -> void:
 		while x < poly_hi.x - 0.5:
 			var e: float = minf(x + step, poly_hi.x)
 			var mid: Vector2 = Vector2((x + e) * 0.5, sz)
-			if _in_land(mid) and not _in_park(mid):
+			if _in_ring(mid) and not _in_park(mid):
 				_road_seg(Vector2(x, sz), Vector2(e, sz), half, 0.0)
 			x = e
 
@@ -280,15 +287,15 @@ func _fill_block(rng: RandomNumberGenerator, block: Rect2, dc: float) -> void:
 			_building(rng, bx, bz, bw, bd, fl, tall)
 
 
-## The footprint (GROWN by COAST_MARGIN) fully inside the coastline? The margin sets shells back off
-## the waterline so the ground base always covers them AND they don't appear to overhang the water at
-## a low camera angle -- block-centre-in-land, or even bare corners, isn't enough at an irregular coast.
+## The footprint (GROWN by COAST_MARGIN) fully inside the RING? Buildings sit inside the coastal loop
+## road, set back off it -- so nothing overhangs the water, the ground always covers them, and they
+## line the ring instead of dead-ending at the shore. (Ring is inset from the coast, so this is on land.)
 const COAST_MARGIN: float = 13.0
 
 func _footprint_in_land(x: float, z: float, w: float, d: float) -> bool:
 	var m: float = COAST_MARGIN
 	for corner in [Vector2(x - m, z - m), Vector2(x + w + m, z - m), Vector2(x + w + m, z + d + m), Vector2(x - m, z + d + m)]:
-		if not _in_land(corner):
+		if not _in_ring(corner):
 			return false
 	return true
 
@@ -301,6 +308,55 @@ func _footprint_in_park(x: float, z: float, w: float, d: float) -> bool:
 		if r.intersects(pk):
 			return true
 	return false
+
+
+## The coastal RING path: land_poly inset by PERIM_INSET, largest piece (the inset can split at a deep
+## notch). Empty if the offset fails, in which case _in_ring falls back to the raw coastline.
+func _compute_ring() -> void:
+	ring_poly = PackedVector2Array()
+	var best: float = 0.0
+	for p in Geometry2D.offset_polygon(land_poly, -PERIM_INSET):
+		var a: float = absf(_poly_area(p))
+		if a > best:
+			best = a
+			ring_poly = p
+
+
+func _poly_area(poly: PackedVector2Array) -> float:
+	var a: float = 0.0
+	var n: int = poly.size()
+	for i in n:
+		var p0: Vector2 = poly[i]
+		var p1: Vector2 = poly[(i + 1) % n]
+		a += p0.x * p1.y - p1.x * p0.y
+	return a * 0.5
+
+
+## Inside the coastal ring? (Falls back to the raw coastline if the inset failed.)
+func _in_ring(p: Vector2) -> bool:
+	if ring_poly.size() < 3:
+		return _in_land(p)
+	return Geometry2D.is_point_in_polygon(p, ring_poly)
+
+
+## ONE big loop road following the coastal ring -- the outer belt every grid street runs out to, so the
+## perimeter reads as a connected LOOP, not a fringe of dead-ends. Rides a touch above the grid so the
+## T-junctions where the streets meet it never z-fight; clipped out of the parks like the grid.
+func _lay_perimeter_loop() -> void:
+	if ring_poly.size() < 3:
+		return
+	var half: float = ROAD_W * 0.5
+	var n: int = ring_poly.size()
+	for i in n:
+		var a: Vector2 = ring_poly[i]
+		var b: Vector2 = ring_poly[(i + 1) % n]
+		var steps: int = maxi(1, int(ceil(a.distance_to(b) / 16.0)))
+		for k in steps:
+			var p0: Vector2 = a.lerp(b, float(k) / float(steps))
+			var p1: Vector2 = a.lerp(b, float(k + 1) / float(steps))
+			if _in_park((p0 + p1) * 0.5):
+				continue
+			_road_seg(p0, p1, half, STREET_DY + 0.08)
 
 
 ## One street segment a->b: a central 2-LANE asphalt ribbon flanked by a raised SIDEWALK kerb on each
@@ -338,7 +394,10 @@ func _scatter_trees(rng: RandomNumberGenerator) -> void:
 	for pk in parks:
 		var n: int = clampi(int(pk.size.x * pk.size.y / 300.0), 4, 55)
 		for _t in n:
-			_foliage(Vector2(rng.randf_range(pk.position.x, pk.end.x), rng.randf_range(pk.position.y, pk.end.y)), rng, mat, rng.randf() < 0.75)
+			var fp: Vector2 = Vector2(rng.randf_range(pk.position.x, pk.end.x), rng.randf_range(pk.position.y, pk.end.y))
+			if not _in_land(fp):
+				continue                       # a park's rect can lap over the coast -- no trees in the water
+			_foliage(fp, rng, mat, rng.randf() < 0.75)
 	for _s in 130:
 		var p: Vector2 = Vector2(rng.randf_range(poly_lo.x, poly_hi.x), rng.randf_range(poly_lo.y, poly_hi.y))
 		if not _in_land(p):
@@ -541,7 +600,7 @@ func _lay_geography() -> void:
 	# shape; the other, larger parks are unchanged.
 	parks = [
 		Rect2(155, 552, 430, 105),   # Golden Gate Park -- the long E-W green, west-centre (RECTANGLE, standalone)
-		Rect2(195, 180, 190, 150),   # the Presidio -- NW, by the GG Bridge (exception, not squared)
+		Rect2(220, 205, 175, 135),   # the Presidio -- NW, by the GG Bridge (pulled inside the coast so its NW corner no longer laps into the water by the bridge)
 		Rect2(180, 297, 76, 76),     # Lincoln Park / Lands End -- NW coast
 		Rect2(642, 715, 45, 45),     # Dolores Park -- the Mission
 		Rect2(727, 892, 100, 100),   # McLaren Park -- SE
