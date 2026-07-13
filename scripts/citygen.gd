@@ -561,8 +561,11 @@ func _lay_geography() -> void:
 	]
 	# Large, MODEL-FREE landmasses (NOT in land_poly -> nothing spawns or walks there; pure backdrop).
 	far_lands = [
-		PackedVector2Array([   # MARIN -- big, fills the north horizon well beyond the widest view
-			Vector2(-360, -410), Vector2(-320, -820), Vector2(-120, -1240), Vector2(280, -1400),
+		PackedVector2Array([   # MARIN -- big, fills the north horizon well beyond the widest view. The one
+			# sharp ~95deg SW corner (was the single vertex (-360,-410)) is rounded into a 3-point arc, so
+			# no edge sticks out -- and Oakland, being a copy of this shape, gets the rounded corner too.
+			Vector2(-250, -409), Vector2(-325, -441), Vector2(-349, -519),
+			Vector2(-320, -820), Vector2(-120, -1240), Vector2(280, -1400),
 			Vector2(680, -1330), Vector2(970, -1000), Vector2(1010, -640), Vector2(840, -420),
 			Vector2(520, -395), Vector2(120, -405),
 		]),
