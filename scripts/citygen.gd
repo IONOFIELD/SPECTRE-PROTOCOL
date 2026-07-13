@@ -1,26 +1,22 @@
 class_name CityGen
 extends Node3D
 
-## San Francisco, from the poster. The map is now built around the REAL city:
-##   - the coastline silhouette (Ocean Beach straight W, the Financial District jutting
-##     NE into the bay, Hunters Point SE, Lake Merced notch SW),
-##   - the MAJOR ARTERIALS as the road network (Market, Van Ness, Geary, 19th Ave,
-##     Fulton, Lincoln, the Embarcadero, 3rd St, Columbus, Cesar Chavez, ...),
-##   - buildings packed into the blocks BETWEEN those arterials, aligned to them,
-##   - the parks retained (Golden Gate Park, the Presidio, the Panhandle, Twin Peaks, ...).
+## San Francisco, from the poster: the coastline silhouette (Ocean Beach straight W, the Financial
+## District jutting NE into the bay, Hunters Point SE, Lake Merced notch SW) + the named parks.
 ##
-## The layout is CELL-BASED: a fine grid over the land, each cell is either a park tile, a
-## road-corridor tile (near an arterial), or a building block (ground tile + a shell). All
-## cells are disjoint, all at y = 0, so nothing z-fights -- and, critically, NOTHING is a
-## rotated flat quad (the PSX vertex-snap shader blows rotated geometry out to a bright
-## rectangle). The diagonal avenues read from the cell corridor + the 2D overlay line main
-## draws over the feed (road_lines).
+## The city is a STREET GRID (_lay_city): cardinal N-S + E-W streets on a BLOCK pitch, with buildings
+## filling the blocks between them, aligned to the streets. Clean perpendicular intersections; roads
+## read as running BETWEEN the blocks. N-S streets ride STREET_DY above the E-W ones so crossings draw
+## cleanly with NO coplanar overlap (that overlap was a z-fighting shimmer). A fine CELL grid lays the
+## ground/park base under everything. `road_lines` (the street centrelines) drive car + truck placement.
 
 const FLOOR_H: float = 3.4
-const CELL: float = 44.0        # block cell -- one building each; ~6-10 m gaps read as the fine grid
-const ROAD_HALF: float = 22.0   # buildings whose cell-centre is within this of an arterial are held off the roadway
-const ROAD_W: float = 15.0      # actual road WIDTH -- a narrow street, to the scale of the cars/buildings
-const ROAD_Y: float = 0.08      # roads ride a hair over the ground base (avoids z-fighting the ground quads)
+const CELL: float = 44.0        # fine grid for the ground/park base tiles
+const BLOCK: float = 92.0       # STREET GRID pitch -- street centre to street centre (a city block)
+const SETBACK: float = 3.5      # building set-back past the kerb into the block
+const STREET_DY: float = 0.03   # N-S streets ride this much above E-W so crossings never z-fight
+const ROAD_W: float = 15.0      # street WIDTH -- a narrow 2-lane street, to the scale of the cars/buildings
+const ROAD_Y: float = 0.10      # roads ride a hair over the ground base (avoids z-fighting the ground quads)
 const WALK_W: float = 2.3       # sidewalk width each side of the asphalt
 const WALK_Y: float = 0.14      # sidewalks sit a touch higher than the road -> reads as a raised kerb
 const BEACH_W: float = 24.0     # how far the sand reaches inland from the coastline
@@ -42,8 +38,7 @@ var bridges: Array[Rect2] = []   # walkable decks, movement-slowed -- the only w
 var escapes: Array[Rect2] = []   # bridge far ends: step inside to get off the map
 var far_lands: Array = []        # large model-free landmasses the bridges run to (illusion of a wider world)
 var parks: Array[Rect2] = []     # Golden Gate Park, the Presidio, the Panhandle, Twin Peaks, ...
-var arterials: Array = []        # the major roads, each a PackedVector2Array polyline -- cars ride these
-var road_lines: Array = []       # arterial centrelines [a, b] for the map overlay (main draws them)
+var road_lines: Array = []       # street centrelines [a, b] -- cars ride these; truck deploy snaps to them
 var land: Rect2 = Rect2()        # polygon bounding box, for ambient population scatter
 var poly_lo: Vector2 = Vector2.ZERO
 var poly_hi: Vector2 = Vector2.ZERO
@@ -95,7 +90,7 @@ func _emit_surfaces() -> void:
 	_emit_tris(_walk_tris, "sidewalk")
 
 
-## Commit a free-triangle list (from _road_seg/_road_disc/_strip) as one mesh under `mat`, with the
+## Commit a free-triangle list (from _road_seg/_strip) as one mesh under `mat`, with the
 ## up-facing normals + UVs + tangents every thermal surface needs.
 func _emit_tris(tris: PackedVector3Array, mat: String) -> void:
 	if tris.is_empty():
@@ -134,7 +129,6 @@ func generate(snap_res: Vector2i) -> void:
 	rng.seed = seed_value
 
 	land_poly = _sf_polygon()
-	arterials = _arterials()
 	_lay_geography()
 
 	# The ocean: a cold thermal plane under and around the peninsula, extended far past the
@@ -161,71 +155,132 @@ func generate(snap_res: Vector2i) -> void:
 	_lay_gg_bridge()                     # the iconic Golden Gate (low-poly GLB), reskinned cold steel
 	_lay_bay_bridge()                    # the Bay Bridge (McClintic-Marshall GLB): SF->TI span + the dogleg span
 
-	# the arterials, as overlay centrelines (main draws these as the "black line" roads)
-	for art in arterials:
-		for i in art.size() - 1:
-			road_lines.append([art[i], art[i + 1]])
-
-	_lay_city(rng)          # cell grid: parks / ground base / building blocks (roadway kept clear)
-	_lay_roads()            # continuous road ribbons flowing along the arterials, over the ground
+	_lay_city(rng)          # STREET GRID: ground/park base + grid roads + buildings filling the blocks
 	_scatter_trees(rng)     # trees + shrubs -- a real, vegetated environment
 	_scatter_far_foliage(rng)   # wooded groves on the far landmasses (Marin / East Bay hills)
 	_emit_surfaces()
 
 
-## The cell grid over the land. Each cell is a park tile, a road-corridor tile (near an
-## arterial), or a building block (ground base + a shell). Disjoint, axis-aligned, y = 0.
+## The city as a STREET GRID: cardinal N-S + E-W streets on a BLOCK pitch, with buildings filling the
+## blocks between them (aligned to the streets). Ground/park base under everything (fine cells). This
+## replaces the old sparse arterials -- sensible perpendicular intersections + road-aligned buildings.
 func _lay_city(rng: RandomNumberGenerator) -> void:
+	var sxs: Array = _street_positions(poly_lo.x, poly_hi.x)   # N-S street centre x's
+	var szs: Array = _street_positions(poly_lo.y, poly_hi.y)   # E-W street centre z's
+	_grid_road_lines(sxs, szs)                                 # centrelines for cars / truck deploy
+	# ground + park base (fine cells, disjoint, y = 0)
 	var nx: int = int(ceil((poly_hi.x - poly_lo.x) / CELL)) + 1
 	var nz: int = int(ceil((poly_hi.y - poly_lo.y) / CELL)) + 1
-	var downtown: Vector2 = Vector2(890.0, 445.0)     # Financial District, by the Bay Bridge
 	for gx in nx:
 		for gz in nz:
 			var x: float = poly_lo.x + float(gx) * CELL
 			var z: float = poly_lo.y + float(gz) * CELL
 			var c: Vector2 = Vector2(x + CELL * 0.5, z + CELL * 0.5)
 			if not _in_land(c):
-				continue                              # ocean -- the sea plane shows through
-			var cell: Rect2 = Rect2(x, z, CELL, CELL)
-			if _in_park(c):
-				_tile(cell, "park")
 				continue
-			# a continuous GROUND base under every non-park cell (fills the inter-building gaps AND
-			# beds the road ribbons that are laid over the top in _lay_roads).
-			_tile(cell, "ground")
-			if rng.randf() < 0.06:
-				_tile(Rect2(x + 3.0, z + 3.0, CELL - 6.0, CELL - 6.0), "lot")   # open lot, no building
+			_tile(Rect2(x, z, CELL, CELL), "park" if _in_park(c) else "ground")
+	_lay_grid_roads(sxs, szs)      # the street mesh, over the ground
+	_lay_blocks(rng, sxs, szs)     # buildings filling each block between the streets
+
+
+## Evenly spaced street centres from lo..hi on a BLOCK pitch (half a block of margin at each end).
+func _street_positions(lo: float, hi: float) -> Array:
+	var out: Array = []
+	var p: float = lo + BLOCK * 0.5
+	while p < hi:
+		out.append(p)
+		p += BLOCK
+	return out
+
+
+## Street centrelines (whole spans) for car placement + truck-deploy snapping.
+func _grid_road_lines(sxs: Array, szs: Array) -> void:
+	for sx in sxs:
+		road_lines.append([Vector2(sx, poly_lo.y), Vector2(sx, poly_hi.y)])
+	for sz in szs:
+		road_lines.append([Vector2(poly_lo.x, sz), Vector2(poly_hi.x, sz)])
+
+
+## Lay the grid streets, clipped to land + out of parks. N-S streets ride STREET_DY ABOVE the E-W
+## ones, so where they cross the raised street simply draws on top -- a clean intersection with NO
+## coplanar overlap (that overlap was the "glitchy shimmer"). Both run continuously; no gaps needed.
+func _lay_grid_roads(sxs: Array, szs: Array) -> void:
+	var half: float = ROAD_W * 0.5
+	var step: float = 16.0
+	for sx in sxs:
+		var z: float = poly_lo.y
+		while z < poly_hi.y - 0.5:
+			var e: float = minf(z + step, poly_hi.y)
+			var mid: Vector2 = Vector2(sx, (z + e) * 0.5)
+			if _in_land(mid) and not _in_park(mid):
+				_road_seg(Vector2(sx, z), Vector2(sx, e), half, STREET_DY)
+			z = e
+	for sz in szs:
+		var x: float = poly_lo.x
+		while x < poly_hi.x - 0.5:
+			var e: float = minf(x + step, poly_hi.x)
+			var mid: Vector2 = Vector2((x + e) * 0.5, sz)
+			if _in_land(mid) and not _in_park(mid):
+				_road_seg(Vector2(x, sz), Vector2(e, sz), half, 0.0)
+			x = e
+
+
+## Fill each block (the land between four streets) with buildings ALIGNED to the grid + set back from
+## the kerbs, so the city reads as buildings lining the streets. Downtown (near the Bay Bridge) rises
+## into towers. Footprints are clipped to land + kept out of the parks.
+func _lay_blocks(rng: RandomNumberGenerator, sxs: Array, szs: Array) -> void:
+	var downtown: Vector2 = Vector2(890.0, 445.0)
+	var m: float = ROAD_W * 0.5 + SETBACK
+	for i in range(sxs.size() + 1):
+		var x0: float = (poly_lo.x if i == 0 else float(sxs[i - 1])) + m
+		var x1: float = (poly_hi.x if i == sxs.size() else float(sxs[i])) - m
+		if x1 - x0 < 14.0:
+			continue
+		for j in range(szs.size() + 1):
+			var z0: float = (poly_lo.y if j == 0 else float(szs[j - 1])) + m
+			var z1: float = (poly_hi.y if j == szs.size() else float(szs[j])) - m
+			if z1 - z0 < 14.0:
 				continue
-			var dc: float = c.distance_to(downtown)
+			var block: Rect2 = Rect2(x0, z0, x1 - x0, z1 - z0)
+			if not _in_land(block.get_center()):
+				continue
+			_fill_block(rng, block, block.get_center().distance_to(downtown))
+
+
+## One block -> a small tidy grid of building plots, aligned to the streets. Occasional gaps read as
+## yards / parking. Each plot's shell is skipped if it would spill into the water or a park.
+func _fill_block(rng: RandomNumberGenerator, block: Rect2, dc: float) -> void:
+	var np_x: int = maxi(1, int(round(block.size.x / 42.0)))
+	var np_z: int = maxi(1, int(round(block.size.y / 42.0)))
+	var pw: float = block.size.x / float(np_x)
+	var pd: float = block.size.y / float(np_z)
+	for a in np_x:
+		for b in np_z:
+			if rng.randf() < 0.10:
+				continue                                   # a yard / lot -- some open plots
+			var gap: float = 5.0
+			var bw: float = pw - gap
+			var bd: float = pd - gap
+			if bw < 10.0 or bd < 10.0:
+				continue
+			var bx: float = block.position.x + float(a) * pw + gap * 0.5
+			var bz: float = block.position.y + float(b) * pd + gap * 0.5
+			if not _footprint_in_land(bx, bz, bw, bd) or _footprint_in_park(bx, bz, bw, bd):
+				continue
 			var fl: int = 1 + rng.randi() % 2
 			var tall: bool = false
 			if dc < 210.0:
-				fl = 9 + rng.randi() % 12             # DOWNTOWN SKYSCRAPERS -- 9-20 storeys
+				fl = 9 + rng.randi() % 12                   # DOWNTOWN SKYSCRAPERS
 				tall = true
 			elif dc < 360.0:
-				fl = 4 + rng.randi() % 4              # inner-city mid-rise
+				fl = 4 + rng.randi() % 4                    # inner-city mid-rise
 			elif dc < 540.0:
 				fl = 2 + rng.randi() % 3
-			# footprints kept well inside the cell -- WIDE gaps (~12-20 m) between buildings so
-			# units have real room to move + fight in the streets. Downtown towers sit on a bigger base.
-			var lo: float = 0.64 if tall else 0.54
-			var hi: float = 0.82 if tall else 0.72
-			var bw: float = CELL * rng.randf_range(lo, hi)
-			var bd: float = CELL * rng.randf_range(lo, hi)
-			var bx: float = c.x - bw * 0.5 + rng.randf_range(-3.0, 3.0)
-			var bz: float = c.y - bd * 0.5 + rng.randf_range(-3.0, 3.0)
-			# never spill a footprint into the bay or onto a road ribbon: the shell must sit fully on
-			# land, clear of every arterial. Roads then read as running BETWEEN the blocks, never through
-			# a building. (Park cells were already handled above, so roads/blocks never land in a park.)
-			if not _footprint_in_land(bx, bz, bw, bd):
-				continue
-			if _footprint_hits_road(bx, bz, bw, bd):
-				continue
 			_building(rng, bx, bz, bw, bd, fl, tall)
 
 
-## All four corners of the footprint inside the coastline? Cell-centre-in-land isn't enough at an
-## irregular coast -- this keeps the whole shell on land so nothing hangs out over the water.
+## All four corners of the footprint inside the coastline? Keeps the whole shell on land -- nothing
+## hangs out over the water at an irregular coast (block-centre-in-land isn't enough).
 func _footprint_in_land(x: float, z: float, w: float, d: float) -> bool:
 	for corner in [Vector2(x, z), Vector2(x + w, z), Vector2(x + w, z + d), Vector2(x, z + d)]:
 		if not _in_land(corner):
@@ -233,58 +288,24 @@ func _footprint_in_land(x: float, z: float, w: float, d: float) -> bool:
 	return true
 
 
-## Would this footprint touch a road? Tests the outline (corners, edge midpoints, centre) against
-## every arterial segment, so a building is never placed on the roadway -- roads route between blocks.
-func _footprint_hits_road(x: float, z: float, w: float, d: float) -> bool:
-	var clr: float = ROAD_W * 0.5 + 2.5
-	var pts: Array = [
-		Vector2(x, z), Vector2(x + w, z), Vector2(x + w, z + d), Vector2(x, z + d),
-		Vector2(x + w * 0.5, z), Vector2(x + w * 0.5, z + d),
-		Vector2(x, z + d * 0.5), Vector2(x + w, z + d * 0.5),
-		Vector2(x + w * 0.5, z + d * 0.5),
-	]
-	for art in arterials:
-		for i in art.size() - 1:
-			for p in pts:
-				if _dist_to_seg(p, art[i], art[i + 1]) < clr:
-					return true
+## Does the footprint overlap any park? A whole-rect test (not just the centre) so a block-edge shell
+## never bleeds into Golden Gate Park or the squares.
+func _footprint_in_park(x: float, z: float, w: float, d: float) -> bool:
+	var r: Rect2 = Rect2(x, z, w, d)
+	for pk in parks:
+		if r.intersects(pk):
+			return true
 	return false
 
 
-## The road NETWORK, laid as continuous ribbons that FLOW along each arterial polyline and
-## OVERLAP where arterials cross -> one interconnected mesh, no fractured per-cell strips. Each
-## segment is an oriented quad of width ROAD_W; each vertex a rounded disc so turns join cleanly
-## (a diagonal like Market St now reads as a true diagonal avenue, not a staircase of steps).
-func _lay_roads() -> void:
-	var half: float = ROAD_W * 0.5
-	for art in arterials:
-		var n: int = art.size()
-		# walk each segment in short steps and DROP any step whose midpoint is inside a park -- roads
-		# run only along the park BORDERS (the edge arterials), never across a park's interior.
-		for i in n - 1:
-			var a: Vector2 = art[i]
-			var b: Vector2 = art[i + 1]
-			var steps: int = maxi(1, int(ceil(a.distance_to(b) / 11.0)))
-			for k in steps:
-				var p0: Vector2 = a.lerp(b, float(k) / float(steps))
-				var p1: Vector2 = a.lerp(b, float(k + 1) / float(steps))
-				if _in_park((p0 + p1) * 0.5):
-					continue
-				_road_seg(p0, p1, half)
-		# a disc at every vertex rounds the joint on turns -- but not where a vertex sits in a park
-		for i in n:
-			if not _in_park(art[i]):
-				_road_disc(art[i], half)
-
-
-## One street segment a->b: a central 2-LANE asphalt ribbon flanked by a raised SIDEWALK kerb on
-## each side, so the road reads as a real street rather than a bare strip. `half` is the corridor
-## half-width (ROAD_W/2); the sidewalks take WALK_W off each edge, the asphalt is what's left.
-func _road_seg(a: Vector2, b: Vector2, half: float) -> void:
+## One street segment a->b: a central 2-LANE asphalt ribbon flanked by a raised SIDEWALK kerb on each
+## side, so the road reads as a real street. `half` is the corridor half-width (ROAD_W/2); `dy` lifts
+## the whole street (N-S streets ride a hair up so they win cleanly where they cross the E-W ones).
+func _road_seg(a: Vector2, b: Vector2, half: float, dy: float = 0.0) -> void:
 	var road_half: float = maxf(1.0, half - WALK_W)
-	_strip(a, b, -road_half, road_half, ROAD_Y, _road_tris)     # the 2-lane asphalt
-	_strip(a, b, road_half, half, WALK_Y, _walk_tris)           # left sidewalk (raised kerb)
-	_strip(a, b, -half, -road_half, WALK_Y, _walk_tris)         # right sidewalk (raised kerb)
+	_strip(a, b, -road_half, road_half, ROAD_Y + dy, _road_tris)     # the 2-lane asphalt
+	_strip(a, b, road_half, half, WALK_Y + dy, _walk_tris)           # left sidewalk (raised kerb)
+	_strip(a, b, -half, -road_half, WALK_Y + dy, _walk_tris)         # right sidewalk (raised kerb)
 
 
 ## A flat ribbon quad down a->b spanning perpendicular offsets o0..o1 at height y, front-up wound
@@ -302,43 +323,6 @@ func _strip(a: Vector2, b: Vector2, o0: float, o1: float, y: float, arr: PackedV
 		Vector3(c0.x, y, c0.y), Vector3(c1.x, y, c1.y), Vector3(c2.x, y, c2.y),
 		Vector3(c0.x, y, c0.y), Vector3(c2.x, y, c2.y), Vector3(c3.x, y, c3.y),
 	])
-
-
-## A filled disc (triangle fan) at a road vertex -- rounds the joint so consecutive segments and
-## crossing arterials merge into a continuous surface with no gap on the outside of the turn.
-func _road_disc(ctr: Vector2, r: float, segs: int = 10) -> void:
-	var prev: Vector2 = ctr + Vector2(r, 0.0)
-	for k in range(1, segs + 1):
-		var ang: float = TAU * float(k) / float(segs)
-		var cur: Vector2 = ctr + Vector2(cos(ang), sin(ang)) * r
-		_road_tris.append_array([
-			Vector3(ctr.x, ROAD_Y, ctr.y), Vector3(prev.x, ROAD_Y, prev.y), Vector3(cur.x, ROAD_Y, cur.y),
-		])
-		prev = cur
-
-
-## The MAJOR San Francisco arterials, each a polyline in the map's coordinate space
-## (x = east, z = south). These ARE the roads -- the poster's thick black lines. Minor
-## cross-streets are just the gaps between packed building blocks.
-func _arterials() -> Array:
-	return [
-		PackedVector2Array([Vector2(895, 430), Vector2(660, 610), Vector2(440, 770)]),                 # Market St (Ferry -> Twin Peaks)
-		PackedVector2Array([Vector2(585, 150), Vector2(585, 470), Vector2(600, 720), Vector2(645, 955)]), # Van Ness / S Van Ness / 101
-		PackedVector2Array([Vector2(815, 405), Vector2(500, 390), Vector2(150, 375)]),                 # Geary Blvd
-		PackedVector2Array([Vector2(258, 185), Vector2(258, 560), Vector2(255, 905)]),                 # 19th Ave / Park Presidio (Hwy 1)
-		PackedVector2Array([Vector2(150, 552), Vector2(400, 550), Vector2(585, 535)]),                 # Fulton St (N edge of GG Park)
-		PackedVector2Array([Vector2(150, 662), Vector2(400, 662), Vector2(578, 655)]),                 # Lincoln Way (S edge of GG Park)
-		PackedVector2Array([Vector2(585, 600), Vector2(700, 575), Vector2(792, 555)]),                 # Fell / Oak (Panhandle -> downtown)
-		PackedVector2Array([Vector2(835, 235), Vector2(900, 360), Vector2(925, 490), Vector2(915, 590)]), # The Embarcadero
-		PackedVector2Array([Vector2(835, 375), Vector2(795, 300), Vector2(768, 238)]),                 # Columbus Ave
-		PackedVector2Array([Vector2(890, 470), Vector2(862, 680), Vector2(835, 870), Vector2(830, 960)]), # 3rd St / Bayshore
-		PackedVector2Array([Vector2(660, 610), Vector2(650, 780), Vector2(645, 945)]),                 # Mission / Guerrero
-		PackedVector2Array([Vector2(845, 825), Vector2(640, 830), Vector2(440, 835)]),                 # Cesar Chavez (Army St)
-		PackedVector2Array([Vector2(150, 890), Vector2(255, 900), Vector2(412, 905)]),                 # Sloat / Junipero Serra (SW)
-		PackedVector2Array([Vector2(390, 180), Vector2(600, 195), Vector2(795, 225)]),                 # Bay St / North Point (N waterfront)
-		PackedVector2Array([Vector2(440, 770), Vector2(360, 822), Vector2(300, 872)]),                 # Portola (Market SW -> West Portal)
-		PackedVector2Array([Vector2(520, 300), Vector2(520, 540), Vector2(530, 760)]),                 # Divisadero (cross-town N-S)
-	]
 
 
 ## Trees + shrubs -- cool foliage that reads DARK on the feed (vegetation is evaporative).
@@ -603,13 +587,6 @@ func _lay_geography() -> void:
 			map_hi = map_hi.max(v)
 	map_lo -= Vector2(240, 170)
 	map_hi += Vector2(240, 170)
-
-
-## Perpendicular distance from p to segment a-b.
-func _dist_to_seg(p: Vector2, a: Vector2, b: Vector2) -> float:
-	var ab: Vector2 = b - a
-	var t: float = clampf((p - a).dot(ab) / maxf(1e-4, ab.length_squared()), 0.0, 1.0)
-	return p.distance_to(a + ab * t)
 
 
 func _in_land(p: Vector2) -> bool:
