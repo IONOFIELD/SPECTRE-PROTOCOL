@@ -672,10 +672,24 @@ func _update_san_pack() -> void:
 		_san_foe = -1
 		return
 	_san_c /= float(n)
-	if _san_foe != -1 and alive[_san_foe] and not extracted[_san_foe] and _tick % 24 != 0:
+	# Keep pursuing a live TEAM target between re-looks (stable hunt); but if we're only chewing on
+	# fallback prey, re-check EVERY tick so the pack snaps onto a team the instant one is in play.
+	if _san_foe != -1 and alive[_san_foe] and not extracted[_san_foe] and team[_san_foe] == SQUAD and _tick % 24 != 0:
 		return
+	# PRIORITY: SEARCH-AND-DESTROY THE DEPLOYED TEAMS (player + rivals). The wipe force's whole purpose
+	# is to hunt the squads down -- it beelines the nearest team unit across the map and only when none
+	# are left does it fall back to mopping up the nearest other prey (infected/bandits/civilians).
 	_san_foe = -1
 	var best: float = INF
+	for j in count():
+		if alive[j] and not extracted[j] and team[j] == SQUAD:
+			var dd: float = _san_c.distance_squared_to(pos[j])
+			if dd < best:
+				best = dd
+				_san_foe = j
+	if _san_foe != -1:
+		return
+	best = INF
 	for j in count():
 		if alive[j] and not extracted[j] and team[j] != SANITATION:
 			var dd: float = _san_c.distance_squared_to(pos[j])
