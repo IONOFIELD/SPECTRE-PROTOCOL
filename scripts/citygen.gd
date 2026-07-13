@@ -387,6 +387,8 @@ func _bridge_towers(deck: Rect2, north_running: bool) -> void:
 
 ## Single-mesh / low-mat PSX shells only. NEVER the mega-packs (tacos, laundry,
 ## buildings.glb, forest, industrial, downtown) — those are hundreds of meshes.
+## The general city: low/mid-rise shells + the Blender-extracted mid-rise blocks (buildings.glb
+## storefront blocks + a few downtown residential/civic buildings) for a real, varied streetscape.
 const LIGHT_BUILDINGS: Array = [
 	"res://models/buildings and scenery/psx_russian_soviet_housing_3d_model.glb",
 	"res://models/buildings and scenery/low-poly_building.glb",
@@ -394,19 +396,47 @@ const LIGHT_BUILDINGS: Array = [
 	"res://models/buildings and scenery/psx_old_abandoned_mansion.glb",
 	"res://models/buildings and scenery/psxprop_-_old_warehouse.glb",
 	"res://models/buildings and scenery/psx_prop_-_old_garage.glb",
-	"res://models/buildings and scenery/building_-_square_-_illuminated.glb",
 	"res://models/buildings and scenery/building_-_quarter_arc.glb",
-	"res://models/buildings and scenery/building_-_stretched_octagonal_-_tier.glb",
 	"res://models/buildings and scenery/psx_japanese_warehouse.glb",
 	"res://models/buildings and scenery/ps1_style_workshop.glb",
+	"res://models/buildings and scenery/psx_apartment.glb",
+	"res://models/buildings and scenery/psx_building.glb",
+	# extracted storefront/mid-rise blocks (buildings.glb)
+	"res://models/buildings and scenery/building_01.glb",
+	"res://models/buildings and scenery/building_02.glb",
+	"res://models/buildings and scenery/building_03.glb",
+	"res://models/buildings and scenery/building_04.glb",
+	"res://models/buildings and scenery/building_05.glb",
+	"res://models/buildings and scenery/building_06.glb",
+	"res://models/buildings and scenery/building_07.glb",
+	"res://models/buildings and scenery/building_08.glb",
+	"res://models/buildings and scenery/building_09.glb",
+	"res://models/buildings and scenery/building_base.glb",
+	# extracted downtown residential / civic (mid-rise)
+	"res://models/buildings and scenery/downtown_residential_2.glb",
+	"res://models/buildings and scenery/downtown_residential_3.glb",
+	"res://models/buildings and scenery/downtown_residential_4.glb",
+	"res://models/buildings and scenery/downtown_mall_1.glb",
+	"res://models/buildings and scenery/downtown_publicbuilding_1.glb",
 ]
 
 
 ## Single-mesh shells that stretch cleanly into a TALL tower -- the downtown high-rises. Kept
 ## separate from LIGHT_BUILDINGS so only the right models get pulled up into skyscrapers.
 const SKYSCRAPERS: Array = [
-	"res://models/buildings and scenery/psx_apartment.glb",
-	"res://models/buildings and scenery/psx_building.glb",
+	"res://models/buildings and scenery/downtown_modernoffice_1.glb",
+	"res://models/buildings and scenery/downtown_modernoffice_1_b.glb",
+	"res://models/buildings and scenery/downtown_modernoffice_2.glb",
+	"res://models/buildings and scenery/downtown_modernoffice_3.glb",
+	"res://models/buildings and scenery/downtown_modernoffice_4.glb",
+	"res://models/buildings and scenery/downtown_modernoffice_5.glb",
+	"res://models/buildings and scenery/downtown_modernoffice_5_b.glb",
+	"res://models/buildings and scenery/downtown_flatiron_1.glb",
+	"res://models/buildings and scenery/downtown_classicoffice_1.glb",
+	"res://models/buildings and scenery/downtown_brownstoneoffice_1.glb",
+	"res://models/buildings and scenery/downtown_brownstoneoffice_2.glb",
+	"res://models/buildings and scenery/downtown_artdeco_1.glb",
+	"res://models/buildings and scenery/downtown_brutal_1.glb",
 	"res://models/buildings and scenery/building_-_stretched_octagonal_-_tier.glb",
 	"res://models/buildings and scenery/building_-_square_-_illuminated.glb",
 ]
