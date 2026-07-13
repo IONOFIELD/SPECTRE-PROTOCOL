@@ -21,27 +21,29 @@ const RADIANCE_SCALE: float = 1.0     # requires SubViewport.use_hdr_2d = true
 const SUN_DIR: Vector3 = Vector3(0.855, 0.300, -0.425)   # where the sun set
 
 const MAT: Dictionary = {
-	# Night city, but the three big zones are pulled well APART so land, water, and the
-	# bridge decks read at a glance in every palette (they used to sit in one grey band):
-	#   OCEAN  is a clean, near-black cold sheet (coldest thing in frame -> clips to black)
-	#   LAND   is a clear mid grey, roads brighter so the street grid reads
-	#   BRIDGE decks run WARM -- bright causeways over the black water, the way across
+	# A CLEAR, CORRECT thermal hierarchy so land / water / structure / road all separate
+	# (apparent brightness = radiance(temp - sky*n.y + solar) * emissivity):
+	#   STRUCTURES  brightest ~0.86 -- concrete/brick mass holds the day's heat, high emissivity
+	#   ROADS       ~0.78 -- warm asphalt
+	#   SIDEWALK/LOT ~0.75  ·  BRIDGE ~0.72  ·  GROUND ~0.70  ·  PARK/GRASS ~0.67 (cool vegetation)
+	#   WATER       ~0.55 -- a cold near-black sheet (coldest in frame -> clips to black)
+	# (The old table had buildings at emissivity 0.78 + roof sky-loss, which made STRUCTURES
+	#  read DARKER than the roads -- the reason nothing was distinguishable.)
 	"water":     {"t": 7.0, "sky": 19.0, "e": 0.96, "solar": 0.2, "d": 6, "dt": 0.40, "de": 0.02},   # clean cold sheet, near black
-	"beach":     {"t": 16.0, "sky": 4.0, "e": 0.94, "solar": 2.8, "d": 6, "dt": 1.3, "de": 0.03},   # bright sand fringe at the waterline
+	"beach":     {"t": 15.0, "sky": 4.0, "e": 0.94, "solar": 2.8, "d": 6, "dt": 1.3, "de": 0.03},   # bright sand fringe at the waterline
 	"ship":      {"t": 16.0, "sky": 5.5, "e": 0.92, "solar": 3.2, "d": 3, "dt": 1.4, "de": 0.03},   # steel hull
-	"bridge":    {"t": 15.5, "sky": 3.0, "e": 0.94, "solar": 2.2, "d": 3, "dt": 0.80, "de": 0.03},   # deck: distinct over the sea, but NOT blown-out bright (was a bright rectangle artifact)
-	"ground":    {"t": 14.5, "sky": 3.0, "e": 0.94, "solar": 2.4, "d": 2, "dt": 1.8, "de": 0.03},
-	"park":      {"t": 11.0, "sky": 9.5, "e": 0.97, "solar": 1.0, "d": 2, "dt": 2.2, "de": 0.02, "ms": Vector2(3.0, 3.0)},
-	"road":      {"t": 18.0, "sky": 2.5, "e": 0.93, "solar": 2.8, "d": 3, "dt": 1.8, "de": 0.05, "ms": Vector2(4.0, 2.586)},
-	"sidewalk":  {"t": 13.5, "sky": 3.5, "e": 0.94, "solar": 2.2, "d": 6, "dt": 1.2, "de": 0.02, "ms": Vector2(1.8, 1.8)},
-	"grass":     {"t": 11.5, "sky": 4.5, "e": 0.97, "solar": 0.8, "d": 7, "dt": 2.2, "de": 0.02, "ms": Vector2(1.5, 1.5)},
-	"foliage":   {"t": 12.5, "sky": 5.0, "e": 0.98, "solar": 0.4, "d": 7, "dt": 2.6, "de": 0.02},   # tree/shrub canopy -- a distinct DARK-GREY rounded blob (reads, but cooler than pavement)
-	"lot":       {"t": 14.5, "sky": 2.8, "e": 0.93, "solar": 2.6, "d": 8, "dt": 1.6, "de": 0.04},
-	# Building shells (GLB) have unreliable roof normals, so the sky_loss cooling that
-	# darkens the flat ground barely touches them -- set the base temp low directly so
-	# roofs blend into the dark-grey ground instead of glowing white.
-	"wall":      {"t": 13.0, "sky": 8.0, "e": 0.78, "solar": 1.0, "d": 1, "dt": 1.6, "de": 0.04, "ms": Vector2(2.4, 1.2)},
-	"brick":     {"t": 13.0, "sky": 8.0, "e": 0.80, "solar": 1.0, "d": 1, "dt": 1.6, "de": 0.04, "ms": Vector2(2.0, 2.0)},
+	"bridge":    {"t": 13.0, "sky": 6.0, "e": 0.94, "solar": 2.0, "d": 3, "dt": 0.80, "de": 0.03},   # deck: a distinct mid over the black sea
+	"ground":    {"t": 11.0, "sky": 6.0, "e": 0.94, "solar": 1.5, "d": 2, "dt": 1.8, "de": 0.03},   # bare earth -- a clear dark base, below the roads
+	"park":      {"t": 10.0, "sky": 10.0, "e": 0.97, "solar": 0.8, "d": 2, "dt": 2.2, "de": 0.02, "ms": Vector2(3.0, 3.0)},   # cool green
+	"road":      {"t": 15.0, "sky": 2.0, "e": 0.93, "solar": 2.0, "d": 3, "dt": 1.8, "de": 0.05, "ms": Vector2(4.0, 2.586)},   # warm asphalt -- clearly above the ground, below the buildings
+	"sidewalk":  {"t": 13.0, "sky": 3.0, "e": 0.94, "solar": 2.2, "d": 6, "dt": 1.2, "de": 0.02, "ms": Vector2(1.8, 1.8)},
+	"grass":     {"t": 9.0, "sky": 7.0, "e": 0.97, "solar": 0.8, "d": 7, "dt": 2.2, "de": 0.02, "ms": Vector2(1.5, 1.5)},
+	"foliage":   {"t": 10.0, "sky": 6.0, "e": 0.98, "solar": 0.4, "d": 7, "dt": 2.6, "de": 0.02},   # tree/shrub canopy -- cooler than pavement, a dark rounded blob
+	"lot":       {"t": 15.0, "sky": 2.0, "e": 0.93, "solar": 2.6, "d": 8, "dt": 1.6, "de": 0.04},   # asphalt, like the roads
+	# STRUCTURES: the warm concrete/brick mass -- the BRIGHTEST thing on the land so the city's
+	# buildings read as buildings. High emissivity + low sky-loss so roofs stay warm too.
+	"wall":      {"t": 21.0, "sky": 2.0, "e": 0.92, "solar": 1.5, "d": 1, "dt": 1.6, "de": 0.04, "ms": Vector2(2.4, 1.2)},
+	"brick":     {"t": 21.0, "sky": 2.0, "e": 0.92, "solar": 1.5, "d": 1, "dt": 1.6, "de": 0.04, "ms": Vector2(2.0, 2.0)},
 	"window":    {"t": 12.0, "sky": 2.0, "e": 0.75, "solar": 1.5, "d": 5, "dt": 0.8, "de": 0.0, "ms": Vector2(1.2, 1.2)},
 	"parapet":   {"t": 11.0, "sky": 5.0, "e": 0.91, "solar": 3.0, "d": 2, "dt": 1.0, "de": 0.02, "ms": Vector2(1.6, 1.6)},
 	"hvac":      {"t": 34.0, "sky": 0.5, "e": 0.93, "solar": 0.0, "d": 4, "dt": 1.5, "de": 0.02, "ms": Vector2(0.6, 0.6)},
