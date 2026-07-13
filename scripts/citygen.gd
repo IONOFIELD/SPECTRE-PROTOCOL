@@ -21,6 +21,8 @@ const CELL: float = 44.0        # block cell -- one building each; ~6-10 m gaps 
 const ROAD_HALF: float = 22.0   # buildings whose cell-centre is within this of an arterial are held off the roadway
 const ROAD_W: float = 15.0      # actual road WIDTH -- a narrow street, to the scale of the cars/buildings
 const ROAD_Y: float = 0.08      # roads ride a hair over the ground base (avoids z-fighting the ground quads)
+const WALK_W: float = 2.3       # sidewalk width each side of the asphalt
+const WALK_Y: float = 0.14      # sidewalks sit a touch higher than the road -> reads as a raised kerb
 const BEACH_W: float = 24.0     # how far the sand reaches inland from the coastline
 const BEACH_SEA: float = 10.0   # ...and how far it laps out over the water
 
@@ -30,7 +32,8 @@ const BEACH_SEA: float = 10.0   # ...and how far it laps out over the water
 var _snap_res: Vector2i = Vector2i(640, 360)
 var buildings: Array[Dictionary] = []
 var _surfaces: Dictionary = {}   # material -> Array[Rect2], all disjoint, all y = 0
-var _road_tris: PackedVector3Array = PackedVector3Array()   # continuous road ribbons (free triangles, y = ROAD_Y)
+var _road_tris: PackedVector3Array = PackedVector3Array()   # asphalt (2-lane) road ribbons (free triangles, y = ROAD_Y)
+var _walk_tris: PackedVector3Array = PackedVector3Array()   # raised sidewalk kerbs flanking the roads (y = WALK_Y)
 
 # geography, filled by generate() and read by main + the sim
 var land_poly: PackedVector2Array = PackedVector2Array()   # the SF coastline (irregular)
@@ -87,19 +90,27 @@ func _emit_surfaces() -> void:
 		mi.material_override = ThermalLib.get_material(mat, _snap_res)
 		add_child(mi)
 
-	# the road network: one continuous ribbon mesh laid over the ground along the arterials
-	if not _road_tris.is_empty():
-		var rst: SurfaceTool = SurfaceTool.new()
-		rst.begin(Mesh.PRIMITIVE_TRIANGLES)
-		for v in _road_tris:
-			rst.set_normal(Vector3.UP)
-			rst.set_uv(Vector2(v.x, v.z) * 0.02)
-			rst.add_vertex(v)
-		rst.generate_tangents()
-		var rmi: MeshInstance3D = MeshInstance3D.new()
-		rmi.mesh = rst.commit()
-		rmi.material_override = ThermalLib.get_material("road", _snap_res)
-		add_child(rmi)
+	# the road network: 2-lane asphalt ribbons + raised sidewalk kerbs, laid over the ground
+	_emit_tris(_road_tris, "road")
+	_emit_tris(_walk_tris, "sidewalk")
+
+
+## Commit a free-triangle list (from _road_seg/_road_disc/_strip) as one mesh under `mat`, with the
+## up-facing normals + UVs + tangents every thermal surface needs.
+func _emit_tris(tris: PackedVector3Array, mat: String) -> void:
+	if tris.is_empty():
+		return
+	var st: SurfaceTool = SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for v in tris:
+		st.set_normal(Vector3.UP)
+		st.set_uv(Vector2(v.x, v.z) * 0.02)
+		st.add_vertex(v)
+	st.generate_tangents()
+	var mi: MeshInstance3D = MeshInstance3D.new()
+	mi.mesh = st.commit()
+	mi.material_override = ThermalLib.get_material(mat, _snap_res)
+	add_child(mi)
 
 
 func _add_box(pos: Vector3, size: Vector3, mat_name: String) -> void:
@@ -117,6 +128,7 @@ func generate(snap_res: Vector2i) -> void:
 	buildings.clear()
 	_surfaces.clear()
 	_road_tris.clear()
+	_walk_tris.clear()
 	road_lines.clear()
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 	rng.seed = seed_value
@@ -264,21 +276,30 @@ func _lay_roads() -> void:
 				_road_disc(art[i], half)
 
 
-## One straight ribbon quad down segment a->b, ROAD_W wide, at y = ROAD_Y. Corners ordered to the
-## same front-up winding as _emit_surfaces (right-of-a, right-of-b, left-of-b, left-of-a).
+## One street segment a->b: a central 2-LANE asphalt ribbon flanked by a raised SIDEWALK kerb on
+## each side, so the road reads as a real street rather than a bare strip. `half` is the corridor
+## half-width (ROAD_W/2); the sidewalks take WALK_W off each edge, the asphalt is what's left.
 func _road_seg(a: Vector2, b: Vector2, half: float) -> void:
+	var road_half: float = maxf(1.0, half - WALK_W)
+	_strip(a, b, -road_half, road_half, ROAD_Y, _road_tris)     # the 2-lane asphalt
+	_strip(a, b, road_half, half, WALK_Y, _walk_tris)           # left sidewalk (raised kerb)
+	_strip(a, b, -half, -road_half, WALK_Y, _walk_tris)         # right sidewalk (raised kerb)
+
+
+## A flat ribbon quad down a->b spanning perpendicular offsets o0..o1 at height y, front-up wound
+## (right-of-a, right-of-b, left-of-b, left-of-a -- same order _emit_surfaces uses).
+func _strip(a: Vector2, b: Vector2, o0: float, o1: float, y: float, arr: PackedVector3Array) -> void:
 	var dv: Vector2 = b - a
 	if dv.length() < 0.001:
 		return
-	var dir: Vector2 = dv.normalized()
-	var nrm: Vector2 = Vector2(-dir.y, dir.x) * half     # unit perpendicular, scaled to half-width
-	var c0: Vector2 = a - nrm
-	var c1: Vector2 = b - nrm
-	var c2: Vector2 = b + nrm
-	var c3: Vector2 = a + nrm
-	_road_tris.append_array([
-		Vector3(c0.x, ROAD_Y, c0.y), Vector3(c1.x, ROAD_Y, c1.y), Vector3(c2.x, ROAD_Y, c2.y),
-		Vector3(c0.x, ROAD_Y, c0.y), Vector3(c2.x, ROAD_Y, c2.y), Vector3(c3.x, ROAD_Y, c3.y),
+	var n: Vector2 = Vector2(-dv.y, dv.x).normalized()
+	var c0: Vector2 = a + n * o0
+	var c1: Vector2 = b + n * o0
+	var c2: Vector2 = b + n * o1
+	var c3: Vector2 = a + n * o1
+	arr.append_array([
+		Vector3(c0.x, y, c0.y), Vector3(c1.x, y, c1.y), Vector3(c2.x, y, c2.y),
+		Vector3(c0.x, y, c0.y), Vector3(c2.x, y, c2.y), Vector3(c3.x, y, c3.y),
 	])
 
 
