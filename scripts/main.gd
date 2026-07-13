@@ -26,7 +26,10 @@ const CUT_DUR: float = 0.52
 const CUT_SWAP: float = 0.30          # the new feed goes live here, under the snow
 const INTRO_HOLD: float = 4.5         # seconds holding CLOSE on the drop before pulling out to the wide view
 const ZOOM_MIN: float = 240.0         # closest: the ISR narrow-view distance -- you can't zoom in past the tactical frame
-const ZOOM_MAX: float = 1650.0        # farthest: the whole peninsula frames; ocean, never void, beyond
+# farthest zoom-out is PER FEED (SLANT == cam_dist): the wide gunship view frames the whole peninsula;
+# the close ground view stays much tighter. (see _zoom_max)
+const ZOOM_MAX_ORBIT: float = 1462.0  # wide AC-130/PYLON view -- the whole peninsula frames
+const ZOOM_MAX_DEPLOY: float = 505.0  # close ELEMENT/GROUND view -- as far out as it goes
 const MUSIC_MENU: String = "res://audio/music/music 1.wav"     # the menu / startup theme (loops)
 # gameplay beds -- one is picked at random on deploy for variety (both loop)
 const MUSIC_DEPLOY: Array = ["res://audio/music/music 2.wav", "res://audio/music/music 3.wav"]
@@ -176,7 +179,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] passive stance   [V] ar
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 121
+const BUILD_PUSHES: int = 122
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -1842,7 +1845,8 @@ func _process(delta: float) -> void:
 	if city != null:
 		cam_tx = clampf(cam_tx, city.map_lo.x, city.map_hi.x)
 		cam_tz = clampf(cam_tz, city.map_lo.y, city.map_hi.y)
-	cam_dist = clampf(cam_dist, ZOOM_MIN, ZOOM_MAX)
+	if not _menu_active:                    # the menu backdrop drives its own wide top-down cam_dist
+		cam_dist = clampf(cam_dist, ZOOM_MIN, _zoom_max())
 
 	cam.fov = f.fov
 	var eye: Vector3 = Vector3(
@@ -2964,6 +2968,12 @@ func _select_element(e: int) -> void:
 		sim.selected[i] = sim.alive[i] and sim.element[i] == e
 
 
+## Farthest zoom-out for the CURRENT feed: the wide gunship view frames the whole peninsula; the
+## close ground view stays much tighter. (Zoom-in min is shared.)
+func _zoom_max() -> float:
+	return ZOOM_MAX_ORBIT if feed == "orbit" else ZOOM_MAX_DEPLOY
+
+
 func _channel_change(to: String) -> void:
 	if cut_t >= 0.0:
 		return
@@ -3000,9 +3010,9 @@ func _input(e: InputEvent) -> void:
 			cam_el = clampf(cam_el + e.relative.y * 0.005, 0.12, 1.45)
 	elif e is InputEventMouseButton:
 		if e.pressed and e.button_index == MOUSE_BUTTON_WHEEL_UP:
-			cam_dist = clampf(cam_dist * 0.9, ZOOM_MIN, ZOOM_MAX)
+			cam_dist = clampf(cam_dist * 0.9, ZOOM_MIN, _zoom_max())
 		elif e.pressed and e.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-			cam_dist = clampf(cam_dist * 1.1, ZOOM_MIN, ZOOM_MAX)
+			cam_dist = clampf(cam_dist * 1.1, ZOOM_MIN, _zoom_max())
 		elif e.button_index == MOUSE_BUTTON_LEFT and not Input.is_key_pressed(KEY_SHIFT):
 			if e.pressed:
 				if _over_ui(e.position):
@@ -3095,7 +3105,7 @@ func _input(e: InputEvent) -> void:
 		if _touches.size() >= 2:
 			var d: float = _two_touch_dist()
 			if _pinch_prev > 1.0 and d > 1.0:
-				cam_dist = clampf(cam_dist * (_pinch_prev / d), ZOOM_MIN, ZOOM_MAX)
+				cam_dist = clampf(cam_dist * (_pinch_prev / d), ZOOM_MIN, _zoom_max())
 			_pinch_prev = d
 		else:
 			_touch_moved += e.relative.length()
