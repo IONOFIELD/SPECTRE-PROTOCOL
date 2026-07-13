@@ -18,7 +18,8 @@ extends Node3D
 
 const FLOOR_H: float = 3.4
 const CELL: float = 44.0        # block cell -- one building each; ~6-10 m gaps read as the fine grid
-const ROAD_HALF: float = 21.0   # a cell whose centre is within this of an arterial becomes road
+const ROAD_HALF: float = 22.0   # a cell whose centre is within this of an arterial carries a road
+const ROAD_W: float = 15.0      # actual road WIDTH -- a narrow street, to the scale of the cars/buildings
 const BEACH_W: float = 24.0     # how far the sand reaches inland from the coastline
 const BEACH_SEA: float = 10.0   # ...and how far it laps out over the water
 
@@ -68,10 +69,10 @@ func _emit_surfaces() -> void:
 			var b: Vector3 = Vector3(r.end.x, 0.0, r.position.y)
 			var c: Vector3 = Vector3(r.end.x, 0.0, r.end.y)
 			var d: Vector3 = Vector3(r.position.x, 0.0, r.end.y)
-			# Emit BOTH windings: the thermal shader is cull_back, and these ground quads were wound
-			# the wrong way (facing down) so they were culled -> invisible. One set now always faces
-			# up and renders; the other is the harmless back side.
-			for v in [a, c, b, a, d, c, a, b, c, a, c, d]:
+			# The CORRECT single winding (front faces up). The old [a,c,b,a,d,c] wound the quads
+			# the wrong way -> culled (invisible) under cull_back; the double-winding hack that
+			# followed flip-flopped at grazing/altitude and z-fought. This is just the up-facing set.
+			for v in [a, b, c, a, c, d]:
 				st.set_normal(Vector3.UP)
 				st.set_uv(Vector2(v.x, v.z) * 0.02)   # any UV -- the shader is triplanar, but the
 				st.add_vertex(v)                      # vertex FORMAT needs UVs for tangents below
@@ -155,11 +156,15 @@ func _lay_city(rng: RandomNumberGenerator) -> void:
 			if _in_park(c):
 				_tile(cell, "park")
 				continue
-			if _near_arterials(c, ROAD_HALF):
-				_tile(cell, "hood_hot" if OS.get_environment("SPECTRE_TDIAG2") != "" else "road")   # TEMP diag hook
+			# an arterial runs through this cell -> a NARROW road strip (axis-aligned, to the
+			# arterial's dominant direction) with ground verges either side, all disjoint. The
+			# diagonal avenues (Market St) come out as a staircase of strips -> read as a diagonal.
+			var axis: int = _arterial_axis(c)
+			if axis != 0:
+				_lay_road_cell(x, z, axis)
 				continue
 			# a building block: ground base under it (fills the inter-building gaps)
-			_tile(cell, "cloth" if OS.get_environment("SPECTRE_TDIAG2") != "" else "ground")        # TEMP diag hook
+			_tile(cell, "ground")
 			if rng.randf() < 0.06:
 				_tile(Rect2(x + 3.0, z + 3.0, CELL - 6.0, CELL - 6.0), "lot")   # open lot, no building
 				continue
@@ -189,6 +194,37 @@ func _near_arterials(c: Vector2, half: float) -> bool:
 			if _dist_to_seg(c, art[i], art[i + 1]) < half:
 				return true
 	return false
+
+
+## If an arterial runs within ROAD_HALF of c, return its dominant axis at that point:
+## 1 = E-W (horizontal road), 2 = N-S (vertical road); 0 = no road here.
+func _arterial_axis(c: Vector2) -> int:
+	var best: float = ROAD_HALF
+	var axis: int = 0
+	for art in arterials:
+		for i in art.size() - 1:
+			var a: Vector2 = art[i]
+			var b: Vector2 = art[i + 1]
+			var d: float = _dist_to_seg(c, a, b)
+			if d < best:
+				best = d
+				axis = 1 if absf(b.x - a.x) >= absf(b.y - a.y) else 2
+	return axis
+
+
+## A road cell: a NARROW ROAD_W strip down the cell (axis-aligned) with ground verges either
+## side -- three disjoint axis-aligned tiles, so the street is street-scale, not a 44 m slab.
+func _lay_road_cell(x: float, z: float, axis: int) -> void:
+	if axis == 1:                                  # E-W road
+		var rz: float = z + (CELL - ROAD_W) * 0.5
+		_tile(Rect2(x, z, CELL, rz - z), "ground")
+		_tile(Rect2(x, rz, CELL, ROAD_W), "road")
+		_tile(Rect2(x, rz + ROAD_W, CELL, z + CELL - rz - ROAD_W), "ground")
+	else:                                          # N-S road
+		var rx: float = x + (CELL - ROAD_W) * 0.5
+		_tile(Rect2(x, z, rx - x, CELL), "ground")
+		_tile(Rect2(rx, z, ROAD_W, CELL), "road")
+		_tile(Rect2(rx + ROAD_W, z, x + CELL - rx - ROAD_W, CELL), "ground")
 
 
 ## The MAJOR San Francisco arterials, each a polyline in the map's coordinate space
@@ -273,7 +309,7 @@ func _lay_beach() -> void:
 		var p1: Vector3 = Vector3(bo.x, -0.04, bo.y)
 		var p2: Vector3 = Vector3(bi.x, -0.04, bi.y)
 		var p3: Vector3 = Vector3(ai.x, -0.04, ai.y)
-		for v in [p0, p2, p1, p0, p3, p2, p0, p1, p2, p0, p2, p3]:   # both windings (cull_back -- see _emit_surfaces)
+		for v in [p0, p1, p2, p0, p2, p3]:   # correct single winding, front up (see _emit_surfaces)
 			st.set_normal(Vector3.UP)
 			st.set_uv(Vector2(v.x, v.z) * 0.02)
 			st.add_vertex(v)
