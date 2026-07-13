@@ -358,15 +358,17 @@ func _lay_geography() -> void:
 		poly_hi = poly_hi.max(v)
 	land = Rect2(poly_lo, poly_hi - poly_lo)
 
+	# Golden Gate Park is a long RECTANGLE; the Presidio (by the GG Bridge) keeps its natural
+	# shape. Every other park is a clean SQUARE (same centre as before, equal sides).
 	parks = [
-		Rect2(155, 552, 430, 105),   # Golden Gate Park -- the long E-W green, west-centre
-		Rect2(195, 180, 190, 150),   # the Presidio -- NW
-		Rect2(585, 585, 115, 38),    # the Panhandle -- E of GG Park
-		Rect2(175, 300, 85, 70),     # Lincoln Park / Lands End -- NW coast
-		Rect2(545, 638, 62, 58),     # Buena Vista Park
+		Rect2(155, 552, 430, 105),   # Golden Gate Park -- the long E-W green, west-centre (RECTANGLE)
+		Rect2(195, 180, 190, 150),   # the Presidio -- NW, by the GG Bridge (exception, not squared)
+		Rect2(609, 571, 66, 66),     # the Panhandle square -- E of GG Park
+		Rect2(180, 297, 76, 76),     # Lincoln Park / Lands End -- NW coast
+		Rect2(543, 634, 66, 66),     # Buena Vista Park
 		Rect2(642, 715, 45, 45),     # Dolores Park -- the Mission
-		Rect2(720, 895, 115, 95),    # McLaren Park -- SE
-		Rect2(430, 690, 120, 110),   # Twin Peaks / Mount Sutro -- the central hills
+		Rect2(727, 892, 100, 100),   # McLaren Park -- SE
+		Rect2(435, 690, 110, 110),   # Twin Peaks / Mount Sutro -- the central hills
 	]
 	bridges = [
 		Rect2(235, -120, 66, 300),   # Golden Gate, north (meets the N coast ~z 150)
