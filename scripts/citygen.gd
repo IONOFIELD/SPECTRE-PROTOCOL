@@ -180,10 +180,6 @@ func _lay_city(rng: RandomNumberGenerator) -> void:
 			# a continuous GROUND base under every non-park cell (fills the inter-building gaps AND
 			# beds the road ribbons that are laid over the top in _lay_roads).
 			_tile(cell, "ground")
-			# hold buildings off the roadway: an arterial threads the middle of this cell, so leave
-			# it clear (the flowing road ribbon covers it). The building rows sit in the cells beside.
-			if _near_arterials(c, ROAD_HALF):
-				continue
 			if rng.randf() < 0.06:
 				_tile(Rect2(x + 3.0, z + 3.0, CELL - 6.0, CELL - 6.0), "lot")   # open lot, no building
 				continue
@@ -203,15 +199,42 @@ func _lay_city(rng: RandomNumberGenerator) -> void:
 			var hi: float = 0.82 if tall else 0.72
 			var bw: float = CELL * rng.randf_range(lo, hi)
 			var bd: float = CELL * rng.randf_range(lo, hi)
-			_building(rng, c.x - bw * 0.5 + rng.randf_range(-3.0, 3.0), c.y - bd * 0.5 + rng.randf_range(-3.0, 3.0), bw, bd, fl, tall)
+			var bx: float = c.x - bw * 0.5 + rng.randf_range(-3.0, 3.0)
+			var bz: float = c.y - bd * 0.5 + rng.randf_range(-3.0, 3.0)
+			# never spill a footprint into the bay or onto a road ribbon: the shell must sit fully on
+			# land, clear of every arterial. Roads then read as running BETWEEN the blocks, never through
+			# a building. (Park cells were already handled above, so roads/blocks never land in a park.)
+			if not _footprint_in_land(bx, bz, bw, bd):
+				continue
+			if _footprint_hits_road(bx, bz, bw, bd):
+				continue
+			_building(rng, bx, bz, bw, bd, fl, tall)
 
 
-## Is c within `half` metres of any arterial segment?
-func _near_arterials(c: Vector2, half: float) -> bool:
+## All four corners of the footprint inside the coastline? Cell-centre-in-land isn't enough at an
+## irregular coast -- this keeps the whole shell on land so nothing hangs out over the water.
+func _footprint_in_land(x: float, z: float, w: float, d: float) -> bool:
+	for corner in [Vector2(x, z), Vector2(x + w, z), Vector2(x + w, z + d), Vector2(x, z + d)]:
+		if not _in_land(corner):
+			return false
+	return true
+
+
+## Would this footprint touch a road? Tests the outline (corners, edge midpoints, centre) against
+## every arterial segment, so a building is never placed on the roadway -- roads route between blocks.
+func _footprint_hits_road(x: float, z: float, w: float, d: float) -> bool:
+	var clr: float = ROAD_W * 0.5 + 2.5
+	var pts: Array = [
+		Vector2(x, z), Vector2(x + w, z), Vector2(x + w, z + d), Vector2(x, z + d),
+		Vector2(x + w * 0.5, z), Vector2(x + w * 0.5, z + d),
+		Vector2(x, z + d * 0.5), Vector2(x + w, z + d * 0.5),
+		Vector2(x + w * 0.5, z + d * 0.5),
+	]
 	for art in arterials:
 		for i in art.size() - 1:
-			if _dist_to_seg(c, art[i], art[i + 1]) < half:
-				return true
+			for p in pts:
+				if _dist_to_seg(p, art[i], art[i + 1]) < clr:
+					return true
 	return false
 
 
@@ -223,11 +246,22 @@ func _lay_roads() -> void:
 	var half: float = ROAD_W * 0.5
 	for art in arterials:
 		var n: int = art.size()
+		# walk each segment in short steps and DROP any step whose midpoint is inside a park -- roads
+		# run only along the park BORDERS (the edge arterials), never across a park's interior.
 		for i in n - 1:
-			_road_seg(art[i], art[i + 1], half)
-		# a disc at every vertex fills the joint gap on turns and rounds the ends
+			var a: Vector2 = art[i]
+			var b: Vector2 = art[i + 1]
+			var steps: int = maxi(1, int(ceil(a.distance_to(b) / 11.0)))
+			for k in steps:
+				var p0: Vector2 = a.lerp(b, float(k) / float(steps))
+				var p1: Vector2 = a.lerp(b, float(k + 1) / float(steps))
+				if _in_park((p0 + p1) * 0.5):
+					continue
+				_road_seg(p0, p1, half)
+		# a disc at every vertex rounds the joint on turns -- but not where a vertex sits in a park
 		for i in n:
-			_road_disc(art[i], half)
+			if not _in_park(art[i]):
+				_road_disc(art[i], half)
 
 
 ## One straight ribbon quad down segment a->b, ROAD_W wide, at y = ROAD_Y. Corners ordered to the
@@ -462,14 +496,14 @@ func _lay_geography() -> void:
 		poly_hi = poly_hi.max(v)
 	land = Rect2(poly_lo, poly_hi - poly_lo)
 
-	# Golden Gate Park is a long RECTANGLE; the Presidio (by the GG Bridge) keeps its natural
-	# shape. Every other park is a clean SQUARE (same centre as before, equal sides).
+	# Golden Gate Park is ONE long RECTANGLE on the left, standing alone. The little parks that used to
+	# crowd it are GONE: the Panhandle (hugging its east end) and Buena Vista (which overlapped its SE
+	# corner, breaking the rectangle) are removed. The Presidio (by the GG Bridge) keeps its natural
+	# shape; the other, larger parks are unchanged.
 	parks = [
-		Rect2(155, 552, 430, 105),   # Golden Gate Park -- the long E-W green, west-centre (RECTANGLE)
+		Rect2(155, 552, 430, 105),   # Golden Gate Park -- the long E-W green, west-centre (RECTANGLE, standalone)
 		Rect2(195, 180, 190, 150),   # the Presidio -- NW, by the GG Bridge (exception, not squared)
-		Rect2(609, 571, 66, 66),     # the Panhandle square -- E of GG Park
 		Rect2(180, 297, 76, 76),     # Lincoln Park / Lands End -- NW coast
-		Rect2(543, 634, 66, 66),     # Buena Vista Park
 		Rect2(642, 715, 45, 45),     # Dolores Park -- the Mission
 		Rect2(727, 892, 100, 100),   # McLaren Park -- SE
 		Rect2(435, 690, 110, 110),   # Twin Peaks / Mount Sutro -- the central hills
@@ -619,7 +653,11 @@ func _building(rng: RandomNumberGenerator, x: float, z: float, w: float, d: floa
 	var yaw: float = PI * 0.5 if rng.randf() < 0.5 else 0.0
 	var shell: Node3D = ThermalModel.spawn_fit(path, wall_mat, _snap_res, Vector3(w, h, d), yaw)
 	if shell != null:
-		shell.position = Vector3(x + w * 0.5, 0.0, z + d * 0.5)
+		# spawn_fit already grounded the base to y=0 (via _align_bottom_to_y0) -- KEEP that y and
+		# only place it in XZ. Overwriting y with 0.0 (the old bug) discarded the grounding, so any
+		# shell whose model origin wasn't at its base floated in the sky or sank into the ground.
+		shell.position.x = x + w * 0.5
+		shell.position.z = z + d * 0.5
 		add_child(shell)
 	else:
 		# Fallback if a GLB fails to load

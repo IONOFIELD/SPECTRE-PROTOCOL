@@ -113,12 +113,16 @@ static func _classify(mi: MeshInstance3D, default_mat: String, rules: Array) -> 
 	return default_mat
 
 
-## Shift so the lowest mesh bound sits on y = 0 in the node's local space.
+## Shift so the lowest mesh bound sits on y = 0 in the PARENT frame. `_combined_aabb` is measured
+## in the node's LOCAL space (it excludes the node's own transform), so the offset must be scaled
+## by the node's own y-scale to land in parent space -- otherwise a stretched shell (spawn_fit uses
+## big non-uniform scales) grounds by the wrong amount and floats or sinks. Yaw is about Y, so it
+## doesn't affect the vertical extent.
 static func _align_bottom_to_y0(root: Node3D) -> void:
 	var aabb: AABB = _combined_aabb(root)
 	if aabb.size == Vector3.ZERO:
 		return
-	root.position.y -= aabb.position.y
+	root.position.y -= aabb.position.y * root.scale.y
 
 
 static func _combined_aabb(root: Node3D) -> AABB:
