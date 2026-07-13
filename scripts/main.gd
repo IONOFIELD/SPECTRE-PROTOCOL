@@ -146,7 +146,10 @@ func _request_scan() -> void:
 		Audio.sfx(_sfx_scan, 2.0, 0.6)   # the actual scanner: dropped low, sonar-like
 # Insertion edges, spread around the peninsula so no two teams deploy close. Order is
 # W, E, N, S so 2 teams land opposite (W+E), 3 add N, 4 add S.
-const EDGE_BASES: Array = [Vector2(205, 615), Vector2(885, 480), Vector2(500, 215), Vector2(520, 945)]
+const EDGE_BASES: Array = [Vector2(205, 615), Vector2(885, 480), Vector2(500, 215), Vector2(520, 945)]   # (fallback; bases are computed equidistant now)
+const DEPLOY_HELI: int = 0    # lands in a park
+const DEPLOY_TRUCK: int = 1   # pulls up on a road
+const DEPLOY_BOAT: int = 2    # comes in off the sea at the coast (most common)
 const ELEMENT_ROSTER: Array = [&"cdr", &"cbt", &"med", &"snp", &"rec", &"eod"]   # per team; CMD leads, EOD lobs grenades
 
 # --- Read of the units. FLIR flattens PS1 mesh detail to a blob at this range, so
@@ -159,7 +162,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] passive stance   [V] ar
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 95
+const BUILD_PUSHES: int = 96
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -307,19 +310,35 @@ const LC_HOSP: int = 1
 const LC_POLICE: int = 2
 const LC_BIO: int = 3
 
-# AC-130 fire support -- a kill-charged boresight strike (v0.19's killstreak)
-const AC_UNLOCK: int = 100             # INFECTED kills to unlock a fire mission (killstreak; resets on use)
-const STRIKE_R: float = 16.0           # kill radius, metres
-const STRIKE_DMG: float = 1200.0       # one burst still flattens even the buffed Sanitation elite
+# AC-130 fire support -- a kill-charged fire mission (v0.19's killstreak). TWO weapons, by view:
+#   WIDE ISR (orbit)  -> one large 105mm PROJECTILE (big blast, long flight)
+#   CLOSE ISR (deploy) -> a 15-round 25mm BURST, 3 volleys per mission (rapid small impacts)
+const AC_UNLOCK: int = 100             # INFECTED kills to unlock a fire mission (killstreak)
+const STRIKE_R: float = 16.0           # 105mm kill radius, metres
+const STRIKE_DMG: float = 1200.0       # one round flattens even the buffed Sanitation elite
 const STRIKE_TOF: float = 3.5          # round time-of-flight, seconds -- a long flight sells the distance
 const STRIKE_BOW: float = 0.26         # arc height of the inbound round, as a fraction of its screen run
+const BURST_ROUNDS: int = 15           # rounds in one 25mm burst volley
+const BURST_INTERVAL: float = 0.075    # spacing between rounds in a volley (~1.1 s)
+const BURST_TOF: float = 0.55          # each burst round's short flight time
+const BURST_R: float = 6.0             # small impact radius
+const BURST_DMG: float = 260.0         # a burst round -- drops normal infected/troops, not the elite in one
+const BURST_SPREAD: float = 9.0        # rounds walk within this of the aim point
+const BURST_VOLLEYS: int = 3           # volleys per fire mission
 var _zombie_kills: int = 0             # infected killed toward the next AC-130 unlock
-var _strike_arming: bool = false       # armed: the next tap designates the strike point
-var _strike_pending: bool = false      # a round is inbound (in flight)
+var _strike_arming: bool = false       # armed: the next tap designates the target
+var _strike_pending: bool = false      # a 105mm projectile is inbound (in flight)
 var _strike_target: Vector2 = Vector2.ZERO
 var _strike_tof: float = 0.0           # seconds since the round left the gun
 var _strike_pos: Vector2 = Vector2.ZERO
 var _strike_t: float = 999.0           # seconds since impact, for the blast FX
+var _burst_volleys: int = BURST_VOLLEYS  # 25mm volleys left this fire mission
+var _burst_active: bool = false          # a burst is walking out its rounds
+var _burst_target: Vector2 = Vector2.ZERO
+var _burst_t: float = 0.0                # seconds since the burst opened up
+var _burst_fired: int = 0                # rounds sent so far in the current volley
+var _ac_unlocked_prev: bool = false      # edge-detect the unlock, to refresh the volley count
+var _tracers: Array = []                 # inbound rounds being drawn: [{to: Vector2, t: float, tof: float, big: bool}]
 var _flashes: Array = []               # muzzle flashes: [{pos: Vector2, t: float}], newest last
 const FLASH_LIFE: float = 0.12         # seconds a muzzle flash stays lit
 const FLASH_MAX: int = 80              # cap, so a big firefight can't flood the overlay
@@ -487,6 +506,8 @@ func _build_tree() -> void:
 	city = CityGen.new()
 	vp.add_child(city)
 	city.generate(snap_res)
+	if OS.get_environment("SPECTRE_TDIAG") != "":
+		_tdiag_meshes()   # TEMP: SurfaceTool winding bisect
 	cars = Vehicles.new()
 	vp.add_child(cars)
 	# 16 light single-mesh cars max (memory). Was 26 greybox multi-part cars.
@@ -572,6 +593,48 @@ func _build_tree() -> void:
 ## key cycles it) and a width that follows the window aspect, so the thermal feed
 ## fills any screen -- landscape desktop or portrait phone -- without letterboxing
 ## or stretch. This is v0.19's frame-to-the-interface behaviour.
+## TEMP diagnostic: a labeled column of SurfaceTool tests over OPEN OCEAN (x 40-100, west of
+## the coast) so each is unmistakable in the map view. Tests, N to S:
+##   z 300: single quad, y0, material "ground"
+##   z 400: single quad, y0, material "road"
+##   z 500: ONE mesh holding THREE disjoint quads, y0, hood_hot (the citygen sheet case)
+##   z 660: single quad, y0, hood_hot control
+func _tdiag_meshes() -> void:
+	var mk := func(x0: float, z0: float, mat_name: String, quads: int) -> void:
+		var st: SurfaceTool = SurfaceTool.new()
+		st.begin(Mesh.PRIMITIVE_TRIANGLES)
+		for q in quads:
+			var zq: float = z0 + float(q) * 45.0
+			var a: Vector3 = Vector3(x0, 0.0, zq)
+			var b: Vector3 = Vector3(x0 + 60.0, 0.0, zq)
+			var c: Vector3 = Vector3(x0 + 60.0, 0.0, zq + 38.0)
+			var d: Vector3 = Vector3(x0, 0.0, zq + 38.0)
+			for v in [a, c, b, a, d, c]:
+				st.set_normal(Vector3.UP)
+				st.add_vertex(v)
+		var mi: MeshInstance3D = MeshInstance3D.new()
+		mi.mesh = st.commit()
+		mi.material_override = ThermalLib.get_material(mat_name, snap_res)
+		city.add_child(mi)
+	# v5: alternate the sheets between the cached hood_hot and cached ground instances (both
+	# carry IDENTICAL values right now) -- if odd render and even don't, the two objects
+	# behave differently despite equal uniforms. Dump every uniform of both.
+	var hot: ShaderMaterial = ThermalLib.get_material("hood_hot", snap_res)
+	var grd: ShaderMaterial = ThermalLib.get_material("ground", snap_res)
+	for u in hot.shader.get_shader_uniform_list():
+		var uname: String = u["name"]
+		print("TDIAG uniform %-16s hood=%s  ground=%s" % [uname, str(hot.get_shader_parameter(uname)), str(grd.get_shader_parameter(uname))])
+	var n: int = 0
+	for ch in city.get_children():
+		if ch is MeshInstance3D and (ch as MeshInstance3D).mesh != null:
+			var ab: AABB = (ch as MeshInstance3D).mesh.get_aabb()
+			if ab.size.y < 0.5 and ab.size.x > 100.0:
+				n += 1
+				(ch as MeshInstance3D).material_override = hot if n % 2 == 1 else grd
+				print("TDIAG sheet ", n, " -> ", "hood_hot" if n % 2 == 1 else "ground")
+	print("TDIAG total sheets: ", n)
+
+
 func _init_res() -> void:
 	var win: Vector2i = get_window().size
 	if win.x <= 0 or win.y <= 0:
@@ -722,13 +785,15 @@ func _spawn() -> void:
 	# Each team inserts from a different edge (EDGE_BASES) so no two deploy close; an
 	# insertion vehicle marks the drop. The exfil bridges are N (Golden Gate) and E (Bay).
 	var base0: Vector2 = Vector2(300.0, 470.0)
+	var bases: Array = _deploy_bases(_team_count)      # equidistant around the coastline
 	for e in _team_count:
-		var base: Vector2 = EDGE_BASES[e % EDGE_BASES.size()]
+		var mode: int = _pick_deploy_mode()            # boat ~65% / heli / truck
+		var base: Vector2 = _snap_base_for_mode(bases[e], mode)   # heli->park, truck->road, boat->coast
 		if not Geometry2D.is_point_in_polygon(base, city.land_poly):
-			base = Vector2(300.0, 470.0)
+			base = bases[e]
 		if e == 0:
 			base0 = base
-		_deploy_vehicle(base, e)
+		_deploy_vehicle(base, e, mode)
 		# EVERY team fields REQUIRED_TROOPS (1 commander + 25). You pick element 0's mix;
 		# rivals field the standard 26. Element 0 spawns CLUSTERED at the drop and disembarks
 		# to formation (see the stagger); rivals spawn already spread into a loose block.
@@ -786,20 +851,88 @@ func _populate_world() -> void:
 			sim.spawn_line(&"zed", WorldSim.INFECTED, b, GAUNTLET_PER_BRIDGE, rng)   # the choked deck
 
 
-## The insertion vehicle, animated EXACTLY like v0.19: a HELI drops straight DOWN onto the drop,
-## hovers while the troops pour out, then lifts off vertically and departs; a TRUCK drives in from
-## off-map and parks as scenery; a WALK insertion has NO vehicle (the troops just march in). YOUR
-## team (element 0) plays the animation (see _advance_deploy); rivals get a static prop.
-func _deploy_vehicle(base: Vector2, e: int) -> void:
+## n team insertion points spaced EQUIDISTANTLY around the coastline (angularly even from the
+## land centre), stepped just inside the shore so no two teams deploy near each other.
+func _deploy_bases(n: int) -> Array:
+	var out: Array = []
+	if city == null:
+		return out
+	var ctr: Vector2 = city.land.get_center()
+	for e in n:
+		var ang: float = -PI * 0.5 + float(e) * TAU / float(maxi(1, n))   # team 0 north, then clockwise
+		var dir: Vector2 = Vector2(cos(ang), sin(ang))
+		var last: Vector2 = ctr
+		for s in range(1, 140):
+			var q: Vector2 = ctr + dir * (float(s) * 10.0)
+			if not Geometry2D.is_point_in_polygon(q, city.land_poly):
+				break
+			last = q
+		out.append(last - dir * 26.0)          # 26 m inside the shore
+	return out
+
+
+## Weighted insertion mode: BOATs most of the time (~65%, in off the sea at the coast), else a
+## heli (lands in a park) or a truck (pulls up on a road).
+func _pick_deploy_mode() -> int:
+	var r: float = _rng.randf()
+	if r < 0.65:
+		return DEPLOY_BOAT
+	if r < 0.825:
+		return DEPLOY_HELI
+	return DEPLOY_TRUCK
+
+
+## Move a team's drop onto the feature its vehicle needs: a HELI to open parkland, a TRUCK
+## onto the nearest road; a BOAT stays at the coastal edge (it arrives off the sea).
+func _snap_base_for_mode(base: Vector2, mode: int) -> Vector2:
+	if mode == DEPLOY_HELI:
+		return _nearest_park_point(base)
+	if mode == DEPLOY_TRUCK:
+		return _nearest_road_point(base)
+	return base
+
+
+func _nearest_park_point(base: Vector2) -> Vector2:
+	if city == null or city.parks.is_empty():
+		return base
+	var best: Vector2 = base
+	var bd: float = INF
+	for pk in city.parks:
+		var d: float = base.distance_squared_to((pk as Rect2).get_center())
+		if d < bd:
+			bd = d
+			best = (pk as Rect2).get_center()
+	return best
+
+
+func _nearest_road_point(base: Vector2) -> Vector2:
+	if city == null or city.road_lines.is_empty():
+		return base
+	var best: Vector2 = base
+	var bd: float = INF
+	for seg in city.road_lines:
+		var a: Vector2 = seg[0]
+		var ab: Vector2 = (seg[1] as Vector2) - a
+		var t: float = clampf((base - a).dot(ab) / maxf(1e-4, ab.length_squared()), 0.0, 1.0)
+		var p: Vector2 = a + ab * t
+		var d: float = base.distance_squared_to(p)
+		if d < bd:
+			bd = d
+			best = p
+	return best
+
+
+## The insertion vehicle. HELI (v0.19): drops straight DOWN onto the drop, hovers while the troops
+## pour out, then lifts off vertically and departs. TRUCK: drives in from off-map and parks. BOAT:
+## sails in off the sea to the waterline and stays. YOUR team (element 0) plays the animation
+## (see _advance_deploy); rivals get a static prop.
+func _deploy_vehicle(base: Vector2, e: int, mode: int) -> void:
 	if city == null:
 		return
-	var mode: int = (_rng.randi() % 3) if e == 0 else (e % 3)   # 0 heli / 1 truck / 2 walk
 	if e == 0:
 		_deploy_mode = mode
-	if mode == 2:
-		return                                                 # foot march -- no vehicle at all
 	var outward: Vector2 = (base - city.land.get_center()).normalized()
-	if mode == 0:
+	if mode == DEPLOY_HELI:
 		var body: MeshInstance3D = _heli_body()
 		var rotor: MeshInstance3D = _heli_rotor()
 		city.add_child(body)
@@ -812,18 +945,21 @@ func _deploy_vehicle(base: Vector2, e: int) -> void:
 			body.position = Vector3(base.x, 1.4, base.y)                    # rival: landed, static
 			rotor.position = body.position + Vector3(0.0, 1.7, 0.0)
 	else:
-		var tm: BoxMesh = BoxMesh.new()
-		tm.size = Vector3(3.0, 3.0, 7.0)
-		var truck: MeshInstance3D = MeshInstance3D.new()
-		truck.mesh = tm
-		truck.material_override = ThermalLib.get_material("hood_warm", snap_res)
-		truck.rotation.y = 0.0 if absf(outward.x) < absf(outward.y) else PI * 0.5   # axis-snapped (a rotated box blows out)
-		var rest: Vector3 = Vector3(base.x, 1.5, base.y)
-		var ex: Vector3 = rest + Vector3(outward.x, 0.0, outward.y) * 70.0
-		truck.position = ex if e == 0 else rest
-		city.add_child(truck)
+		# TRUCK or BOAT: a box that drives/sails in from off-map and parks. The boat is longer and
+		# stops at the waterline (out over the sea); the truck stops on the road at the drop.
+		var boat: bool = mode == DEPLOY_BOAT
+		var vm: BoxMesh = BoxMesh.new()
+		vm.size = Vector3(4.0, 2.2, 11.0) if boat else Vector3(3.0, 3.0, 7.0)
+		var veh: MeshInstance3D = MeshInstance3D.new()
+		veh.mesh = vm
+		veh.material_override = ThermalLib.get_material("hood_warm", snap_res)
+		veh.rotation.y = 0.0 if absf(outward.x) < absf(outward.y) else PI * 0.5   # axis-snapped (a rotated box blows out)
+		var rest: Vector3 = Vector3(base.x + outward.x * 22.0, 0.9, base.y + outward.y * 22.0) if boat else Vector3(base.x, 1.5, base.y)
+		var ex: Vector3 = rest + Vector3(outward.x, 0.0, outward.y) * 80.0
+		veh.position = ex if e == 0 else rest
+		city.add_child(veh)
 		if e == 0:
-			_deploy_anim = {"body": truck, "rotor": null, "mode": 1, "base": rest, "ex": ex, "t": 0.0}
+			_deploy_anim = {"body": veh, "rotor": null, "mode": 1, "base": rest, "ex": ex, "t": 0.0}
 
 
 func _heli_body() -> MeshInstance3D:
@@ -860,10 +996,9 @@ func _setup_deploy_stagger(base: Vector2) -> void:
 	for i in sim.count():
 		if sim.team[i] == WorldSim.SQUAD and sim.element[i] == 0:
 			ids.append(i)
-	# v0.19 disembark timing by insertion mode: heli t0 2.0 (once it lands), truck 2.6 (once it
-	# arrives), walk 0.3 (straight in); step 0.10 (0.16 on foot).
-	var t0: float = 2.0 if _deploy_mode == 0 else (2.6 if _deploy_mode == 1 else 0.3)
-	var step: float = 0.16 if _deploy_mode == 2 else 0.10
+	# disembark timing by mode: heli t0 2.0 (once it lands), truck/boat 2.6 (once they arrive).
+	var t0: float = 2.0 if _deploy_mode == DEPLOY_HELI else 2.6
+	var step: float = 0.10
 	for k in ids.size():
 		var i: int = ids[k]
 		var ang: float = float(k) / maxf(1.0, float(ids.size())) * TAU
@@ -1506,14 +1641,31 @@ func _request_strike() -> void:
 ## Call the strike at a designated ground point. Everything in the ring dies --
 ## friendly fire included, so mind your own squad.
 func _fire_ac130_at(target: Vector2) -> void:
-	if _zombie_kills < AC_UNLOCK or _strike_pending:
+	if _zombie_kills < AC_UNLOCK:
 		return
-	_zombie_kills = 0          # spend the killstreak; earn the next 100
 	_strike_arming = false
-	_strike_target = target
-	_strike_tof = 0.0
-	_strike_pending = true                        # round in flight; impact after STRIKE_TOF
-	Audio.comms("open_fire", 0)                   # fire-mission callout
+	if feed == "orbit":
+		# WIDE ISR: one large 105mm projectile (spends the mission)
+		if _strike_pending:
+			return
+		_strike_target = target
+		_strike_tof = 0.0
+		_strike_pending = true
+		_tracers.append({"to": target, "t": 0.0, "tof": STRIKE_TOF, "big": true})
+		_zombie_kills = 0
+		Audio.comms("open_fire", 0)
+	else:
+		# CLOSE ISR: a 15-round 25mm burst -- one of 3 volleys
+		if _burst_active or _burst_volleys <= 0:
+			return
+		_burst_target = target
+		_burst_t = 0.0
+		_burst_fired = 0
+		_burst_active = true
+		_burst_volleys -= 1
+		if _burst_volleys <= 0:
+			_zombie_kills = 0          # mission spent after the last volley
+		Audio.comms("open_fire", 0)
 
 
 func _process(delta: float) -> void:
@@ -1558,13 +1710,9 @@ func _process(delta: float) -> void:
 
 	sim.step(delta)
 	if _strike_pending:
-		_strike_tof += delta
-		if _strike_tof >= STRIKE_TOF:
-			_strike_pending = false
-			_strike_pos = _strike_target
-			_strike_t = 0.0
-			sim.air_strike(_strike_target, STRIKE_R, STRIKE_DMG)   # impact: kills + "strike" event
-			_spawn_flash3d(_strike_target, STRIKE_R * 0.7, 0.55, 3.0)   # hot blast on the feed
+		_strike_tof += delta                  # drives the projectile status/flash; impact via the tracer
+	_advance_burst(delta)                     # 25mm burst: send its rounds on the interval
+	_age_tracers(delta)                       # rounds in flight -> impact (kills + blast) on arrival
 	_sync_visuals(delta)
 	_drain_audio()
 	_strike_t += delta
@@ -1921,7 +2069,7 @@ func _draw_selection() -> void:
 	_draw_unit_boxes()
 	_draw_tags(ThemeDB.fallback_font)
 	_draw_flashes()
-	_draw_incoming()
+	_draw_tracers()
 	# (selection brackets are drawn per-unit inside _draw_unit_boxes now -- one combined marker)
 	if dragging:
 		var m: Vector2 = get_viewport().get_mouse_position()
@@ -2316,7 +2464,8 @@ func _draw_hud() -> void:
 		sel_layer.draw_line(p, p + Vector2(arm * sx, 0.0), HUD_DIM, 1.5)
 		sel_layer.draw_line(p, p + Vector2(0.0, arm * sy), HUD_DIM, 1.5)
 
-	# centre reticle: gapped cross, range ticks, pipper
+	# centre reticle -- LINE-BASED, no ring: a gapped cross with range ticks and a tiny
+	# cross pipper at the aim point (the AC-130 gunsight look).
 	var gap: float = 15.0
 	var reach: float = short * 0.24
 	for d in [Vector2(1, 0), Vector2(-1, 0), Vector2(0, 1), Vector2(0, -1)]:
@@ -2325,7 +2474,8 @@ func _draw_hud() -> void:
 		for t in [0.42, 0.66, 0.9]:
 			var at: Vector2 = c + d * lerpf(gap, reach, t)
 			sel_layer.draw_line(at - perp * 5.0, at + perp * 5.0, HUD_COL, 1.5)
-	sel_layer.draw_arc(c, 5.0, 0.0, TAU, 16, HUD_COL, 1.5)
+	sel_layer.draw_line(c - Vector2(3.5, 0.0), c + Vector2(3.5, 0.0), HUD_COL, 1.0)   # aim pipper (line)
+	sel_layer.draw_line(c - Vector2(0.0, 3.5), c + Vector2(0.0, 3.5), HUD_COL, 1.0)
 
 	# rotating cardinal compass on a fixed ring around the reticle
 	var ring: float = short * 0.36
@@ -2351,15 +2501,17 @@ func _draw_hud() -> void:
 	if locked:
 		sel_layer.draw_string(font, c + Vector2(-42.0, reach + 22.0), "TGT LOCKED", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, HUD_RED)
 
-	# AC-130 fire-mission status -- by its BUTTONS (bottom-right), right-aligned above the bar.
+	# AC-130 fire-mission status -- by its BUTTONS (bottom-right). The weapon depends on the
+	# view: 105mm projectile in the WIDE ISR, a 25mm burst (x volleys left) in the CLOSE ISR.
+	var wpn: String = "105MM" if feed == "orbit" else "25MM BURST x%d" % _burst_volleys
 	var ac_txt: String
 	var ac_col: Color
 	if _strike_arming:
-		ac_txt = "AC-130  DESIGNATE"
+		ac_txt = "AC-130  DESIGNATE  %s" % wpn
 		ac_col = HUD_RED
-		sel_layer.draw_string(font, Vector2(0.0, 94.0), "DESIGNATE STRIKE  --  TAP TARGET", HORIZONTAL_ALIGNMENT_CENTER, win.x, 15, HUD_RED)
+		sel_layer.draw_string(font, Vector2(0.0, 94.0), "DESIGNATE  --  TAP TARGET", HORIZONTAL_ALIGNMENT_CENTER, win.x, 15, HUD_RED)
 	elif _zombie_kills >= AC_UNLOCK:
-		ac_txt = "AC-130 GUNSHIP READY"
+		ac_txt = "AC-130 READY  %s" % wpn
 		ac_col = HUD_COL
 	else:
 		ac_txt = "AC-130  %d/%d KILLS" % [_zombie_kills, AC_UNLOCK]
@@ -2401,23 +2553,20 @@ func _draw_top_banner(_font: Font, win: Vector2) -> void:
 	sel_layer.draw_string(font, Vector2(cx - tw2 * 0.5, y + 4.0), txt2, HORIZONTAL_ALIGNMENT_LEFT, -1, fs2, HUD_COL)
 
 
-## A compact roster of the teams in play, under the top-left readout: each element's colour
-## swatch, aggregate HP%, headcount, and A(rmor)/B(uff) tallies, plus a [P] when that team
+## A compact roster of the teams in play, centred dead-middle of the screen: each element's
+## colour swatch, aggregate HP%, headcount, A(rmor)/B(uff) tallies, and a [P] when that team
 ## is passive (allied) with you. Your team is marked YOU.
 func _draw_element_roster(win: Vector2) -> void:
 	if _menu_active or sim == null or _team_count <= 0:
 		return
 	var font: Font = _hud_font
-	var x: float = 26.0
-	var y: float = 236.0
-	sel_layer.draw_string(font, Vector2(x, y), "ELEMENTS", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, HUD_DIM)
-	y += 17.0
+	# first pass: build each row's text + colour + whether it carries a swatch
+	var rows: Array = []
 	for e in _team_count:
 		var ids: Array = sim.element_ids(e)
-		var col: Color = _team_colors[e] if e < _team_colors.size() else HUD_COL
+		var tag: String = "YOU" if e == 0 else "T%d" % (e + 1)
 		if ids.is_empty():
-			sel_layer.draw_string(font, Vector2(x + 13.0, y), ("YOU" if e == 0 else "T%d" % (e + 1)) + "  WIPED", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(0.5, 0.5, 0.5, 0.5))
-			y += 15.0
+			rows.append({"text": tag + "  WIPED", "col": Color(0.5, 0.5, 0.5, 0.5), "swatch": false})
 			continue
 		var hp_sum: float = 0.0
 		var hp_max: float = 0.0
@@ -2430,17 +2579,30 @@ func _draw_element_roster(win: Vector2) -> void:
 				armored += 1
 			if sim.buff_t[i] > 0.0:
 				buffed += 1
-		var pct: int = int(round(100.0 * hp_sum / maxf(1.0, hp_max)))
-		sel_layer.draw_rect(Rect2(x, y - 8.0, 8.0, 8.0), col, true)          # team colour swatch
-		var line: String = "%s  %d%%  x%d" % ["YOU" if e == 0 else "T%d" % (e + 1), pct, ids.size()]
+		var line: String = "%s  %d%%  x%d" % [tag, int(round(100.0 * hp_sum / maxf(1.0, hp_max))), ids.size()]
 		if armored > 0:
 			line += "  A%d" % armored
 		if buffed > 0:
 			line += "  B%d" % buffed
 		if e != 0 and sim.allied.get(e, false):
 			line += "  [P]"
-		sel_layer.draw_string(font, Vector2(x + 13.0, y), line, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, col)
-		y += 15.0
+		rows.append({"text": line, "col": _team_colors[e] if e < _team_colors.size() else HUD_COL, "swatch": true})
+	# second pass: centre the whole block on the screen (centre middle)
+	var line_h: float = 15.0
+	var block_h: float = 17.0 + float(rows.size()) * line_h
+	var cx: float = win.x * 0.5
+	var y: float = win.y * 0.5 - block_h * 0.5
+	var hw: float = font.get_string_size("ELEMENTS", HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x * 0.5
+	sel_layer.draw_string(font, Vector2(cx - hw, y), "ELEMENTS", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, HUD_DIM)
+	y += 17.0
+	for r in rows:
+		var tw: float = font.get_string_size(r["text"], HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x
+		var sw: float = 13.0 if r["swatch"] else 0.0
+		var lx: float = cx - (tw + sw) * 0.5
+		if r["swatch"]:
+			sel_layer.draw_rect(Rect2(lx, y - 8.0, 8.0, 8.0), r["col"], true)
+		sel_layer.draw_string(font, Vector2(lx + sw, y), r["text"], HORIZONTAL_ALIGNMENT_LEFT, -1, 11, r["col"])
+		y += line_h
 
 
 ## The Sanitation RADIATION WARNING -- drawn on the TOP overlay layer (above the bars and all
@@ -2481,46 +2643,78 @@ func _draw_strike() -> void:
 	sel_layer.draw_arc(cc, rad * (0.5 + k * 0.6), 0.0, TAU, 44, Color(1.0, 0.78, 0.45, fade), 3.0)
 
 
-## The inbound AC-130 round. The gun flashes big + bright on the RIGHT edge of screen
-## (the orbiting gunship's quarter), then the round arcs across over the whole TOF --
-## large near the muzzle, tapering as it recedes into the distance -- and lands on the
-## designated point. A danger-close ring marks the impact the whole way in.
-func _draw_incoming() -> void:
-	if not _strike_pending:
+## Walk out the 25mm burst -- one round every BURST_INTERVAL, each aimed within BURST_SPREAD of
+## the designated point, queued as an inbound tracer. When the last round is away, the volley ends.
+func _advance_burst(delta: float) -> void:
+	if not _burst_active:
+		return
+	_burst_t += delta
+	while _burst_fired < BURST_ROUNDS and _burst_t >= float(_burst_fired) * BURST_INTERVAL:
+		var jit: Vector2 = Vector2(_rng.randf_range(-BURST_SPREAD, BURST_SPREAD), _rng.randf_range(-BURST_SPREAD, BURST_SPREAD))
+		_tracers.append({"to": _burst_target + jit, "t": 0.0, "tof": BURST_TOF, "big": false})
+		_burst_fired += 1
+	if _burst_fired >= BURST_ROUNDS:
+		_burst_active = false
+
+
+## Age each inbound round; on arrival it detonates -- the 105mm flattens its ring, a 25mm round
+## pops a small one -- and clears from the flight list.
+func _age_tracers(delta: float) -> void:
+	var i: int = _tracers.size() - 1
+	while i >= 0:
+		var tr: Dictionary = _tracers[i]
+		tr["t"] += delta
+		if tr["t"] >= float(tr["tof"]):
+			var pt: Vector2 = tr["to"]
+			if bool(tr["big"]):
+				sim.air_strike(pt, STRIKE_R, STRIKE_DMG)
+				_spawn_flash3d(pt, STRIKE_R * 0.7, 0.55, 3.0)
+				_strike_pos = pt
+				_strike_t = 0.0
+				_strike_pending = false
+			else:
+				sim.air_strike(pt, BURST_R, BURST_DMG)
+				_spawn_flash3d(pt, BURST_R * 0.55, 0.26, 1.6)     # a small explosion
+			_tracers.remove_at(i)
+		i -= 1
+
+
+## Every inbound round drawn the SAME way: a hot THERMAL streak head leading a WHITE tracer tail,
+## running from the gunship (high on the right edge) to its impact point. Big for the 105mm, small
+## + fast for the 25mm burst; a danger-close ring marks the 105mm impact, plus a muzzle flash.
+func _draw_tracers() -> void:
+	if _tracers.is_empty():
 		return
 	var win: Vector2 = Vector2(get_viewport().get_visible_rect().size)
-	var k: float = clampf(_strike_tof / STRIKE_TOF, 0.0, 1.0)
-	var g3: Vector3 = Vector3(_strike_target.x, 0.3, _strike_target.y)
-	if cam.is_position_behind(g3):
-		return
-	var end: Vector2 = _screen_point(g3)
-	var edge: Vector2 = _screen_point(Vector3(_strike_target.x + STRIKE_R, 0.3, _strike_target.y))
-	sel_layer.draw_arc(end, maxf(6.0, end.distance_to(edge)), 0.0, TAU, 36, Color(1.0, 0.42, 0.30, 0.55), 1.5)
-	var start: Vector2 = Vector2(win.x - 40.0, win.y * 0.24)   # the muzzle, high on the right edge
-	# muzzle flash: big + bright the instant it fires, fading over the first ~0.5 s
-	var lf: float = clampf(1.0 - _strike_tof / 0.5, 0.0, 1.0)
-	if lf > 0.0:
-		sel_layer.draw_circle(start, 8.0 + lf * 30.0, Color(1.0, 0.95, 0.82, lf * 0.9))
-		sel_layer.draw_arc(start, 14.0 + (1.0 - lf) * 46.0, 0.0, TAU, 32, Color(1.0, 0.80, 0.48, lf * 0.7), 3.0)
-	# a curved contrail trailing the round along the arc
-	var prev: Vector2 = _arc_point(start, end, maxf(0.0, k - 0.18))
-	for s in range(1, 7):
-		var q: Vector2 = _arc_point(start, end, maxf(0.0, k - 0.18 + 0.18 * float(s) / 6.0))
-		sel_layer.draw_line(prev, q, Color(1.0, 0.9, 0.62, 0.18 + 0.55 * float(s) / 6.0), 2.0)
-		prev = q
-	# the round: large as it leaves the muzzle, shrinking as it flies off into the distance
-	var rp: Vector2 = _arc_point(start, end, k)
-	var rr: float = lerpf(8.0, 3.0, k)
-	sel_layer.draw_circle(rp, rr + 1.5, Color(1.0, 0.68, 0.30, 0.85))
-	sel_layer.draw_circle(rp, rr * 0.5, Color(1.0, 0.97, 0.86, 1.0))
-
-
-## A ballistic screen-space arc from a to b: a straight run bowed upward by
-## STRIKE_BOW of its length (0 at both ends, peak at the midpoint).
-func _arc_point(a: Vector2, b: Vector2, t: float) -> Vector2:
-	var base: Vector2 = a.lerp(b, t)
-	base.y -= sin(t * PI) * a.distance_to(b) * STRIKE_BOW
-	return base
+	var muzzle: Vector2 = Vector2(win.x - 40.0, win.y * 0.22)   # the orbiting gunship's gun
+	var flash: float = 0.0
+	for tr in _tracers:
+		var g3: Vector3 = Vector3((tr["to"] as Vector2).x, 0.3, (tr["to"] as Vector2).y)
+		if cam.is_position_behind(g3):
+			continue
+		var impact: Vector2 = _screen_point(g3)
+		var k: float = clampf(float(tr["t"]) / float(tr["tof"]), 0.0, 1.0)
+		var big: bool = bool(tr["big"])
+		if float(tr["t"]) < 0.10:
+			flash = maxf(flash, 1.0 - float(tr["t"]) / 0.10)
+		if big:
+			var edge: Vector2 = _screen_point(Vector3((tr["to"] as Vector2).x + STRIKE_R, 0.3, (tr["to"] as Vector2).y))
+			sel_layer.draw_arc(impact, maxf(6.0, impact.distance_to(edge)), 0.0, TAU, 32, Color(1.0, 0.42, 0.30, 0.5), 1.5)
+		# WHITE tracer tail: a few fading segments trailing the round
+		var taillen: float = 0.18 if big else 0.12
+		var segs: int = 5
+		var prev: Vector2 = muzzle.lerp(impact, maxf(0.0, k - taillen))
+		for s in range(1, segs + 1):
+			var q: Vector2 = muzzle.lerp(impact, maxf(0.0, k - taillen + taillen * float(s) / float(segs)))
+			sel_layer.draw_line(prev, q, Color(1.0, 1.0, 1.0, (0.12 + 0.55 * float(s) / float(segs)) * (1.0 if big else 0.75)), 2.6 if big else 1.5)
+			prev = q
+		# hot THERMAL streak head
+		var head: Vector2 = muzzle.lerp(impact, k)
+		var hr: float = 6.5 if big else 2.6
+		sel_layer.draw_circle(head, hr, Color(1.0, 0.64, 0.26, 0.9))       # thermal-hot
+		sel_layer.draw_circle(head, hr * 0.5, Color(1.0, 1.0, 0.96, 1.0))  # white-hot core
+	if flash > 0.0:
+		sel_layer.draw_circle(muzzle, 6.0 + flash * 22.0, Color(1.0, 0.95, 0.82, flash * 0.85))
 
 
 func _age_flashes(delta: float) -> void:
@@ -3103,10 +3297,10 @@ func _build_touch_bar(host: CanvasLayer) -> void:
 	_pal_btn = _hud_button(MODE_NAMES[mode], 92)
 	_pal_btn.pressed.connect(_cycle_palette)
 	rbar.add_child(_pal_btn)
-	# the AC-130 slot: a LOCKED cover until the kill threshold, then it vanishes to reveal
+	# the AC-130 slot: a RESTRICTED cover until the kill threshold, then it vanishes to reveal
 	# the ARM-over-FIRE stack (mutually exclusive -- see _update_ac_buttons).
 	var ac_slot: Control = Control.new()
-	ac_slot.custom_minimum_size = Vector2(76, 45)
+	ac_slot.custom_minimum_size = Vector2(88, 45)
 	var ac: VBoxContainer = VBoxContainer.new()
 	ac.add_theme_constant_override("separation", 3)
 	ac.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -3117,7 +3311,8 @@ func _build_touch_bar(host: CanvasLayer) -> void:
 	_fire_btn.pressed.connect(_fire_reticle)
 	ac.add_child(_fire_btn)
 	ac_slot.add_child(ac)
-	_locked_btn = _ac_button("LOCKED")
+	_locked_btn = _ac_button("RESTRICTED")
+	_locked_btn.add_theme_font_size_override("font_size", 10)   # longer word -- shrink to fit the slot
 	_locked_btn.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_locked_btn.disabled = true         # a cover, not a control -- clicks pass to nothing
 	ac_slot.add_child(_locked_btn)
@@ -3204,7 +3399,10 @@ func _update_ac_buttons() -> void:
 	if _arm_btn == null or _fire_btn == null or _locked_btn == null:
 		return
 	var unlocked: bool = _zombie_kills >= AC_UNLOCK
-	# LOCKED cover hides the pair until the threshold is met, then it vanishes.
+	if unlocked and not _ac_unlocked_prev:
+		_burst_volleys = BURST_VOLLEYS       # fresh fire mission -> a full set of burst volleys
+	_ac_unlocked_prev = unlocked
+	# RESTRICTED cover hides the pair until the threshold is met, then it vanishes.
 	_locked_btn.visible = not unlocked
 	_arm_btn.visible = unlocked
 	_fire_btn.visible = unlocked
@@ -3597,6 +3795,12 @@ func _start_game(count: int) -> void:
 	_randomize_team_colors()       # fresh distinct team colours each run
 	_kills = 0
 	_zombie_kills = 0
+	_burst_volleys = BURST_VOLLEYS
+	_burst_active = false
+	_burst_fired = 0
+	_strike_pending = false
+	_ac_unlocked_prev = false
+	_tracers.clear()
 	_score = 0
 	_san_kills = 0
 	_collateral = 0

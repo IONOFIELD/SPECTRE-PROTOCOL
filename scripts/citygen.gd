@@ -63,7 +63,6 @@ func _emit_surfaces() -> void:
 	for mat in _surfaces:
 		var st: SurfaceTool = SurfaceTool.new()
 		st.begin(Mesh.PRIMITIVE_TRIANGLES)
-		st.set_normal(Vector3.UP)
 		for r in _surfaces[mat]:
 			var a: Vector3 = Vector3(r.position.x, 0.0, r.position.y)
 			var b: Vector3 = Vector3(r.end.x, 0.0, r.position.y)
@@ -71,7 +70,11 @@ func _emit_surfaces() -> void:
 			var d: Vector3 = Vector3(r.position.x, 0.0, r.end.y)
 			for v in [a, c, b, a, d, c]:      # CCW seen from above
 				st.set_normal(Vector3.UP)
-				st.add_vertex(v)
+				st.set_uv(Vector2(v.x, v.z) * 0.02)   # any UV -- the shader is triplanar, but the
+				st.add_vertex(v)                      # vertex FORMAT needs UVs for tangents below
+		# Godot's compressed vertex format packs normal+tangent together; a mesh with normals
+		# but NO tangents breaks custom spatial shaders (renders invisible). Generate them.
+		st.generate_tangents()
 		var mi: MeshInstance3D = MeshInstance3D.new()
 		mi.mesh = st.commit()
 		mi.material_override = ThermalLib.get_material(mat, _snap_res)
@@ -103,15 +106,16 @@ func generate(snap_res: Vector2i) -> void:
 	# The ocean: a cold thermal plane under and around the peninsula, extended far past the
 	# bounds so a bounded camera never sees the void; 1.5 m below the land so the coast reads
 	# as a clean step down to the water.
-	var sea: PlaneMesh = PlaneMesh.new()
-	sea.size = Vector2(map_hi.x - map_lo.x + 4000.0, map_hi.y - map_lo.y + 4000.0)
-	sea.subdivide_width = 16
-	sea.subdivide_depth = 16
-	var smi: MeshInstance3D = MeshInstance3D.new()
-	smi.mesh = sea
-	smi.position = Vector3((map_lo.x + map_hi.x) * 0.5, -1.5, (map_lo.y + map_hi.y) * 0.5)
-	smi.material_override = ThermalLib.get_material("water", _snap_res)
-	add_child(smi)
+	if OS.get_environment("SPECTRE_NOSEA") == "":   # TEMP diag guard
+		var sea: PlaneMesh = PlaneMesh.new()
+		sea.size = Vector2(map_hi.x - map_lo.x + 4000.0, map_hi.y - map_lo.y + 4000.0)
+		sea.subdivide_width = 16
+		sea.subdivide_depth = 16
+		var smi: MeshInstance3D = MeshInstance3D.new()
+		smi.mesh = sea
+		smi.position = Vector3((map_lo.x + map_hi.x) * 0.5, -1.5, (map_lo.y + map_hi.y) * 0.5)
+		smi.material_override = ThermalLib.get_material("water", _snap_res)
+		add_child(smi)
 
 	_lay_beach()
 
@@ -149,10 +153,10 @@ func _lay_city(rng: RandomNumberGenerator) -> void:
 				_tile(cell, "park")
 				continue
 			if _near_arterials(c, ROAD_HALF):
-				_tile(cell, "road")                   # a major-road corridor
+				_tile(cell, "hood_hot" if OS.get_environment("SPECTRE_TDIAG2") != "" else "road")   # TEMP diag hook
 				continue
 			# a building block: ground base under it (fills the inter-building gaps)
-			_tile(cell, "ground")
+			_tile(cell, "cloth" if OS.get_environment("SPECTRE_TDIAG2") != "" else "ground")        # TEMP diag hook
 			if rng.randf() < 0.06:
 				_tile(Rect2(x + 3.0, z + 3.0, CELL - 6.0, CELL - 6.0), "lot")   # open lot, no building
 				continue
@@ -264,7 +268,9 @@ func _lay_beach() -> void:
 		var p3: Vector3 = Vector3(ai.x, -0.04, ai.y)
 		for v in [p0, p2, p1, p0, p3, p2]:
 			st.set_normal(Vector3.UP)
+			st.set_uv(Vector2(v.x, v.z) * 0.02)
 			st.add_vertex(v)
+	st.generate_tangents()      # normals-without-tangents breaks custom shaders (see _emit_surfaces)
 	var mi: MeshInstance3D = MeshInstance3D.new()
 	mi.mesh = st.commit()
 	mi.material_override = ThermalLib.get_material("beach", _snap_res)
