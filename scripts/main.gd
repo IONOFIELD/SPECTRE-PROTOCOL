@@ -33,6 +33,10 @@ const ZOOM_MAX_DEPLOY: float = 505.0  # close ELEMENT/GROUND view -- as far out 
 const MUSIC_MENU: String = "res://audio/music/music 1.wav"     # the menu / startup theme (loops)
 # gameplay beds -- one is picked at random on deploy for variety (both loop)
 const MUSIC_DEPLOY: Array = ["res://audio/music/music 2.wav", "res://audio/music/music 3.wav"]
+# Preloaded gameplay beds (filled in _ready). The deploy tracks are big PCM WAVs; loading one
+# synchronously at the deploy instant hitched/failed on mobile (no gameplay music). Preloading
+# them at startup -- same as the menu bed -- makes the deploy switch instant + reliable.
+var _deploy_streams: Array = []
 const AMBIENCE_BED: String = "res://audio/ambience/ghost_town.wav"   # ghost-town bed
 const HUD_FONT: String = "res://fonts/inversionz_unboxed.ttf"   # Inversionz Unboxed, Darrell Flood
 
@@ -185,7 +189,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] truce (after evac)   [V
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 126
+const BUILD_PUSHES: int = 127
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -234,6 +238,13 @@ var _sfx_blast: AudioStream
 var _sfx_flash: AudioStream
 var _sfx_flame: AudioStream            # sanitation flamethrower whoosh
 var _flame_sfx_cd: float = 0.0         # throttle so overlapping jets don't machine-gun the whoosh
+# Gunfire one-shots were fired PER firing unit PER tick -> a full squad + rival teams layered into
+# a looping roar. Rate-limit to a steady cadence instead: two independent throttles so the player's
+# own fire and the ambient map battle each read as consistent fire that stops when the shooting does.
+var _gun_sfx_cd: float = 0.0           # your squad's rifle cadence
+var _gun_far_cd: float = 0.0           # everyone else's firefights (a touch sparser)
+const GUN_SFX_INTERVAL: float = 0.10   # ~10 rounds/s -- a believable sustained rifle, no stacking
+const GUN_FAR_INTERVAL: float = 0.16   # ambient battle, slightly thinner so it sits under your fire
 var _sfx_expl: AudioStream             # distant explosion, for ambient war
 var _sfx_yell: AudioStream             # civilian panic (drop audio/sfx/civ_panic.wav to enable)
 var _sfx_sanvox: Array[AudioStream] = []   # sanitation vocals: the squad comms, reversed (eerie)
@@ -374,7 +385,7 @@ const FLASH_LIFE: float = 0.12         # seconds a muzzle flash stays lit
 const FLASH_MAX: int = 80              # cap, so a big firefight can't flood the overlay
 # 3D thermal blasts: hot emissive blobs in the feed that bloom + fade -- reused
 # for the AC-130 strike, EOD grenades, the sanitation flamethrower + flash-nades.
-const FLASH3D_POOL: int = 80               # flamethrower jets + AC-130 round trails; run deep
+const FLASH3D_POOL: int = 150              # flamethrower jets + AC-130 fireball SWARMS (20+/blast) + trails
 var _flash3d: Array[MeshInstance3D] = []   # free pool
 var _flash3d_busy: Array = []              # active: [{node, t, life, peak}]
 const FLAME_LEN: float = 11.0              # visible reach of the fire jet, m
@@ -453,6 +464,9 @@ func _ready() -> void:
 		if ResourceLoader.exists(pth):
 			_sfx_sanvox.append(load(pth))
 	_sfx_scan = load("res://audio/sfx/scan.wav")
+	for mp in MUSIC_DEPLOY:              # preload the gameplay beds so the deploy switch is instant
+		if ResourceLoader.exists(mp):
+			_deploy_streams.append(load(mp))
 	_hud_font = load(HUD_FONT)          # the game font, for the drawn banners + threat box
 	# Players get the startup menu (music1 already playing) over a slowly-rotating feed;
 	# captures/dev hooks (which cleared _menu_active above) drop straight into gameplay.
@@ -516,11 +530,13 @@ func _build_tree() -> void:
 	cam = Camera3D.new()
 	cam.fov = 24.0
 	# The optic never sits below ZOOM_MIN (~150 m out), so nothing is ever within ~100 m of the lens.
-	# A large near (vs 0.35) buys far better depth precision at the max-zoom altitude -- the depth
-	# buffer only resolves ~0.03 m out there at near=6, which z-fought the road/ground offsets (shimmer).
-	# near=18 roughly triples that precision while staying well inside the ~100 m clearance.
-	cam.near = 18.0
-	cam.far = 2600.0
+	# A large near + tighter far buys far better depth precision at the max-zoom altitude, which is
+	# what keeps the raised road/kerb offsets from z-fighting the ground. Desktop (Forward+, D24) was
+	# fine at near=18; MOBILE (Forward Mobile) reported bad road/ground flicker -- its depth buffer
+	# resolves less out there -- so push near to 55 (~3x more precision, still inside the ~100 m
+	# clearance) and pull far in to 2400 (nothing gameplay-relevant is beyond that at max zoom).
+	cam.near = 55.0
+	cam.far = 2400.0
 	vp.add_child(cam)
 
 	# The ear rides the optic. Combat SFX play from an AudioStreamPlayer3D pool
@@ -708,9 +724,12 @@ func _is_mobile() -> bool:
 func _apply_mobile_preset() -> void:
 	res_idx = 0                       # 320x180 detector (desktop boots at 640x360)
 	ThermalLib.detail_on = false      # drop the fine detail-mesh shader pass
-	_pop_scale = 0.6                  # ~60% of the ambient ecology at spawn
-	_swarm_cap = 340                  # live-unit respawn ceiling (desktop: 620)
-	_swarm_local = 24                 # squad-local infected top-up target (desktop: 32)
+	# Keep the horde FULL on mobile -- the units are cheap thermal shapes (not the GLB rigs) and an
+	# empty city was the #1 device complaint. The GPU wins above (quarter-res + no detail pass) are
+	# what buy the frame budget; a tiny swarm-cap trim is the only CPU concession.
+	_pop_scale = 1.0                  # full ambient ecology at spawn (was a mistaken 0.6 nerf)
+	_swarm_cap = 560                  # live-unit respawn ceiling (desktop: 620)
+	_swarm_local = 32                 # squad-local infected top-up target (matches desktop)
 
 
 func _init_res() -> void:
@@ -1013,6 +1032,8 @@ func _deploy_vehicle(base: Vector2, e: int, mode: int) -> void:
 	if mode == DEPLOY_HELI:
 		var body: MeshInstance3D = _heli_body()
 		var rotor: MeshInstance3D = _heli_rotor()
+		body.add_to_group("deploy_veh")     # all insertion craft are cleared once the drop cinematic ends
+		rotor.add_to_group("deploy_veh")
 		city.add_child(body)
 		city.add_child(rotor)
 		if e == 0:
@@ -1036,6 +1057,7 @@ func _deploy_vehicle(base: Vector2, e: int, mode: int) -> void:
 		var rest: Vector3 = Vector3(base.x + outward.x * 22.0, 0.9, base.y + outward.y * 22.0) if boat else Vector3(base.x, 1.5, base.y)
 		var ex: Vector3 = rest + Vector3(outward.x, 0.0, outward.y) * 80.0
 		veh.position = ex if e == 0 else rest
+		veh.add_to_group("deploy_veh")      # cleared with the rest once the drop cinematic ends (no boats left floating)
 		city.add_child(veh)
 		if e == 0:
 			_deploy_anim = {"body": veh, "rotor": null, "mode": 1, "base": rest, "ex": ex, "t": 0.0}
@@ -1289,7 +1311,8 @@ func _fire_nuke() -> void:
 	_spawn_flash3d(c, 80.0, 1.5, 45.0)         # a blinding thermal white-out at ground zero
 	for a in 10:
 		var ang: float = float(a) * TAU / 10.0
-		_spawn_flash3d(c + Vector2(cos(ang), sin(ang)) * reach * 0.33, 44.0, 1.3, 22.0)
+		# a ring of churning fire boiling up around the flash -- the mushroom, not smooth scoops
+		_spawn_fireball(c + Vector2(cos(ang), sin(ang)) * reach * 0.33, 40.0, 1.3, 5, 22.0)
 	if _sfx_strike != null:
 		Audio.sfx(_sfx_strike, 8.0)
 	if _sfx_expl != null:
@@ -1520,8 +1543,15 @@ func _drain_audio() -> void:
 		var at: Vector3 = Vector3(e["pos"].x, 1.0, e["pos"].y)
 		match e["kind"]:
 			"gunfire":
-				# your squad's fire cuts loudest; the firefights around the map are louder now too
-				_sfx_at(at, _sfx_gun, 5.0 if e["team"] == WorldSim.SQUAD else 1.5)
+				# your squad's fire cuts loudest; the firefights around the map sit under it. Each is
+				# rate-limited to a cadence (below) so many simultaneous shooters don't stack into a roar.
+				if e["team"] == WorldSim.SQUAD:
+					if _gun_sfx_cd <= 0.0:
+						_sfx_at(at, _sfx_gun, 5.0)
+						_gun_sfx_cd = GUN_SFX_INTERVAL
+				elif _gun_far_cd <= 0.0:
+					_sfx_at(at, _sfx_gun, 1.5)
+					_gun_far_cd = GUN_FAR_INTERVAL
 				if _flashes.size() < FLASH_MAX:
 					_flashes.append({"pos": e["pos"], "to": e["to"], "t": 0.0})
 			"panic":
@@ -1542,7 +1572,7 @@ func _drain_audio() -> void:
 				_sfx_at(at, _sfx_strike, 5.0)   # AC-130 cannon report at the impact -- loud
 			"blast":
 				_sfx_at(at, _sfx_blast, 4.0)    # EOD grenade / RPG
-				_spawn_flash3d(e["pos"], 4.0, 0.35, 1.6)
+				_spawn_fireball(e["pos"], 5.5, 0.4, 9, 1.6)   # a churning frag burst, not a smooth ball
 			"flame":
 				_spawn_flame(e["pos"], e["to"])   # sanitation fire jet
 				if _sfx_flame != null and _flame_sfx_cd <= 0.0:
@@ -1626,7 +1656,7 @@ func _advance_panic(delta: float) -> void:
 				vp.add_child(fire)
 				pc["fire"] = fire
 				_sfx_at(Vector3(pc["pos"].x, 1.0, pc["pos"].y), _sfx_expl, -2.0)
-				_spawn_flash3d(pc["pos"], 3.0, 0.4, 1.6)
+				_spawn_fireball(pc["pos"], 4.5, 0.45, 8, 1.6)   # the car brews up in a churning fireball
 		elif pc["t"] > PANIC_BURN:
 			done.append(pc)
 	for pc in done:
@@ -1762,6 +1792,10 @@ func _process(delta: float) -> void:
 		if _intro_t >= INTRO_HOLD:
 			_intro_t = -1.0
 			_channel_change("orbit")
+			# the drop is done -- clear every insertion craft (heli/truck/boat, yours + rivals') so
+			# none linger as scenery. This is what killed the "boats parked in the water" clutter.
+			get_tree().call_group("deploy_veh", "queue_free")
+			_deploy_anim = {}
 	if _shot_dir != "" and OS.get_environment("SPECTRE_PROBE") != "" and int(frame_n) == 55:
 		# stand in the street and look straight at one facade
 		var b: Dictionary = city.buildings[0]
@@ -1804,6 +1838,10 @@ func _process(delta: float) -> void:
 	_collect_hdd_pickups()
 	if _flame_sfx_cd > 0.0:
 		_flame_sfx_cd = maxf(0.0, _flame_sfx_cd - delta)
+	if _gun_sfx_cd > 0.0:
+		_gun_sfx_cd = maxf(0.0, _gun_sfx_cd - delta)
+	if _gun_far_cd > 0.0:
+		_gun_far_cd = maxf(0.0, _gun_far_cd - delta)
 	if _loot_toast_t > 0.0:
 		_loot_toast_t = maxf(0.0, _loot_toast_t - delta)
 	_ambient_combat(delta)
@@ -1873,12 +1911,16 @@ func _process(delta: float) -> void:
 	if f.orbit > 0.0 and cut_t < 0.0:
 		cam_az += f.orbit * delta            # the gunship always pylon-turns -- no static view
 
-	# bound the optic to the map (+ its ocean margin) and to the zoom band, so the
-	# view never leaves the peninsula for the void, never zooms out past the coast,
-	# and never zooms in past a clustered force.
+	# Clamp the optic to the PENINSULA + its bridge decks (NOT the full map bounds, which include
+	# the far landmasses), and to the zoom band -- so the view can follow a unit onto a bridge to
+	# exfil but never drifts out over the bay to where those far lands END (that would break the
+	# interconnected-world illusion), never zooms out past the coast, never zooms in past a cluster.
 	if city != null:
-		cam_tx = clampf(cam_tx, city.map_lo.x, city.map_hi.x)
-		cam_tz = clampf(cam_tz, city.map_lo.y, city.map_hi.y)
+		var bnd: Rect2 = city.land
+		for br in city.bridges:
+			bnd = bnd.merge(br)
+		cam_tx = clampf(cam_tx, bnd.position.x, bnd.end.x)
+		cam_tz = clampf(cam_tz, bnd.position.y, bnd.end.y)
 	if not _menu_active:                    # the menu backdrop drives its own wide top-down cam_dist
 		cam_dist = clampf(cam_dist, ZOOM_MIN, _zoom_max())
 
@@ -1981,11 +2023,18 @@ func _mission_line() -> String:
 	var clock: String = "T+%d:%02d" % [int(mission.t) / 60, int(mission.t) % 60]
 	if _sani_deployed:
 		return "SANITATION LOOSE -- REACH A BRIDGE OR WIPE THEM   %s" % clock
+	# Tutorial has no evac/wipe-force arc -- just learn to move and reach a bridge (no clock to reverse).
+	if _tutorial:
+		return "TUTORIAL -- CROSS A BRIDGE TO EXTRACT   %s" % clock
 	if mission.evac_open():
 		var left: int = int(ceil(Mission.EVAC_LEAVE - mission.t))
 		return "EVAC ON STATION -- BOARD THE LZ  (%d:%02d LEFT)   %s" % [left / 60, left % 60, clock]
+	# evac window has closed -- the wipe force drops in this same frame, so this is only ever a
+	# blink, but it must NOT fall through to a negative "EVAC IN" countdown.
+	if mission.t >= Mission.EVAC_LEAVE:
+		return "EVAC DEPARTED -- SANITATION INBOUND   %s" % clock
 	# before the bird arrives: hold out; escape or wipe the rivals if you can
-	var until: int = int(ceil(Mission.EVAC_ARRIVE - mission.t))
+	var until: int = maxi(0, int(ceil(Mission.EVAC_ARRIVE - mission.t)))
 	var obj: String = "ELIMINATE %d TEAMS / ESCAPE" % mission.rivals_left(sim) if _team_count > 1 else "HOLD / ESCAPE"
 	return "%s -- EVAC IN %d:%02d   %s" % [obj, until / 60, until % 60, clock]
 
@@ -2644,7 +2693,10 @@ func _draw_hud() -> void:
 ## (Once Sanitation lands this stops and the RADIATION WARNING takes over -- drawn on the
 ## top overlay layer so it sits above the bars and everything else, see _draw_radiation_warning.)
 func _draw_top_banner(_font: Font, win: Vector2) -> void:
-	if _menu_active or mission == null or mission.result != Mission.ONGOING or _sani_deployed:
+	# No evac banner in the tutorial, and none once the window has closed (t >= EVAC_LEAVE) --
+	# past that the wipe force is inbound and the countdown would otherwise run negative.
+	if _menu_active or mission == null or mission.result != Mission.ONGOING or _sani_deployed \
+			or _tutorial or mission.t >= Mission.EVAC_LEAVE:
 		return
 	var font: Font = _hud_font
 	var cx: float = win.x * 0.5
@@ -2839,19 +2891,19 @@ func _age_tracers(delta: float) -> void:
 				node.queue_free()
 			if bool(tr["big"]):
 				if bool(tr.get("dmg", true)):
-					# THE BIG BALL: the killing round -- a large central fireball + expanding shells.
+					# THE BIG BALL: the killing round -- a bright hot core under a churning fireball swarm
+					# (writhing live fire, not a smooth sphere) that boils up + out over the blast radius.
 					sim.air_strike(pt, STRIKE_R, STRIKE_DMG)
-					_spawn_flash3d(pt, STRIKE_R * 1.25, 0.75, STRIKE_R * 0.42)
-					_spawn_flash3d(pt, STRIKE_R * 0.85, 0.48, STRIKE_R * 0.7)
-					_spawn_flash3d(pt, STRIKE_R * 0.5, 0.30, 2.0)
+					_spawn_flash3d(pt, STRIKE_R * 0.6, 0.32, 3.0)             # the searing white core
+					_spawn_fireball(pt, STRIKE_R * 1.15, 0.85, 20, STRIKE_R * 0.28)
 					_strike_pos = pt
 					_strike_t = 0.0
 					_strike_pending = false
 				else:
-					_spawn_flash3d(pt, STRIKE_R * 0.55, 0.42, 3.5)   # a converging ray folds into the ball
+					_spawn_fireball(pt, STRIKE_R * 0.55, 0.5, 8, 3.5)   # a converging ray folds into the fire
 			else:
 				sim.air_strike(pt, BURST_R, BURST_DMG)
-				_spawn_flash3d(pt, BURST_R * 0.55, 0.26, 1.6)     # a small explosion
+				_spawn_fireball(pt, BURST_R * 0.6, 0.3, 9, 1.6)     # a small churning burst
 			_tracers.remove_at(i)
 		i -= 1
 
@@ -2902,7 +2954,26 @@ func _spawn_flash3d(pos: Vector2, peak: float, life: float, h: float = 2.0, vel:
 	mi.position = Vector3(pos.x, h, pos.y)
 	mi.scale = Vector3.ONE * 0.02
 	mi.visible = true
-	_flash3d_busy.append({"node": mi, "t": 0.0, "life": life, "peak": peak, "vel": vel})
+	# ph/wamp drive a per-particle lateral CHURN in _age_flash3d so each hot blob writhes as it
+	# rises, instead of ballooning as a smooth sphere (the "ice cream scoop" look).
+	_flash3d_busy.append({"node": mi, "t": 0.0, "life": life, "peak": peak, "vel": vel,
+		"ph": _rng.randf() * TAU, "wamp": clampf(peak, 0.0, 4.0) * 1.3})
+
+
+## A churning fireball: a SWARM of n small hot particles bursting outward + boiling upward with
+## turbulent per-particle velocities, so a blast reads as writhing live fire instead of one smooth
+## sphere (the "ice cream scoop"). Each particle then churns + flickers via _age_flash3d. Pooled.
+func _spawn_fireball(pos: Vector2, radius: float, life: float, n: int, h: float = 2.0) -> void:
+	for _k in n:
+		var ang: float = _rng.randf() * TAU
+		var rr: float = radius * (0.1 + 0.9 * sqrt(_rng.randf()))       # denser toward the core
+		var off: Vector2 = Vector2(cos(ang), sin(ang)) * rr
+		var lift: float = _rng.randf_range(0.0, radius * 0.9)
+		var sz: float = radius * _rng.randf_range(0.22, 0.5)           # many small blobs, no single big scoop
+		var out: float = radius * _rng.randf_range(0.6, 1.8)
+		var v3: Vector3 = Vector3(cos(ang), 0.0, sin(ang)) * out \
+			+ Vector3(0.0, radius * _rng.randf_range(1.0, 2.6), 0.0)   # heat boils upward
+		_spawn_flash3d(pos + off, sz, life * _rng.randf_range(0.6, 1.05), h + lift, v3)
 
 
 ## Sanitation flamethrower: a streaming jet of hot particles. A single burst sprays a
@@ -2944,8 +3015,14 @@ func _age_flash3d(delta: float) -> void:
 			_flash3d.append(f["node"])
 			_flash3d_busy.remove_at(i)
 		else:
-			f["node"].scale = Vector3.ONE * maxf(0.02, float(f["peak"]) * sin(k * PI))   # 0 -> peak -> 0
-			f["node"].position += (f["vel"] as Vector3) * delta                          # stream + rise
+			# flicker the scale a touch (not a clean sin bell) so the blob shimmers like live fire
+			var bell: float = sin(k * PI)
+			var flick: float = 1.0 + 0.14 * sin(f["t"] * 34.0 + float(f["ph"]))
+			f["node"].scale = Vector3.ONE * maxf(0.02, float(f["peak"]) * bell * flick)
+			# stream/rise + a lateral CHURN that grows as it climbs -> the flame writhes and rolls
+			var wob: float = f["t"] * 9.0 + float(f["ph"])
+			var churn: Vector3 = Vector3(sin(wob), 0.3, cos(wob * 1.3)) * float(f["wamp"])
+			f["node"].position += ((f["vel"] as Vector3) + churn) * delta
 		i -= 1
 
 
@@ -3031,7 +3108,10 @@ func _channel_change(to: String) -> void:
 
 func _apply_feed() -> void:
 	var f: Dictionary = FEED[feed]
-	cam_dist = f.dist
+	# Switching camera modes opens to the FURTHEST zoom for that feed (both views start all the way
+	# out, per the device feedback). The lone exception is the deploy-intro hold, which stays close
+	# on the disembark before it auto-pulls to the wide orbit.
+	cam_dist = f.dist if (_intro_t >= 0.0 and feed == "deploy") else _zoom_max()
 	cam_el = f.el
 	if feed == "orbit":
 		# pull the pylon turn back over the middle of the peninsula itself
@@ -3805,7 +3885,7 @@ func _place_touch_bar() -> void:
 		help.visible = show_help and win.x >= win.y and not _menu_active
 
 
-## The startup menu: TUTORIAL (default-highlighted) / SOLO / 2-4 TEAMS, over the slowly
+## The startup menu: SOLO (default-highlighted) / 2-4 TEAMS / TUTORIAL, over the slowly
 ## rotating feed with music1 playing. Picking one deploys that many teams from spread edges.
 ## The build stamp -- v0.19 (the prototype) + one v0.01 per push -- small in the HUD font,
 ## top-right, on its own top layer so it shows over the menu AND gameplay at all times.
@@ -3865,8 +3945,11 @@ func _build_menu() -> void:
 	(_menu_teams as VBoxContainer).add_theme_constant_override("separation", 9)
 	(_menu_teams as VBoxContainer).alignment = BoxContainer.ALIGNMENT_CENTER
 	box.add_child(_menu_teams)
+	# A REAL game is the default (SOLO first + focused) so the natural "tap the highlighted
+	# button" instinct drops you into the actual match, not the calm tutorial. TUTORIAL sits
+	# last -- a deliberate opt-in (tapping it goes straight in; the others open the loadout).
 	var first: Button = null
-	for o in [["TUTORIAL", -1], ["SOLO", 1], ["2 TEAMS", 2], ["3 TEAMS", 3], ["4 TEAMS", 4]]:
+	for o in [["SOLO", 1], ["2 TEAMS", 2], ["3 TEAMS", 3], ["4 TEAMS", 4], ["TUTORIAL", -1]]:
 		var b: Button = _menu_button(String(o[0]))
 		var cnt: int = int(o[1])
 		if cnt < 0:
@@ -3893,7 +3976,7 @@ func _build_menu() -> void:
 	_menu_layer.add_child(_menu_thermal_btn)
 	add_child(_menu_layer)
 	if first != null:
-		first.grab_focus()   # Tutorial default-highlighted
+		first.grab_focus()   # SOLO (a real game) default-highlighted
 
 
 ## Menu thermal-flip: cycle the palette so you can preview WHT/BLK HOT + IRONBOW on the
@@ -4101,12 +4184,17 @@ func _start_game(count: int) -> void:
 		_menu_layer.queue_free()
 		_menu_layer = null
 	_menu_active = false
-	Audio.play_music(MUSIC_DEPLOY[randi() % MUSIC_DEPLOY.size()], 0.0)   # hard cut to a deploy bed the instant you drop
+	# hard cut to a deploy bed the instant you drop -- from the PRELOADED stream (mobile-reliable),
+	# falling back to the path only if preloading somehow yielded nothing.
+	if not _deploy_streams.is_empty():
+		Audio.play_music(_deploy_streams[randi() % _deploy_streams.size()], 0.0)
+	else:
+		Audio.play_music(MUSIC_DEPLOY[randi() % MUSIC_DEPLOY.size()], 0.0)
 	_layout_controls()                 # (bars auto-show in _process once _menu_active is false)
 	await _rebuild_world()          # respawn with the chosen team count at the edges
 	feed = "deploy"
-	_apply_feed()
 	_intro_t = 0.0                  # hold close on the disembark, then auto-pull to the wide view
+	_apply_feed()                   # (intro active -> keeps the close drop framing, not max zoom)
 	if _tutorial and help != null:
 		show_help = true
 		help.visible = true

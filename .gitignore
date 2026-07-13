@@ -5,6 +5,9 @@
 
 # Exported builds (APK/AAB output from export_presets.cfg). Rebuilt on demand.
 /build/
+*.apk
+*.apk.idsig
+*.aab
 
 # --- Spectre capture rig ---
 # Screenshot output from the SPECTRE_SHOT automated capture path.

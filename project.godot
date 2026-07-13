@@ -41,7 +41,6 @@ pointing/emulate_mouse_from_touch=false
 
 [rendering]
 
-renderer/rendering_method="forward_plus"
-renderer/rendering_method.mobile="mobile"
 textures/canvas_textures/default_texture_filter=0
+textures/vram_compression/import_etc2_astc=true
 environment/defaults/default_clear_color=Color(0.034, 0.034, 0.034, 1)

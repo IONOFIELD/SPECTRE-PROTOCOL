@@ -15,12 +15,14 @@ const CELL: float = 44.0        # fine grid for the ground/park base tiles
 const BLOCK: float = 92.0       # STREET GRID pitch -- street centre to street centre (a city block)
 const SETBACK: float = 3.5      # building set-back past the kerb into the block
 const PERIM_INSET: float = 30.0 # the coastal RING road runs this far inside the shoreline (a clean outer loop)
-const STREET_DY: float = 0.14   # N-S streets ride this much above E-W so crossings never z-fight
+const STREET_DY: float = 0.24   # N-S streets ride this much above E-W so crossings never z-fight
 const ROAD_W: float = 15.0      # street WIDTH -- a narrow 2-lane street, to the scale of the cars/buildings
-const ROAD_Y: float = 0.22      # roads sit clearly above the ground base -- the depth buffer only resolves
-                                # ~0.03 m at the max-zoom altitude, so tiny offsets z-fight (the shimmer)
+const ROAD_Y: float = 0.50      # roads sit clearly above the ground base. MOBILE's depth buffer resolves
+                                # much less than desktop's at the max-zoom altitude, so these offsets are
+                                # raised well past the old 0.22 (which shimmered on phones) + the camera
+                                # near/far were tightened to match. Still sub-pixel at gameplay zooms.
 const WALK_W: float = 2.3       # sidewalk width each side of the asphalt
-const WALK_Y: float = 0.30      # sidewalks sit a touch higher than the road -> reads as a raised kerb
+const WALK_Y: float = 0.64      # sidewalks sit a touch higher than the road -> reads as a raised kerb
 const BEACH_W: float = 24.0     # how far the sand reaches inland from the coastline
 const BEACH_SEA: float = 10.0   # ...and how far it laps out over the water
 
@@ -705,8 +707,13 @@ func _lay_gg_bridge() -> void:
 	var deck: Rect2 = bridges[0]
 	var model: Vector3 = Vector3(18.5, 74.1, 392.7)     # measured GLB bounds (metres)
 	var s: float = deck.size.y / model.z                # deck runs N-S (z) -- uniform-fit to its length
+	# Fit X (width) + Z (length) to the deck, but SQUASH the height: at the game's compressed ~600 m
+	# span a uniform scale makes a 119 m-tall tower whose roadway floats ~30 m over the y=0 walkable
+	# deck tile -- from the top-down optic that parallax read as "the bridge floats above the ground,
+	# units can't get on it". A low 45 m bridge hugs the deck; the towers still read from above.
 	var node: Node3D = ThermalModel.spawn_fit(
-		"res://models/buildings and scenery/golden_gate_bridge.glb", "parapet", _snap_res, model * s, 0.0)
+		"res://models/buildings and scenery/golden_gate_bridge.glb", "parapet", _snap_res,
+		Vector3(model.x * s, model.y * s * 0.38, model.z * s), 0.0)
 	if node == null:
 		return
 	node.position.x = deck.position.x + deck.size.x * 0.5   # centre on the deck; spawn_fit already grounded y
@@ -733,8 +740,11 @@ func _lay_bay_bridge() -> void:
 
 ## One Bay Bridge span: the model at world-XZ centre `ctr`, yawed, uniform-scaled by `s`, grounded.
 func _bay_span(ctr: Vector2, yaw: float, s: float) -> void:
+	# Same as the GG: fit length+width to the deck but squash the height so the span hugs the y=0
+	# walkable tile instead of floating a tall truss above it (which read as "misaligned").
 	var node: Node3D = ThermalModel.spawn_fit(
-		"res://models/buildings and scenery/bay_bridge.glb", "parapet", _snap_res, BAY_MODEL * s, yaw)
+		"res://models/buildings and scenery/bay_bridge.glb", "parapet", _snap_res,
+		Vector3(BAY_MODEL.x * s, BAY_MODEL.y * s * 0.50, BAY_MODEL.z * s), yaw)
 	if node == null:
 		return
 	node.position.x = ctr.x
