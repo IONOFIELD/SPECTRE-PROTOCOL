@@ -131,7 +131,7 @@ func generate(snap_res: Vector2i) -> void:
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 	rng.seed = seed_value
 
-	land_poly = _sf_polygon()
+	land_poly = _smooth_coast(_sf_polygon(), 2)   # round the 20-vertex silhouette so the shore reads smooth
 	_lay_geography()
 
 	# The ocean: a cold thermal plane under and around the peninsula, extended far past the
@@ -554,6 +554,23 @@ func _fill_polygon(poly: PackedVector2Array, mat: String, y: float) -> void:
 	mi.mesh = st.commit()
 	mi.material_override = ThermalLib.get_material(mat, _snap_res)
 	add_child(mi)
+
+
+## Chaikin corner-cutting: each pass replaces every vertex with two points 1/4 and 3/4 along its
+## edges, rounding the polygon into a smooth curve. 2 passes turns the 20-vertex silhouette into an
+## ~80-vertex smooth coastline, so the beach (which follows it) reads as a smooth shore, not facets.
+func _smooth_coast(poly: PackedVector2Array, passes: int) -> PackedVector2Array:
+	var p: PackedVector2Array = poly
+	for _it in passes:
+		var out: PackedVector2Array = PackedVector2Array()
+		var n: int = p.size()
+		for i in n:
+			var a: Vector2 = p[i]
+			var b: Vector2 = p[(i + 1) % n]
+			out.append(a.lerp(b, 0.25))
+			out.append(a.lerp(b, 0.75))
+		p = out
+	return p
 
 
 ## The San Francisco coastline, clockwise from the Lands End / Presidio tip. Unmistakably
