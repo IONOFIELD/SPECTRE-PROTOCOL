@@ -571,10 +571,10 @@ func _lay_geography() -> void:
 			Vector2(1365, 495), Vector2(1330, 530), Vector2(1270, 528), Vector2(1245, 480),
 		]),
 	]
-	# OAKLAND / East Bay: a COPY of the Marin landmass, rotated 135deg so its bulk points SE (its shore
-	# faces the bridge) and dropped at the far end of the Bay Bridge's dogleg span -- so that bridge also
-	# terminates on real land, like the Golden Gate does. Renders + gets foliage as any far land.
-	far_lands.append(_placed_copy(far_lands[0], 2.356, Vector2(1850.0, 1000.0)))
+	# OAKLAND / East Bay: a COPY of the Marin landmass, rotated and dropped at the far end of the Bay
+	# Bridge's dogleg span -- so that bridge also terminates on real land, like the Golden Gate does.
+	# 135deg base minus 30deg = a 30deg COUNTER-CLOCKWISE spin (z is south/down, so +angle is CW here).
+	far_lands.append(_placed_copy(far_lands[0], 2.356 - deg_to_rad(30.0), Vector2(1850.0, 1000.0)))
 	# Past Treasure Island the Bay Bridge continues -- a SECOND copy of the bridge model runs off its
 	# SE shoulder at ~45deg to the Oakland landmass above (never reached). See _lay_bay_bridge.
 
