@@ -191,7 +191,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] truce (after evac)   [V
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 135
+const BUILD_PUSHES: int = 136
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -993,10 +993,60 @@ func _pick_deploy_mode() -> int:
 ## onto the nearest road; a BOAT stays at the coastal edge (it arrives off the sea).
 func _snap_base_for_mode(base: Vector2, mode: int) -> Vector2:
 	if mode == DEPLOY_HELI:
-		return _nearest_park_point(base)
+		return _nearest_park_point(base)               # heli sets down IN a park
 	if mode == DEPLOY_TRUCK:
+		return _bridge_city_point(base)                # truck parks in the city just off a bridge mouth
+	return _south_beach_point(base)                    # BOAT beaches on the SOUTH shore, opposite the bridges
+
+
+## The two end-centres of the bridge nearest `base`, as [peninsula_end, far_end]. The peninsula end is
+## whichever is closer to the land centre (robust even when the mouth sits right on the coastline).
+func _nearest_bridge_ends(base: Vector2) -> Array:
+	if city == null or city.bridges.is_empty():
+		return []
+	var ctr: Vector2 = city.land.get_center()
+	var best: Array = []
+	var bd: float = INF
+	for bb in city.bridges:
+		var b: Rect2 = bb
+		var c: Vector2 = b.get_center()
+		var horiz: bool = b.size.x > b.size.y
+		var e_lo: Vector2 = Vector2(b.position.x, c.y) if horiz else Vector2(c.x, b.position.y)
+		var e_hi: Vector2 = Vector2(b.end.x, c.y) if horiz else Vector2(c.x, b.end.y)
+		var pen: Vector2 = e_lo if e_lo.distance_squared_to(ctr) < e_hi.distance_squared_to(ctr) else e_hi
+		var far: Vector2 = e_hi if pen == e_lo else e_lo
+		var d: float = base.distance_squared_to(pen)
+		if d < bd:
+			bd = d
+			best = [pen, far]
+	return best
+
+
+## A road spot in the city just inside the mouth of the bridge nearest `base` -- where a truck that drove
+## in over the bridge pulls up and parks.
+func _bridge_city_point(base: Vector2) -> Vector2:
+	var ends: Array = _nearest_bridge_ends(base)
+	if ends.is_empty():
 		return _nearest_road_point(base)
-	return base
+	var pen: Vector2 = ends[0]
+	var into: Vector2 = (city.land.get_center() - pen).normalized()
+	return _nearest_road_point(pen + into * 46.0)      # snap to a real street a little into town
+
+
+## A point on the SOUTHERN shore (opposite the N/E bridges) near base's longitude, nudged just inland so
+## a boat noses onto the beach. Boats spread along the south coast by their base x.
+func _south_beach_point(base: Vector2) -> Vector2:
+	if city == null or city.land_poly.is_empty():
+		return base
+	var ctr: Vector2 = city.land.get_center()
+	var best: Vector2 = ctr
+	var score: float = -INF
+	for v in city.land_poly:
+		var s: float = v.y - absf(v.x - base.x) * 0.6      # favour SOUTH (high z), near base's x
+		if s > score:
+			score = s
+			best = v
+	return best + (ctr - best).normalized() * 6.0          # 6 m inland -> on the beach, inside land_poly
 
 
 func _nearest_park_point(base: Vector2) -> Vector2:
@@ -1038,7 +1088,6 @@ func _deploy_vehicle(base: Vector2, e: int, mode: int) -> void:
 		return
 	if e == 0:
 		_deploy_mode = mode
-	var outward: Vector2 = (base - city.land.get_center()).normalized()
 	if mode == DEPLOY_HELI:
 		var body: MeshInstance3D = _heli_body()
 		var rotor: MeshInstance3D = _heli_rotor()
@@ -1055,22 +1104,45 @@ func _deploy_vehicle(base: Vector2, e: int, mode: int) -> void:
 			body.position = Vector3(base.x, 1.4, base.y)                    # rival: landed, static
 			rotor.position = body.position + Vector3(0.0, 1.7, 0.0)
 	else:
-		# TRUCK or BOAT: a box that drives/sails in from off-map and parks. The boat is longer and
-		# stops at the waterline (out over the sea); the truck stops on the road at the drop.
+		# TRUCK drives IN over the nearest bridge from its deck and parks in the city; BOAT arcs in off
+		# the open sea and beaches on the south shore. Both leave a box prop; element 0 plays the path.
 		var boat: bool = mode == DEPLOY_BOAT
 		var vm: BoxMesh = BoxMesh.new()
 		vm.size = Vector3(4.0, 2.2, 11.0) if boat else Vector3(3.0, 3.0, 7.0)
 		var veh: MeshInstance3D = MeshInstance3D.new()
 		veh.mesh = vm
 		veh.material_override = ThermalLib.get_material("hood_warm", snap_res)
-		veh.rotation.y = 0.0 if absf(outward.x) < absf(outward.y) else PI * 0.5   # axis-snapped (a rotated box blows out)
-		var rest: Vector3 = Vector3(base.x + outward.x * 22.0, 0.9, base.y + outward.y * 22.0) if boat else Vector3(base.x, 1.5, base.y)
-		var ex: Vector3 = rest + Vector3(outward.x, 0.0, outward.y) * 80.0
-		veh.position = ex if e == 0 else rest
-		veh.add_to_group("deploy_veh")      # cleared with the rest once the drop cinematic ends (no boats left floating)
+		var rest: Vector3
+		var start: Vector3
+		var anim_mode: int
+		var ctrl: Vector3 = Vector3.ZERO
+		if boat:
+			# a curved arc in from the open sea (base is on the south beach; sea is outward from centre)
+			var sea: Vector2 = (base - city.land.get_center()).normalized()
+			rest = Vector3(base.x, 0.9, base.y)
+			start = Vector3(base.x + sea.x * 140.0, 0.9, base.y + sea.y * 140.0)
+			var mid: Vector2 = (Vector2(start.x, start.z) + base) * 0.5
+			var perp: Vector2 = Vector2(-sea.y, sea.x)
+			ctrl = Vector3(mid.x + perp.x * 75.0, 0.9, mid.y + perp.y * 75.0)   # bow the approach into an arc
+			anim_mode = 2
+		else:
+			# start out on the bridge DECK (90 m from the mouth) and drive onto the peninsula to the park spot
+			var ends: Array = _nearest_bridge_ends(base)
+			var onto: Vector2 = base
+			if ends.size() > 1:
+				var pen: Vector2 = ends[0]
+				var far: Vector2 = ends[1]
+				onto = pen + (far - pen).normalized() * 90.0
+			rest = Vector3(base.x, 1.5, base.y)
+			start = Vector3(onto.x, 1.5, onto.y)
+			anim_mode = 1
+		var travel: Vector3 = rest - start
+		veh.rotation.y = 0.0 if absf(travel.x) < absf(travel.z) else PI * 0.5   # axis-snap to travel dir (a rotated box blows out)
+		veh.position = start if e == 0 else rest
+		veh.add_to_group("deploy_veh")      # cleared with the rest once the drop cinematic ends (no craft left floating)
 		city.add_child(veh)
 		if e == 0:
-			_deploy_anim = {"body": veh, "rotor": null, "mode": 1, "base": rest, "ex": ex, "t": 0.0}
+			_deploy_anim = {"body": veh, "rotor": null, "mode": anim_mode, "base": rest, "ex": start, "ctrl": ctrl, "t": 0.0}
 			_deploy_emerge = Vector2(rest.x, rest.z)                      # troops disembark AT the truck/boat
 
 
@@ -1159,8 +1231,18 @@ func _advance_deploy(delta: float) -> void:
 				if rotor != null and is_instance_valid(rotor):
 					rotor.position = body.position + Vector3(0.0, 1.7, 0.0)
 					rotor.rotate_y(delta * ROTOR_SPD)                     # spinning rotor disc
+		elif int(_deploy_anim["mode"]) == 2:
+			# BOAT: a curved arc in from the open sea to the beach over 3 s, then stop (troops wade ashore).
+			var f: float = clampf(t / 3.0, 0.0, 1.0)
+			if is_instance_valid(body):
+				var a: Vector3 = _deploy_anim["ex"]
+				var bb: Vector3 = _deploy_anim["base"]
+				var cc: Vector3 = _deploy_anim["ctrl"]
+				body.position = a.lerp(cc, f).lerp(cc.lerp(bb, f), f)    # quadratic bezier -> a bowed approach
+			if f >= 1.0:
+				_deploy_anim = {}                                        # beached -- leave it at the shore
 		else:
-			# TRUCK (v0.19): drive in from off-map over 2.4 s, then PARK (stays as scenery).
+			# TRUCK: drive in over the bridge deck onto the peninsula over 2.4 s, then PARK (scenery).
 			var f: float = clampf(t / 2.4, 0.0, 1.0)
 			if is_instance_valid(body):
 				body.position = (_deploy_anim["ex"] as Vector3).lerp(_deploy_anim["base"] as Vector3, f)
