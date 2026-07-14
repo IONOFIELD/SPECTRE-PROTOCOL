@@ -156,6 +156,7 @@ func _in_los(p: Vector2) -> bool:
 # Insertion edges, spread around the peninsula so no two teams deploy close. Order is
 # W, E, N, S so 2 teams land opposite (W+E), 3 add N, 4 add S.
 const EDGE_BASES: Array = [Vector2(205, 615), Vector2(885, 480), Vector2(500, 215), Vector2(520, 945)]   # (fallback; bases are computed equidistant now)
+const MIN_DEPLOY_SEP: float = 400.0    # no two teams insert within this many metres of each other
 const DEPLOY_HELI: int = 0    # lands in a park
 const DEPLOY_TRUCK: int = 1   # pulls up on a road
 const DEPLOY_BOAT: int = 2    # comes in off the sea at the coast (most common)
@@ -171,7 +172,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] truce (after evac)   [V
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 146
+const BUILD_PUSHES: int = 147
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -872,11 +873,14 @@ func _spawn() -> void:
 	# insertion vehicle marks the drop. The exfil bridges are N (Golden Gate) and E (Bay).
 	var base0: Vector2 = Vector2(300.0, 470.0)
 	var bases: Array = _deploy_bases(_team_count)      # equidistant around the coastline
+	var placed: Array = []                             # final drops so far -- kept >= MIN_DEPLOY_SEP apart
 	for e in _team_count:
 		var mode: int = _pick_deploy_mode()            # boat ~65% / heli / truck
 		var base: Vector2 = _snap_base_for_mode(bases[e], mode)   # heli->park, truck->road, boat->coast
 		if not Geometry2D.is_point_in_polygon(base, city.land_poly):
 			base = bases[e]
+		base = _separate_from(base, placed, MIN_DEPLOY_SEP)   # the 400 m rule: no two teams drop close
+		placed.append(base)
 		if e == 0:
 			base0 = base
 		_deploy_vehicle(base, e, mode)
@@ -955,6 +959,46 @@ func _deploy_bases(n: int) -> Array:
 			last = q
 		out.append(last - dir * 26.0)          # 26 m inside the shore
 	return out
+
+
+## Push `base` away from every already-placed drop until it's at least `sep` m from all of them, kept on
+## land. Guarantees no two teams insert within `sep` (the 400 m rule) even when several snap to the same
+## feature -- e.g. two helis both landing on one park's centre, or two boats on the same southern tip.
+func _separate_from(base: Vector2, placed: Array, sep: float) -> Vector2:
+	if placed.is_empty() or city == null:
+		return base
+	var p: Vector2 = base
+	for _iter in 60:
+		var nearest: Vector2 = Vector2.ZERO
+		var nd: float = INF
+		for q in placed:
+			var d: float = p.distance_to(q)
+			if d < nd:
+				nd = d
+				nearest = q
+		if nd >= sep:
+			break
+		var dir: Vector2 = p - nearest
+		if dir.length() < 1.0:                              # coincident -> fan out by a golden angle
+			var a: float = float(placed.size()) * 2.399963
+			dir = Vector2(cos(a), sin(a))
+		p = _clamp_to_land(p + dir.normalized() * (sep - nd + 12.0))
+	return p
+
+
+## Nearest point inside the land polygon -- if `p` fell in the water (pushed off the coast), walk it back
+## toward the land centre until it's on land again.
+func _clamp_to_land(p: Vector2) -> Vector2:
+	if city == null or city.land_poly.is_empty():
+		return p
+	if Geometry2D.is_point_in_polygon(p, city.land_poly):
+		return p
+	var ctr: Vector2 = city.land.get_center()
+	for k in range(1, 21):
+		var q: Vector2 = p.lerp(ctr, float(k) / 20.0)
+		if Geometry2D.is_point_in_polygon(q, city.land_poly):
+			return q
+	return ctr
 
 
 ## Weighted insertion mode: BOATs most of the time (~65%, in off the sea at the coast), else a
@@ -2743,6 +2787,14 @@ func _draw_hud() -> void:
 	# the TARGETING ZONE -- a landscape frame at centre. Anything hostile inside it gets a red target
 	# bracket (see _draw_tags); this is the box the player aims WITH, not just a decoration.
 	sel_layer.draw_rect(_target_zone(win), HUD_COL, false, 1.5)
+
+	# MOBILE thumb pad: a ring in the lower-LEFT marking where the left thumb rests to drag-pan the
+	# camera. One finger pans anywhere, but the ring gives the thumb a natural home so panning is intuitive.
+	if _is_mobile():
+		var tp: Vector2 = Vector2(win.x * 0.10, win.y * 0.78)
+		var tr: float = short * 0.11
+		sel_layer.draw_arc(tp, tr, 0.0, TAU, 48, HUD_DIM, 2.0)
+		sel_layer.draw_arc(tp, tr * 0.32, 0.0, TAU, 24, HUD_DIM, 1.5)   # inner nub -- the resting spot
 
 	# rotating cardinal compass on a fixed ring around the reticle
 	var ring: float = short * 0.36
