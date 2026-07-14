@@ -603,14 +603,15 @@ func _lay_bridge_spurs() -> void:
 	for deck in bridges:
 		# the deck's LONG axis tells us which end sits on the peninsula + which way to run the spur inland
 		var horizontal: bool = deck.size.x >= deck.size.y
-		if not horizontal:
-			# The GG lands ON the Presidio PARKLAND. It gets NO spur: a road driven across the green read
-			# as "the bridge extending over the park" (the user's repeated flag). The deck is walkable, so
-			# units simply cross it onto the park; the network connects around the park via the park loop.
-			continue
-		# Bay: runs E-W, peninsula end at min-x (west) -- a short spur into the CITY grid (not a park)
-		var endp: Vector2 = Vector2(deck.position.x, deck.position.y + deck.size.y * 0.5)
-		var inland: Vector2 = endp + Vector2(-80.0, 0.0)
+		var endp: Vector2
+		var inland: Vector2
+		if horizontal:                                   # Bay: E-W, peninsula end at min-x (west)
+			endp = Vector2(deck.position.x, deck.position.y + deck.size.y * 0.5)
+			inland = endp + Vector2(-80.0, 0.0)
+		else:                                            # GG: N-S, peninsula end at max-z (south) -- a SHORT
+			# spur into the coastal CITY grid. The Presidio sits inland now, so this never touches a park.
+			endp = Vector2(deck.position.x + deck.size.x * 0.5, deck.position.y + deck.size.y)
+			inland = endp + Vector2(0.0, 40.0)
 		road_lines.append([inland, endp])
 		_no_build_lines.append([inland, endp])
 		var steps: int = maxi(1, int(ceil(inland.distance_to(endp) / 16.0)))
@@ -926,7 +927,7 @@ func _lay_geography() -> void:
 	# shape; the other, larger parks are unchanged.
 	parks = [
 		Rect2(155, 552, 430, 105),   # Golden Gate Park -- the long E-W green, west-centre (RECTANGLE, standalone)
-		Rect2(220, 165, 175, 175),   # the Presidio -- NW, reaches the COAST (z165) so the GG Bridge lands on its north edge at the shore (was z205, leaving a coastal-land strip the bridge hung over). The park fill clips to land_poly, so the NW corner poking past the coast never renders in the water.
+		Rect2(220, 210, 175, 130),   # the Presidio -- NW, pulled INLAND (north edge z210) so it sits behind the coastal city, NOT under the GG bridge. Enlarging it to the coast put its long N-S border road right by the deck, which read as the bridge extending over the park. Now the bridge lands on the coastal GRID and the park is separate, inland.
 		Rect2(180, 297, 76, 76),     # Lincoln Park / Lands End -- NW coast
 		Rect2(642, 715, 45, 45),     # Dolores Park -- the Mission
 		Rect2(727, 892, 100, 100),   # McLaren Park -- SE
@@ -937,11 +938,11 @@ func _lay_geography() -> void:
 	# Oakland (never reached). The walkable decks (nav / gauntlet / escape) are the axis-aligned Rect2s
 	# below; the dogleg past Treasure Island is a VISUAL deck only. WIN zones sit on the reachable decks.
 	bridges = [
-		Rect2(251, -450, 34, 615),   # Golden Gate: Marin (~z-405) -> ends at the SHORELINE (z=165) = the Presidio's north edge, so the deck no longer hangs over the coastal-land roads (was z=205, 40 m out over the strip). Narrow -- the GLB rides here.
+		Rect2(290, -450, 34, 600),   # Golden Gate: Marin (~z-405) -> SHORELINE (z=150). Deck centre x=307 sits BETWEEN grid streets (176/268/360) so no N-S street is collinear with it -- that alignment (deck on the x=268 street) was making the street continue the deck's line into the city, which read as the bridge extending inland. Narrow -- the GLB rides here.
 		Rect2(950, 456, 340, 30),    # Bay Bridge, east: SF coast (~x940) -> Treasure Island (~x1290). Narrow -- the GLB rides here.
 	]
 	escapes = [
-		Rect2(251, -120, 34, 46),    # Marin end -- win zone on the GG deck (unchanged position, narrowed to the deck)
+		Rect2(290, -120, 34, 46),    # Marin end -- win zone on the GG deck (x follows the deck: 290)
 		Rect2(1246, 456, 44, 30),    # Treasure Island end -- win zone on the Bay deck (narrowed to the deck)
 	]
 	# Large, MODEL-FREE landmasses (NOT in land_poly -> nothing spawns or walks there; pure backdrop).
