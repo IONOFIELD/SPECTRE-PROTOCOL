@@ -190,6 +190,7 @@ func _lay_city(rng: RandomNumberGenerator) -> void:
 				continue
 			_tile(Rect2(x, z, CELL, CELL), "park" if _in_park(c) else "ground")
 	_lay_grid_roads(sxs, szs)      # the street mesh (clipped to the ring), over the ground
+	_lay_market_st()               # the diagonal MARKET ST avenue cutting NE->SW across the grid (SF's signature)
 	_lay_perimeter_loop()          # ONE big coastal loop road around the outside -- no perimeter dead-ends
 	_lay_park_roads()              # a loop road AROUND each park, so grid streets connect around it (not dead-end in)
 	_lay_bridge_spurs()            # a short road from the grid onto each bridge deck (so a road actually leads to it)
@@ -239,6 +240,29 @@ func _lay_grid_roads(sxs: Array, szs: Array) -> void:
 			if _in_ring(mid) and not _in_park(mid):
 				_road_seg(Vector2(x, sz), Vector2(e, sz), half, 0.0)
 			x = e
+
+
+## MARKET ST: SF's signature diagonal avenue, cutting NE (the Ferry Building / downtown, by the Bay
+## Bridge) -> SW (toward Twin Peaks) across the cardinal grid. A touch wider than a street and ridden
+## ABOVE the grid so it draws cleanly OVER every crossing (a grand avenue, not a mess of intersections).
+func _lay_market_st() -> void:
+	var half: float = ROAD_W * 0.5 + 3.5           # a broad avenue
+	# EXTENDS FROM the Bay Bridge's peninsula terminus (the deck's west edge, on its centreline) and runs
+	# SW toward Twin Peaks -- SF's real Market St starts at the Embarcadero by the bridge and cuts across
+	# the grid. Anchoring it to the bridge stops it reading as a stub "jammed in" the middle of downtown.
+	var bay: Rect2 = bridges[1]                    # the Bay Bridge deck
+	var a: Vector2 = Vector2(bay.position.x - 20.0, bay.position.y + bay.size.y * 0.5)   # just inland of the deck, mid-z
+	var b: Vector2 = Vector2(455.0, 725.0)         # SW end, toward Twin Peaks
+	road_lines.append([a, b])
+	_no_build_lines.append([a, b])
+	var steps: int = maxi(1, int(ceil(a.distance_to(b) / 16.0)))
+	for k in steps:
+		var p0: Vector2 = a.lerp(b, float(k) / float(steps))
+		var p1: Vector2 = a.lerp(b, float(k + 1) / float(steps))
+		var mid: Vector2 = (p0 + p1) * 0.5
+		# clip to LAND (not the ring inset) so the NE tip runs right up to the bridge approach; never in a park
+		if _in_land(mid) and not _in_park(mid):
+			_road_seg(p0, p1, half, STREET_DY + 0.16)   # rides highest -> wins over the grid at every crossing
 
 
 ## Fill each block (the land between four streets) with buildings ALIGNED to the grid + set back from
@@ -384,7 +408,10 @@ func _lay_park_roads() -> void:
 			for k in steps:
 				var p0: Vector2 = a.lerp(b, float(k) / float(steps))
 				var p1: Vector2 = a.lerp(b, float(k + 1) / float(steps))
-				if _in_ring((p0 + p1) * 0.5):
+				var mid: Vector2 = (p0 + p1) * 0.5
+				# skip where the park border hugs the coast -- the perimeter LOOP already runs there, so
+				# laying the park road on top of it was the "GGP meeting the beach" overlap the user saw.
+				if _in_ring(mid) and not _near_ring(mid, ROAD_W + 6.0):
 					_road_seg(p0, p1, half, STREET_DY + 0.11)
 
 
@@ -430,6 +457,18 @@ func _dist_point_seg(p: Vector2, a: Vector2, b: Vector2) -> float:
 	var l2: float = ab.length_squared()
 	var t: float = 0.0 if l2 < 1e-6 else clampf((p - a).dot(ab) / l2, 0.0, 1.0)
 	return p.distance_to(a + ab * t)
+
+
+## Is p within `d` of the coastal RING (the perimeter loop road path)? Used to stop other roads from
+## being laid on top of the loop where they'd double up (the coastal-junction overlap).
+func _near_ring(p: Vector2, d: float) -> bool:
+	var n: int = ring_poly.size()
+	if n < 2:
+		return false
+	for i in n:
+		if _dist_point_seg(p, ring_poly[i], ring_poly[(i + 1) % n]) < d:
+			return true
+	return false
 
 
 ## One street segment a->b: a central 2-LANE asphalt ribbon flanked by a raised SIDEWALK kerb on each

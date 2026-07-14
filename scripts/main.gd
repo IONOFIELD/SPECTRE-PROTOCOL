@@ -191,7 +191,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] truce (after evac)   [V
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 130
+const BUILD_PUSHES: int = 131
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -2004,8 +2004,10 @@ func _map_overview() -> void:
 	sensor_mat.set_shader_parameter("dither", false)
 	var cx: float = city.land.get_center().x        # centre on the peninsula, not the bbox
 	var cz: float = city.land.get_center().y
-	var span: float = maxf(city.map_hi.x - city.map_lo.x, city.map_hi.y - city.map_lo.y)
-	var h: float = span * 1.1
+	# Frame the SF ISLAND filling the screen (the peninsula bounds), NOT the whole map with the far
+	# landmasses -- the island is what needs verifying at full detail; the far lands are just backdrop.
+	var span: float = maxf(city.land.size.x, city.land.size.y)
+	var h: float = span * 1.18
 	# bracket near/far TIGHTLY around the ground -- a wide range at this altitude
 	# z-fights the water plane against the dirt bed beneath it (dirt bleeds through
 	# warm). Tight planes restore depth precision so cold water reads cold.
