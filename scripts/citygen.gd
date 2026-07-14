@@ -25,6 +25,9 @@ const WALK_W: float = 2.3       # sidewalk width each side of the asphalt
 const WALK_Y: float = 0.84      # sidewalks sit a touch higher than the road -> reads as a raised kerb
 const BEACH_W: float = 24.0     # how far the sand reaches inland from the coastline
 const BEACH_SEA: float = 10.0   # ...and how far it laps out over the water
+const BRIDGE_Y: float = 0.06    # bridge decks sit a hair above the ground fill -> the deck WINS at the landfall
+                                # (at y=0 it z-fought the ground where it laps the coast -- the GG-bridge flicker)
+const PARK_Y: float = 0.10      # park fills sit a hair above the ground fill so they read over it (was disjoint cells)
 
 @export var grid_n: int = 13     # (kept for compat; the layout is arterial-driven now)
 @export var seed_value: int = 11
@@ -68,6 +71,28 @@ func _tile(r: Rect2, mat: String) -> void:
 	if not _surfaces.has(mat):
 		_surfaces[mat] = []
 	_surfaces[mat].append(r)
+
+
+## One bridge-deck quad (the grey base under the GLB superstructure), laid at BRIDGE_Y -- a hair above
+## the ground fill so the deck WINS where it laps the coast at the landfall (at y=0 it z-fought ground).
+func _bridge_deck(r: Rect2) -> void:
+	if r.size.x <= 0.01 or r.size.y <= 0.01:
+		return
+	var st: SurfaceTool = SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var a: Vector3 = Vector3(r.position.x, BRIDGE_Y, r.position.y)
+	var b: Vector3 = Vector3(r.end.x, BRIDGE_Y, r.position.y)
+	var c: Vector3 = Vector3(r.end.x, BRIDGE_Y, r.end.y)
+	var d: Vector3 = Vector3(r.position.x, BRIDGE_Y, r.end.y)
+	for v in [a, b, c, a, c, d]:
+		st.set_normal(Vector3.UP)
+		st.set_uv(Vector2(v.x, v.z) * 0.02)
+		st.add_vertex(v)
+	st.generate_tangents()
+	var mi: MeshInstance3D = MeshInstance3D.new()
+	mi.mesh = st.commit()
+	mi.material_override = ThermalLib.get_material("bridge", _snap_res, 0)
+	add_child(mi)
 
 
 func _emit_surfaces() -> void:
@@ -160,9 +185,11 @@ func generate(snap_res: Vector2i) -> void:
 	_lay_islands()          # the far landmasses (bare ground) the bridges run out to
 	_lay_alcatraz()         # a wee island out in the bay, just the rock + the cellhouse, for fun
 
-	# bridge decks over the water (a mid-tone between water and land, so they read)
+	# bridge decks over the water (a mid-tone between water and land, so they read). Laid a hair ABOVE
+	# the ground fill (BRIDGE_Y): at the landfall the deck laps over the coast, and the old _tile height
+	# (y=0) put it COPLANAR with the ground there -> the z-fighting flicker "impacting the GG bridge".
 	for b in bridges:
-		_tile(b, "bridge")
+		_bridge_deck(b)
 	_lay_gg_bridge()                     # the iconic Golden Gate (low-poly GLB), reskinned cold steel
 	_lay_bay_bridge()                    # the Bay Bridge (McClintic-Marshall GLB): SF->TI span + the dogleg span
 
@@ -181,18 +208,20 @@ func _lay_city(rng: RandomNumberGenerator) -> void:
 	var sxs: Array = _street_positions(poly_lo.x, poly_hi.x)   # N-S street centre x's
 	var szs: Array = _street_positions(poly_lo.y, poly_hi.y)   # E-W street centre z's
 	_grid_road_lines(sxs, szs)                                 # centrelines for cars / truck deploy
-	# ground + park base (fine cells, disjoint, y = 0)
-	var nx: int = int(ceil((poly_hi.x - poly_lo.x) / CELL)) + 1
-	var nz: int = int(ceil((poly_hi.y - poly_lo.y) / CELL)) + 1
-	for gx in nx:
-		for gz in nz:
-			var x: float = poly_lo.x + float(gx) * CELL
-			var z: float = poly_lo.y + float(gz) * CELL
-			var c: Vector2 = Vector2(x + CELL * 0.5, z + CELL * 0.5)
-			if not _in_land(c):
-				continue
-			_tile(Rect2(x, z, CELL, CELL), "park" if _in_park(c) else "ground")
+	# ground + park base -- SMOOTH polygon fills. This was a CELL-square grid included by cell-centre-
+	# in-poly, which STAIRCASED the coast: squares poked out past the curve and gaps opened on the bends
+	# (the "jagged coastline, land overlay extending beyond the edges" the user flagged), and it never
+	# matched the smooth beach that follows land_poly. One fill of the exact smoothed land_poly gives a
+	# coast that lines up with the beach perfectly; parks are the park rects CLIPPED to the coast, laid a
+	# hair above (PARK_Y) so they read over the ground.
+	_fill_polygon(land_poly, "ground", 0.0)
+	for pk in parks:
+		var pkpoly: PackedVector2Array = PackedVector2Array([
+			pk.position, Vector2(pk.end.x, pk.position.y), pk.end, Vector2(pk.position.x, pk.end.y)])
+		for piece in Geometry2D.intersect_polygons(pkpoly, land_poly):
+			_fill_polygon(piece, "park", PARK_Y)
 	_lay_grid_roads(sxs, szs)      # the street mesh (clipped to the ring), over the ground
+	_round_grid_junctions(sxs, szs)   # fillet the crossings -> curved L/T joints, not hard plus-signs
 	_lay_market_st()               # the diagonal MARKET ST avenue cutting NE->SW across the grid (SF's signature)
 	_lay_perimeter_loop()          # ONE big coastal loop road around the outside -- no perimeter dead-ends
 	_lay_park_roads()              # a loop road AROUND each park, so grid streets connect around it (not dead-end in)
@@ -245,6 +274,54 @@ func _lay_grid_roads(sxs: Array, szs: Array) -> void:
 			if _in_ring(mid) and not _in_park(mid) and not _ring_parallel(mid, Vector2(1.0, 0.0), ROAD_W + 6.0):
 				_road_seg(Vector2(x, sz), Vector2(e, sz), half, 0.0)
 			x = e
+
+
+## Round every grid crossing into a smooth junction: fill the four re-entrant corners (the notches
+## between the perpendicular asphalt ribbons) with quarter-disc fans, so from altitude the streets
+## read as curved L / T joints instead of hard plus-signs. The fans sit purely in the notches (never
+## overlapping the ribbons), flush with the upper (N-S) ribbon height, so there's no z-fight.
+func _round_grid_junctions(sxs: Array, szs: Array) -> void:
+	var rh: float = maxf(1.0, ROAD_W * 0.5 - WALK_W)   # asphalt half-width (matches _road_seg)
+	# fillet radius: as big as fits before the fan's 45deg reach (rh + 0.707*r) meets the building set-
+	# back (~11 m from the street centre), so the curve reads clearly from the AC-130's altitude without
+	# ever lapping a building base.
+	var r: float = rh + 2.0
+	var y: float = ROAD_Y + STREET_DY                  # flush with the N-S ribbon (the higher of the two)
+	for sx in sxs:
+		for sz in szs:
+			var p: Vector2 = Vector2(sx, sz)
+			if _in_ring(p) and not _in_park(p):
+				_road_round(p, rh, r, y)
+
+
+## Fill the four notches of the crossing at `p` with quarter-disc asphalt fans of radius `r` (the notch
+## corners sit `rh` out along each axis). Each triangle is forced up-facing (see _tri_up).
+func _road_round(p: Vector2, rh: float, r: float, y: float) -> void:
+	var segs: int = 4
+	for sxn in [-1.0, 1.0]:
+		for szn in [-1.0, 1.0]:
+			var corner: Vector2 = p + Vector2(sxn * rh, szn * rh)
+			var e1: Vector2 = Vector2(sxn, 0.0)
+			var e2: Vector2 = Vector2(0.0, szn)
+			var ang: float = e1.angle_to(e2)               # signed 90deg sweep, short way into the notch
+			var prev: Vector2 = corner + e1 * r
+			for k in range(1, segs + 1):
+				var cur: Vector2 = corner + e1.rotated(ang * float(k) / float(segs)) * r
+				_tri_up(corner, prev, cur, y, _road_tris)
+				prev = cur
+
+
+## Append one triangle (a,b,c at height y) to a triangle list, winding FLIPPED if needed so it faces up
+## -- the same up-facing guard _fill_polygon uses. Lets fan code emit corners in any order safely.
+func _tri_up(a: Vector2, b: Vector2, c: Vector2, y: float, arr: PackedVector3Array) -> void:
+	var va: Vector3 = Vector3(a.x, y, a.y)
+	var vb: Vector3 = Vector3(b.x, y, b.y)
+	var vc: Vector3 = Vector3(c.x, y, c.y)
+	if (vb - va).cross(vc - va).y < 0.0:
+		var t: Vector3 = vb
+		vb = vc
+		vc = t
+	arr.append_array([va, vb, vc])
 
 
 ## MARKET ST: SF's signature diagonal avenue, cutting NE (the Ferry Building / downtown, by the Bay
@@ -828,7 +905,7 @@ func _lay_geography() -> void:
 	# Oakland (never reached). The walkable decks (nav / gauntlet / escape) are the axis-aligned Rect2s
 	# below; the dogleg past Treasure Island is a VISUAL deck only. WIN zones sit on the reachable decks.
 	bridges = [
-		Rect2(251, -450, 34, 630),   # Golden Gate, north: SF coast (~z150) -> Marin (~z-405). Narrow -- the GLB rides here.
+		Rect2(251, -450, 34, 655),   # Golden Gate: Marin (~z-405) -> lands on the PRESIDIO's north edge (z=205), the way the Bay Bridge plugs into the city edge (was z=180, stopping amid the coastal blocks). Narrow -- the GLB rides here.
 		Rect2(950, 456, 340, 30),    # Bay Bridge, east: SF coast (~x940) -> Treasure Island (~x1290). Narrow -- the GLB rides here.
 	]
 	escapes = [
@@ -929,6 +1006,11 @@ func _lay_gg_bridge() -> void:
 	node.position.z = deck.position.y + deck.size.y * 0.5
 	node.position.y += ROAD_Y - sh * GG_SINK           # roadway lands at ROAD level (just above the deck tile, no z-fight)
 	add_child(node)
+	# Keep buildings off the over-land APPROACH (coast -> Presidio edge), so nothing clips the deck or
+	# the superstructure at the landfall -- the other half of the "artifacts on the GG bridge". Runs
+	# before _lay_blocks (generate() order), so the block placer respects it.
+	var cx: float = deck.position.x + deck.size.x * 0.5
+	_no_build_lines.append([Vector2(cx, deck.end.y - 80.0), Vector2(cx, deck.end.y)])
 
 
 ## The Bay Bridge as a hero prop: the McClintic-Marshall model (the firm that built the real one),
