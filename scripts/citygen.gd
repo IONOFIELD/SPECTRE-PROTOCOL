@@ -221,7 +221,7 @@ func _lay_city(rng: RandomNumberGenerator) -> void:
 		for piece in Geometry2D.intersect_polygons(pkpoly, land_poly):
 			_fill_polygon(piece, "park", PARK_Y)
 	_lay_grid_roads(sxs, szs)      # the street mesh (clipped to the ring), over the ground
-	_round_grid_junctions(sxs, szs)   # fillet the crossings -> curved L/T joints, not hard plus-signs
+	_round_all_junctions(sxs, szs)    # disc-cap every crossing + park corner -> rounded T/L/+ joints, no hard corners
 	_lay_market_st()               # the diagonal MARKET ST avenue cutting NE->SW across the grid (SF's signature)
 	_lay_perimeter_loop()          # ONE big coastal loop road around the outside -- no perimeter dead-ends
 	_lay_park_roads()              # a loop road AROUND each park, so grid streets connect around it (not dead-end in)
@@ -302,41 +302,35 @@ func _lay_street_axis(base: Vector2, dir: Vector2, t0: float, t1: float, half: f
 		t += step
 
 
-## Round every grid crossing into a smooth junction: fill the four re-entrant corners (the notches
-## between the perpendicular asphalt ribbons) with quarter-disc fans, so from altitude the streets
-## read as curved L / T joints instead of hard plus-signs. The fans sit purely in the notches (never
-## overlapping the ribbons), flush with the upper (N-S) ribbon height, so there's no z-fight.
-func _round_grid_junctions(sxs: Array, szs: Array) -> void:
-	var rh: float = maxf(1.0, ROAD_W * 0.5 - WALK_W)   # asphalt half-width (matches _road_seg)
-	# fillet radius: as big as fits before the fan's 45deg reach (rh + 0.707*r) meets the building set-
-	# back (~11 m from the street centre), so the curve reads clearly from the AC-130's altitude without
-	# ever lapping a building base.
-	var r: float = rh + 2.0
-	var y: float = ROAD_Y + STREET_DY                  # flush with the N-S ribbon (the higher of the two)
+## Round + weld EVERY junction with a filled asphalt DISC: grid crossings AND each park-loop corner. A
+## disc rounds any junction the same way -- a +, a T, or an L -- AND caps any small gap where two ribbons
+## meet, so the whole network reads as smoothly jointed (no hard plus-signs, no broken corners) from the
+## AC-130's altitude. Discs can't leave the perpendicular stubs the old notch-fillets did, so this runs
+## at the coast too (the notch version was skipped there).
+func _round_all_junctions(sxs: Array, szs: Array) -> void:
+	var y: float = ROAD_Y + STREET_DY + 0.14           # above every road layer, so the cap wins at the junction
+	var r: float = ROAD_W * 0.5                         # a road-wide roundel -> fills the crossing's corners
 	for sx in sxs:
 		for sz in szs:
 			var p: Vector2 = Vector2(sx, sz)
-			# interior crossings only -- past the coast-hug zone where a parallel street span may be
-			# dropped (filleting a lone road there would leave little perpendicular stubs, not a junction)
-			if _in_ring(p) and not _in_park(p) and not _near_ring(p, ROAD_W + 8.0):
-				_road_round(p, rh, r, y)
+			if _in_ring(p) and not _in_park(p):
+				_road_disc(p, r, y)
+	# each park loop's four corners (the hard L bends around the greens), where a park road runs
+	for pk in parks:
+		for corner in [pk.position, Vector2(pk.end.x, pk.position.y), pk.end, Vector2(pk.position.x, pk.end.y)]:
+			if _in_ring(corner) and not _near_ring(corner, ROAD_W + 6.0):
+				_road_disc(corner, r, y)
 
 
-## Fill the four notches of the crossing at `p` with quarter-disc asphalt fans of radius `r` (the notch
-## corners sit `rh` out along each axis). Each triangle is forced up-facing (see _tri_up).
-func _road_round(p: Vector2, rh: float, r: float, y: float) -> void:
-	var segs: int = 4
-	for sxn in [-1.0, 1.0]:
-		for szn in [-1.0, 1.0]:
-			var corner: Vector2 = p + Vector2(sxn * rh, szn * rh)
-			var e1: Vector2 = Vector2(sxn, 0.0)
-			var e2: Vector2 = Vector2(0.0, szn)
-			var ang: float = e1.angle_to(e2)               # signed 90deg sweep, short way into the notch
-			var prev: Vector2 = corner + e1 * r
-			for k in range(1, segs + 1):
-				var cur: Vector2 = corner + e1.rotated(ang * float(k) / float(segs)) * r
-				_tri_up(corner, prev, cur, y, _road_tris)
-				prev = cur
+## A filled asphalt disc (radius r, height y) -- a rounded junction cap. Up-facing triangle fan.
+func _road_disc(center: Vector2, r: float, y: float) -> void:
+	var segs: int = 14
+	var prev: Vector2 = center + Vector2(r, 0.0)
+	for k in range(1, segs + 1):
+		var a: float = TAU * float(k) / float(segs)
+		var cur: Vector2 = center + Vector2(cos(a), sin(a)) * r
+		_tri_up(center, prev, cur, y, _road_tris)
+		prev = cur
 
 
 ## Append one triangle (a,b,c at height y) to a triangle list, winding FLIPPED if needed so it faces up

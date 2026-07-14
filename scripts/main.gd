@@ -172,7 +172,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] truce (after evac)   [V
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 150
+const BUILD_PUSHES: int = 151
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -321,7 +321,7 @@ const LOOT_NEAR_M: float = 22.0        # a unit within this of a building's edge
 const LOOT_CANCEL_PX: float = 42.0     # drag past this and it's a pan, not a loot
 const LOOT_TOAST_TIME: float = 3.2     # how long a loot result stays on the HUD
 const LOOT_AMBUSH_CHANCE: float = 0.16 # odds a cleared building was a nest that bites back
-const HDD_PICKUPS: int = 10            # dedicated drives seeded on the map
+const HDD_PICKUPS: int = 12            # dedicated drives seeded on the map (+20% over the old 10)
 const HDD_GRAB_M: float = 5.0          # a unit this close scoops a drive
 # building payout classes (stable per building index)
 const LC_HDD: int = 0
@@ -1329,7 +1329,12 @@ func _assign_landmarks() -> void:
 		return
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 	rng.randomize()
-	var specs: Array = [["POLICE STATION", LC_POLICE], ["HOSPITAL", LC_HOSP], ["HOSPITAL", LC_HOSP], ["BIO LAB", LC_BIO]]
+	# 2-3 of each civic type, scattered at random -- more places to loot + more BIO LABS for the
+	# Sanitation force to boil out of (see _deploy_sanitation).
+	var specs: Array = []
+	for pair in [["POLICE STATION", LC_POLICE], ["HOSPITAL", LC_HOSP], ["BIO LAB", LC_BIO]]:
+		for _c in 2 + (rng.randi() % 2):
+			specs.append(pair)
 	var used: Dictionary = {}
 	for spec in specs:
 		var bi: int = _pick_landmark_building(rng, used)
@@ -1406,7 +1411,13 @@ func _deploy_sanitation() -> void:
 	sim.san_speed = WorldSim.STATS[&"cbt"][0] * 1.05   # in-game: only 5% faster than your troopers
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 	rng.randomize()
-	var pack: Vector2 = _random_edge_point(rng)     # they land at the MAP EDGE and push in, as a tight pack
+	# The wipe force BOILS OUT OF A BIO LAB -- the containment breach made flesh. Spawn point is a random
+	# BIO LAB landmark (there are 2-3); only if the map somehow has none do they fall back to a map edge.
+	var biolabs: Array = []
+	for lm in _landmarks:
+		if String(lm.get("name", "")) == "BIO LAB":
+			biolabs.append(lm["pos"])
+	var pack: Vector2 = biolabs[rng.randi() % biolabs.size()] if not biolabs.is_empty() else _random_edge_point(rng)
 	for _s in POP_SAN:
 		var p: Vector2 = pack + Vector2(rng.randf_range(-6.0, 6.0), rng.randf_range(-6.0, 6.0))
 		sim.spawn(p, &"san", WorldSim.SANITATION)
