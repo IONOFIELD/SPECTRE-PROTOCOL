@@ -171,7 +171,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] truce (after evac)   [V
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 144
+const BUILD_PUSHES: int = 145
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -2540,7 +2540,7 @@ func _draw_allegiance() -> void:
 		var p: Vector2 = _screen_point(w)
 		if san:
 			sel_layer.draw_circle(p, 2.7, Color(0.05, 0.05, 0.06, 0.95))   # black hull
-			_corner_box(p, 5.5, TAG_ENEMY)                                 # red brackets (always, within 250 m)
+			_corner_box(p, 5.5, TAG_ENEMY)                                 # red brackets -- the Sanitation force is ALWAYS target-bracketed
 			_unit_glyph(&"san", p - Vector2(0.0, 13.0), 5.0, TAG_ENEMY)    # radiation trefoil
 		else:
 			var col: Color = _alleg_color(t)
@@ -2600,16 +2600,24 @@ func _draw_unit_boxes() -> void:
 		_unit_glyph(sim.kind[i], p - Vector2(0.0, 13.0), 4.5, col)
 
 
-## AC-130 target tags -- ONLY inside the centre reticle box, like the real optic when
-## it's slewed onto a target. Yellow vehicles, green friendlies, red hostiles, red
-## carets + range on the horde. Gated to zoomed-in views + capped so it never clutters.
+## The centre TARGETING ZONE: a landscape rectangle at the reticle centre. It's drawn as part of the
+## gunsight (see _draw_hud), and any hostile whose pip falls inside it gets a red target bracket -- the
+## "bracket what's in the box" read the player asked for, in place of the removed scan-reveal brackets.
+func _target_zone(win: Vector2) -> Rect2:
+	var short: float = minf(win.x, win.y)
+	var hw: float = short * 0.16
+	var hh: float = short * 0.10
+	return Rect2(win.x * 0.5 - hw, win.y * 0.5 - hh, hw * 2.0, hh * 2.0)
+
+
+## AC-130 target tags -- ONLY inside the centre TARGETING ZONE, like the real optic when it's slewed
+## onto a target. Red brackets on hostiles, red carets + range on the horde. Gated to zoomed-in views
+## + capped so it never clutters.
 func _draw_tags(font: Font) -> void:
 	if sim == null or cam_dist > TAG_ZOOM_MAX:
 		return
 	var win: Vector2 = Vector2(get_viewport().get_visible_rect().size)
-	var c: Vector2 = win * 0.5
-	var rb: float = minf(win.x, win.y) * 0.24
-	var box: Rect2 = Rect2(c.x - rb, c.y - rb, rb * 2.0, rb * 2.0)
+	var box: Rect2 = _target_zone(win)          # bracket only what's inside the drawn centre zone
 	var me3: Vector3 = _follow_point()
 	var me: Vector2 = Vector2(me3.x, me3.z)
 	var look: Vector2 = Vector2(cam_tx, cam_tz)
@@ -2731,6 +2739,10 @@ func _draw_hud() -> void:
 			sel_layer.draw_line(at - perp * 5.0, at + perp * 5.0, HUD_COL, 1.5)
 	sel_layer.draw_line(c - Vector2(3.5, 0.0), c + Vector2(3.5, 0.0), HUD_COL, 1.0)   # aim pipper (line)
 	sel_layer.draw_line(c - Vector2(0.0, 3.5), c + Vector2(0.0, 3.5), HUD_COL, 1.0)
+
+	# the TARGETING ZONE -- a landscape frame at centre. Anything hostile inside it gets a red target
+	# bracket (see _draw_tags); this is the box the player aims WITH, not just a decoration.
+	sel_layer.draw_rect(_target_zone(win), HUD_COL, false, 1.5)
 
 	# rotating cardinal compass on a fixed ring around the reticle
 	var ring: float = short * 0.36
