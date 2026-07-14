@@ -279,14 +279,15 @@ func _lay_diag_buildings(rng: RandomNumberGenerator) -> void:
 	var md: Vector2 = (Vector2(455.0, 725.0) - ma).normalized()    # Market St heading
 	var perp: Vector2 = Vector2(-md.y, md.x)
 	var yaw: float = atan2(md.x, md.y)                             # align each box's long axis to the avenue
-	var base: Vector2 = Vector2(645.0, 600.0)                      # the gap east of GGP's end, alongside Market
-	for row in [-1.0, 1.0]:
-		for k in range(-2, 3):
-			var c: Vector2 = base + md * (float(k) * 32.0) + perp * (row * 27.0)
-			if not _in_land(c) or _in_park(c) or _near_ring(c, ROAD_W) or _footprint_hits_road(c.x - 14.0, c.y - 14.0, 28.0, 28.0):
+	var base: Vector2 = Vector2(650.0, 600.0)                      # the gap east of GGP's end, alongside Market
+	# a broad block of angled parcels flanking Market -- enough rows/columns to actually FILL the gap
+	for row in [-2.5, -1.5, -0.5, 0.5, 1.5, 2.5]:
+		for k in range(-4, 6):
+			var c: Vector2 = base + md * (float(k) * 28.0) + perp * (row * 25.0)
+			if not _in_land(c) or _in_park(c) or _near_ring(c, ROAD_W) or _footprint_hits_road(c.x - 12.0, c.y - 12.0, 24.0, 24.0):
 				continue
-			var w: float = rng.randf_range(19.0, 26.0)
-			var d: float = rng.randf_range(24.0, 34.0)
+			var w: float = rng.randf_range(17.0, 23.0)
+			var d: float = rng.randf_range(21.0, 29.0)
 			var fl: int = 3 + rng.randi() % 4
 			_diag_box(c.x, c.y, 0.0, w, float(fl) * FLOOR_H, d, yaw, "brick" if rng.randf() < 0.4 else "wall")
 			# collision = the AABB of the rotated footprint (units route around the whole turned block)

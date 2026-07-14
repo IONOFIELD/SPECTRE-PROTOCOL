@@ -32,7 +32,7 @@ const ZOOM_MAX_ORBIT: float = 1462.0  # wide AC-130/PYLON view -- the whole peni
 const ZOOM_MAX_DEPLOY: float = 505.0  # close ELEMENT/GROUND view -- as far out as it goes
 const MUSIC_MENU: String = "res://audio/music/music 1.wav"     # the menu / startup theme (loops)
 # gameplay beds -- one is picked at random on deploy for variety (both loop)
-const MUSIC_DEPLOY: Array = ["res://audio/music/music 2.wav", "res://audio/music/music 3.wav"]
+const MUSIC_DEPLOY: Array = ["res://audio/music/music 2.wav"]   # music 3 was removed from the project; add it back here if restored
 # Preloaded gameplay beds (filled in _ready). The deploy tracks are big PCM WAVs; loading one
 # synchronously at the deploy instant hitched/failed on mobile (no gameplay music). Preloading
 # them at startup -- same as the menu bed -- makes the deploy switch instant + reliable.
@@ -191,7 +191,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] truce (after evac)   [V
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 136
+const BUILD_PUSHES: int = 137
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -352,7 +352,7 @@ const LC_BIO: int = 3
 # AC-130 fire support -- a kill-charged fire mission (v0.19's killstreak). TWO weapons, by view:
 #   WIDE ISR (orbit)  -> one large 105mm PROJECTILE (big blast, long flight)
 #   CLOSE ISR (deploy) -> a 15-round 25mm BURST, 3 volleys per mission (rapid small impacts)
-const AC_UNLOCK: int = 100             # INFECTED kills to unlock a fire mission (killstreak)
+const AC_UNLOCK: int = 50              # INFECTED (zombie) kills to unlock a fire mission -- combatants don't count
 const STRIKE_R: float = 16.0           # 105mm kill radius, metres
 const STRIKE_DMG: float = 1200.0       # one round flattens even the buffed Sanitation elite
 const STRIKE_TOF: float = 5.0          # 105mm time-of-flight -- a long, slow flight that reads as distance
@@ -2545,8 +2545,11 @@ func _draw_allegiance() -> void:
 		var t: int = sim.team[i]
 		var san: bool = t == WorldSim.SANITATION
 		var sani_close: bool = san and _squad_near(sim.pos[i], SANI_BRACKET_RANGE)
-		if not _identified(i) and not sani_close:
-			continue                                                        # fog of war: only what you can see
+		# The gunship's thermal ISR sees the whole INFESTATION -- every warm infected body reads on the
+		# feed, so the horde is always marked (the "hundreds of enemies" the map should show). The sneaky
+		# HUMAN factions (bandits, survivors, rival teams) still have to be DETECTED -- scanning matters.
+		if t != WorldSim.INFECTED and not _identified(i) and not sani_close:
+			continue
 		var w: Vector3 = Vector3(sim.pos[i].x, 0.9, sim.pos[i].y)
 		if cam.is_position_behind(w):
 			continue
@@ -2941,14 +2944,18 @@ func _spawn_tracer3d(to: Vector2, big: bool, dmg: bool = true, spread: float = 0
 	if vp == null:
 		return
 	var alt: float = TRACER_ALT if big else TRACER_ALT_B
-	# ORIGIN OFF-CAMERA: put the muzzle far BEYOND the impact (away from the optic) and high, with a
-	# lateral `spread` for a fan of rays, so the round streaks in from off the top of the frame instead
-	# of popping into view at a fixed on-screen point.
+	# ORIGIN OFF-SCREEN LEFT: the gunship sits off the LEFT of the frame (an AC-130 fires from its port
+	# side in a left-hand orbit), so the round streaks in from the camera's left and flies ACROSS to the
+	# impact -- not straight down from above. Muzzle = off to screen-left, pulled a little back toward the
+	# optic so it enters through the left edge of the frame, up at gunship altitude.
 	var cg: Vector2 = Vector2(cam.global_position.x, cam.global_position.z)
-	var away: Vector2 = to - cg
-	away = away.normalized() if away.length() > 1.0 else Vector2(0.0, -1.0)
-	var side: Vector2 = Vector2(-away.y, away.x)
-	var from: Vector3 = Vector3(to.x + away.x * MUZZLE_DIST + side.x * spread, alt, to.y + away.y * MUZZLE_DIST + side.y * spread)
+	var bx: Vector3 = cam.global_transform.basis.x           # the camera's RIGHT axis, in world space
+	var left: Vector2 = Vector2(-bx.x, -bx.z)
+	left = left.normalized() if left.length() > 0.01 else Vector2(-1.0, 0.0)
+	var toward: Vector2 = to.direction_to(cg)                # back toward the optic
+	var origin2: Vector2 = to + left * MUZZLE_DIST + toward * (MUZZLE_DIST * 0.40)
+	var side: Vector2 = Vector2(-left.y, left.x)             # perpendicular to the run -> the fan spread
+	var from: Vector3 = Vector3(origin2.x + side.x * spread, alt, origin2.y + side.y * spread)
 	var dest: Vector3 = Vector3(to.x, 0.6, to.y)             # all rays converge on the one impact point
 	var cap: CapsuleMesh = CapsuleMesh.new()
 	cap.radius = 1.2 if big else 0.7
