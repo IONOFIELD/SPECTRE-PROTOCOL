@@ -158,11 +158,11 @@ func _scatter_wrecks(city: CityGen, rng: RandomNumberGenerator) -> void:
 		var count: int = 1 + rng.randi() % 3         # a pile of 1-3
 		for c in count:
 			var off: Vector2 = Vector2(rng.randf_range(-2.5, 2.5), rng.randf_range(-2.5, 2.5))
-			_box_car(at + off, yaw, "burning" if (burning and c == 0) else "body_cold", burning and c == 0)
+			_box_car(at + off, yaw, "burning" if (burning and c == 0) else "body_cold", burning and c == 0, rng)
 		rects.append(Rect2(at.x - 4.0, at.y - 4.0, 8.0, 8.0))
 
 
-func _box_car(pos: Vector2, yaw: float, mat: String, ablaze: bool) -> void:
+func _box_car(pos: Vector2, yaw: float, mat: String, ablaze: bool, rng: RandomNumberGenerator) -> void:
 	var m: BoxMesh = BoxMesh.new()
 	m.size = Vector3(2.0, 1.4, 4.6)
 	var mi: MeshInstance3D = MeshInstance3D.new()
@@ -172,10 +172,28 @@ func _box_car(pos: Vector2, yaw: float, mat: String, ablaze: bool) -> void:
 	mi.material_override = ThermalLib.get_material(mat, _snap_res)
 	add_child(mi)
 	if ablaze:
-		var fm: BoxMesh = BoxMesh.new()
-		fm.size = Vector3(2.2, 3.0, 2.6)
+		_wreck_fire(pos, rng)
+
+
+## A wreck fire as a RAGGED CLUSTER of tumbled voxel embers -- NOT the old single smooth box, which
+## bloomed into the round "ice cream scoop" the user kept flagging (these static wrecks are 55% of the
+## scatter -- fires all over the map). The irregular tumbled silhouette + varied heights read as flame
+## from the AC-130's altitude instead of a smooth ball; the fire material adds its own flick/writhe.
+## Snap OFF so the tumbled boxes don't trip the vertex-snap bright bug.
+func _wreck_fire(pos: Vector2, rng: RandomNumberGenerator) -> void:
+	var mat: ShaderMaterial = ThermalLib.get_material("fire", _snap_res, 0)
+	var n: int = 5 + rng.randi() % 2                     # 5-6 embers
+	for _i in n:
+		var ang: float = rng.randf() * TAU
+		var rad: float = rng.randf_range(0.2, 2.3)       # irregular ground spread -> jagged footprint
+		var s: float = rng.randf_range(0.8, 2.1)         # varied sizes -> ragged edge
+		var bm: BoxMesh = BoxMesh.new()
+		bm.size = Vector3(s, s * rng.randf_range(1.1, 1.9), s)
 		var fi: MeshInstance3D = MeshInstance3D.new()
-		fi.mesh = fm
-		fi.position = Vector3(pos.x, 2.3, pos.y)
-		fi.material_override = ThermalLib.get_material("fire", _snap_res)
+		fi.mesh = bm
+		fi.transform = Transform3D(
+			Basis.from_euler(Vector3(rng.randf() * TAU, rng.randf() * TAU, rng.randf() * TAU)),
+			Vector3(pos.x + cos(ang) * rad, rng.randf_range(1.1, 3.0), pos.y + sin(ang) * rad))
+		fi.material_override = mat
+		fi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		add_child(fi)

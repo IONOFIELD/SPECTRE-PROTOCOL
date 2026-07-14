@@ -380,35 +380,45 @@ func _lay_market_st() -> void:
 ## the cardinal grid). The rotated boxes render with snap OFF (the PS1 vertex-snap blows rotated geometry
 ## out bright -- same reason the flat terrain opts out); collision is the axis-aligned box of the turn.
 func _lay_diag_buildings(rng: RandomNumberGenerator) -> void:
-	var ma: Vector2 = Vector2(bridges[1].position.x - 20.0, bridges[1].position.y + bridges[1].size.y * 0.5)
-	var md: Vector2 = (Vector2(455.0, 725.0) - ma).normalized()    # Market St heading
+	# TRIANGULAR flatiron blocks LINING Market St -- walk the avenue and drop a wedge building tight to
+	# each kerb, filling the gaps the diagonal leaves against the cardinal grid. All triangular now (the
+	# old square "diagonal" boxes are gone), and each is rejected if it would clip a grid block already
+	# placed (_lay_blocks runs first) -- so they HUG Market instead of floating in a wide band + overlapping.
+	var a: Vector2 = Vector2(bridges[1].position.x - 20.0, bridges[1].position.y + bridges[1].size.y * 0.5)
+	var b: Vector2 = Vector2(455.0, 725.0)
+	var md: Vector2 = (b - a).normalized()                        # avenue heading (NE bridge -> SW Twin Peaks)
 	var perp: Vector2 = Vector2(-md.y, md.x)
-	var yaw: float = atan2(md.x, md.y)                             # align each box's long axis to the avenue
-	var base: Vector2 = Vector2(650.0, 600.0)                      # the gap east of GGP's end, alongside Market
-	# a broad block of angled parcels flanking Market -- enough rows/columns to actually FILL the gap
-	for row in [-2.5, -1.5, -0.5, 0.5, 1.5, 2.5]:
-		for k in range(-4, 6):
-			var c: Vector2 = base + md * (float(k) * 28.0) + perp * (row * 25.0)
-			if not _in_land(c) or _in_park(c) or _near_ring(c, ROAD_W) or _footprint_hits_road(c.x - 12.0, c.y - 12.0, 24.0, 24.0):
+	var yaw: float = atan2(md.x, md.y)                            # one face runs along the avenue
+	var half: float = ROAD_W * 0.5 + 3.5                          # Market's half-width (matches _lay_market_st)
+	var length: float = a.distance_to(b)
+	var t: float = 46.0                                           # start past the bridge approach
+	while t < length - 40.0:
+		var r: float = rng.randf_range(10.0, 15.0)               # wedge radius
+		var side_off: float = half + 3.5 + r                     # sit tight to the kerb, both flanks
+		for sgn in [-1.0, 1.0]:
+			var c: Vector2 = a + md * t + perp * (sgn * side_off)
+			if not _in_land(c) or _in_park(c) or _near_ring(c, ROAD_W):
 				continue
+			if _footprint_hits_road(c.x - r, c.y - r, r * 2.0, r * 2.0) \
+					or _footprint_hits_building(c.x - r, c.y - r, r * 2.0, r * 2.0):
+				continue                                          # don't clip the cardinal grid (or a placed wedge)
 			var fl: int = 3 + rng.randi() % 4
 			var mat: String = "brick" if rng.randf() < 0.4 else "wall"
-			if rng.randf() < 0.4:
-				# a TRIANGULAR parcel -- a 3-sided prism, turned to a random angle, to fill the wedge gaps
-				# the diagonal avenue leaves against the cardinal grid (real SF has these flatiron blocks).
-				var r: float = rng.randf_range(11.0, 16.0)
-				_diag_tri(c.x, c.y, r, float(fl) * FLOOR_H, yaw + rng.randf_range(-0.5, 0.5), mat)
-				buildings.append({"x": c.x - r, "z": c.y - r, "w": r * 2.0, "d": r * 2.0, "fl": fl, "loot": true})
-			else:
-				var w: float = rng.randf_range(17.0, 23.0)
-				var d: float = rng.randf_range(21.0, 29.0)
-				_diag_box(c.x, c.y, 0.0, w, float(fl) * FLOOR_H, d, yaw, mat)
-				# collision = the AABB of the rotated footprint (units route around the whole turned block)
-				var cw: float = absf(cos(yaw))
-				var sw: float = absf(sin(yaw))
-				var ax: float = w * 0.5 * cw + d * 0.5 * sw
-				var az: float = w * 0.5 * sw + d * 0.5 * cw
-				buildings.append({"x": c.x - ax, "z": c.y - az, "w": ax * 2.0, "d": az * 2.0, "fl": fl, "loot": true})
+			# apex faces the avenue on one flank, away on the other -> the paired wedges frame Market
+			var face: float = yaw + (0.0 if sgn > 0.0 else PI) + rng.randf_range(-0.25, 0.25)
+			_diag_tri(c.x, c.y, r, float(fl) * FLOOR_H, face, mat)
+			buildings.append({"x": c.x - r, "z": c.y - r, "w": r * 2.0, "d": r * 2.0, "fl": fl, "loot": true})
+		t += rng.randf_range(24.0, 30.0)                         # pitch along the avenue
+
+
+## Does this footprint (grown a touch) overlap any already-placed building? Keeps the diagonal Market
+## wedges from clipping through the cardinal grid blocks (laid first) or through each other.
+func _footprint_hits_building(x: float, z: float, w: float, d: float) -> bool:
+	var r: Rect2 = Rect2(x - 1.5, z - 1.5, w + 3.0, d + 3.0)
+	for bd in buildings:
+		if r.intersects(Rect2(bd["x"], bd["z"], bd["w"], bd["d"])):
+			return true
+	return false
 
 
 ## One rotated box as its own MeshInstance (snap OFF so the vertex-snap won't blow the turned faces out
