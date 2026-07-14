@@ -116,17 +116,9 @@ var _menu_ping_next: float = 1.2         # seconds until the next ping (irregula
 var _menu_resetting: bool = false        # a fade-out / respawn / fade-in cycle is running
 const MENU_PING_SHOW: float = 5.0        # a ping's markers live this long, then fade for the next
 const MENU_RAY_MAX: int = 48             # cap the contacts a ping paints, so the fan stays legible
-# ISR scan: enemy teams (sanitation + rival teams) stay unidentified until a scan pulse
-# paints them for SCAN_REVEAL s; SCAN_COOLDOWN s between scans.
-var _scan_t: float = 999.0               # seconds since the last scan (>= REVEAL = hidden)
-var _scan_pulse_t: float = 99.0          # animation clock for the green scan sweep
-var _sfx_scan: AudioStream
-const SCAN_REVEAL: float = 15.0
-const SCAN_COOLDOWN: float = 25.0
-const SCAN_PULSE: float = 1.3            # seconds the green sweep ring takes to cross the feed
-const FOG_SIGHT: float = 100.0           # a unit passively sees enemies this close (fog of war)
+var _sfx_scan: AudioStream               # the sonar-like ping -- MENU scanner backdrop + menu-select blips only now
+const FOG_SIGHT: float = 100.0           # a unit passively sees CIVILIANS this close (hostiles read on the ISR always)
 const FOG_SIGHT_SNP: float = 150.0       # the sniper's optic reaches further -- a scout's eyes
-const SCAN_RANGE: float = 175.0          # a commander scan IDs enemies out to here for SCAN_REVEAL s
 const SANI_BRACKET_RANGE: float = 250.0  # the Sanitation force auto-brackets (red) within this of your squad
 
 
@@ -143,36 +135,24 @@ func _commander() -> int:
 	return fallback
 
 
-## Is enemy unit i currently visible to you? Fog of war: revealed if any of your units is
-## within FOG_SIGHT of it, OR a live commander scan reaches it (SCAN_RANGE for SCAN_REVEAL s).
+## Is contact i currently marked on the feed? The AC-130 ISR paints every HOSTILE all the time -- the
+## whole battlefield reads, there's no scan to run (SCAN was removed as redundant). Only neutral
+## CIVILIANS still depend on your units' line-of-sight, so a street of bystanders doesn't clutter.
 func _identified(i: int) -> bool:
+	if sim.team[i] != WorldSim.CIVILIAN:
+		return true
 	return _in_los(sim.pos[i])
 
 
-## Is a ground point currently inside your fog-of-war reveal -- within any of your units'
-## sight (the sniper's reaches further), or a live commander scan's SCAN_RANGE bubble?
+## Is a ground point within any of your element-0 units' sight (the sniper's reaches further)? Now
+## used only for the CIVILIAN fog -- hostiles are always identified, so no scan bubble is needed.
 func _in_los(p: Vector2) -> bool:
 	for j in sim.count():
 		if sim.alive[j] and sim.team[j] == WorldSim.SQUAD and sim.element[j] == 0:
 			var s: float = FOG_SIGHT_SNP if sim.kind[j] == &"snp" else FOG_SIGHT   # the sniper sees further
 			if p.distance_squared_to(sim.pos[j]) <= s * s:
 				return true
-	if _scan_t < SCAN_REVEAL:
-		var cmd: int = _commander()
-		if cmd >= 0 and p.distance_squared_to(sim.pos[cmd]) <= SCAN_RANGE * SCAN_RANGE:
-			return true
 	return false
-
-
-## Fire an ISR scan if off cooldown: a green sweep + robotic beeps that paints the enemy
-## teams for SCAN_REVEAL s. SCAN_COOLDOWN s between scans.
-func _request_scan() -> void:
-	if _scan_t < SCAN_COOLDOWN or _commander() < 0:
-		return                                 # off cooldown + a live commander to scan from
-	_scan_t = 0.0
-	_scan_pulse_t = 0.0
-	if _sfx_scan != null:
-		Audio.sfx(_sfx_scan, 2.0, 0.6)   # the actual scanner: dropped low, sonar-like
 # Insertion edges, spread around the peninsula so no two teams deploy close. Order is
 # W, E, N, S so 2 teams land opposite (W+E), 3 add N, 4 add S.
 const EDGE_BASES: Array = [Vector2(205, 615), Vector2(885, 480), Vector2(500, 215), Vector2(520, 945)]   # (fallback; bases are computed equidistant now)
@@ -185,13 +165,13 @@ const ELEMENT_ROSTER: Array = [&"cdr", &"cbt", &"med", &"snp", &"rec", &"eod"]  
 # the role is carried by HEAT + SIZE, not the model. false = minimalist thermal
 # shapes (the rymdkapsel read, matches v0.19); true = the PS1 .glb + idle rigs.
 const USE_MODELS: bool = false
-const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] truce (after evac)   [V] arm  [B] AC-130 strike\n[TAB]/[Q] unit type   [1] select all   [E] scan   [SPACE] wide / ISR view\n[WASD] pan   [wheel] zoom   [T] palette   [C] snow   [H] hide\nEXFIL: cross a bridge, reach an evac LZ, or wipe the rival teams"
+const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] truce (after evac)   [V] arm  [B] AC-130 strike\n[TAB]/[Q] unit type   [1] select all   [SPACE] wide / ISR view\n[WASD] pan   [wheel] zoom   [T] palette   [C] snow   [H] hide\nEXFIL: cross a bridge, reach an evac LZ, or wipe the rival teams"
 
 # AC-130 gunship ISR HUD palette
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 143
+const BUILD_PUSHES: int = 144
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -227,7 +207,6 @@ var active_element: int = 0            # which of the four teams the player is d
 var _type_idx: int = -1                # unit-type cycle position within the active element
 var _cyc_btn: Button                   # the TYPE button (shows the current type, or ALL)
 var _all_btn: Button                   # the ALL button (dark when ALL is the current selection)
-var _scan_btn: Button                  # the SCAN button (shows the cooldown countdown, lit when ready)
 var _anim: Array = []                  # an Animator per view (or null), index-aligned
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 var _sfx_pool: Array[AudioStreamPlayer3D] = []
@@ -1974,11 +1953,8 @@ func _process(delta: float) -> void:
 	_swarm_upkeep(delta)                       # keep the streets teeming: fresh infected from nearby buildings
 	_advance_panic(delta)
 	_sanitation_vox(delta)
-	_scan_t += delta
-	_scan_pulse_t += delta
 	_update_move_marker()
 	_update_ac_buttons()
-	_update_scan_button()
 	_update_psv_button()
 	_update_status_panel()
 	if _bar_l != null:
@@ -2350,7 +2326,6 @@ func _draw_selection() -> void:
 	_draw_landmarks()
 	_draw_move_marker()
 	_draw_hud()
-	_draw_scan_pulse()
 	_draw_allegiance()
 	_draw_unit_boxes()
 	_draw_tags(ThemeDB.fallback_font)
@@ -2362,24 +2337,6 @@ func _draw_selection() -> void:
 		sel_layer.draw_rect(Rect2(drag_start, m - drag_start), SEL_COL, false, 1.0)
 	_draw_escapes()
 	_draw_evac()
-
-
-## The ISR scan sweep: a green ring expanding from the reticle out past the corners,
-## fading as it goes -- the pulse that paints the enemy teams for the reveal window.
-func _draw_scan_pulse() -> void:
-	if _scan_pulse_t >= SCAN_PULSE or sim == null:
-		return
-	var cmd: int = _commander()
-	if cmd < 0:
-		return
-	# the pulse expands FLAT ON THE GROUND from the commander -- a world-space ring
-	# projected to screen (an ellipse in perspective), not a screen-space disc.
-	var o: Vector2 = sim.pos[cmd]
-	var k: float = _scan_pulse_t / SCAN_PULSE
-	var rad_m: float = k * SCAN_RANGE
-	var a: float = (1.0 - k) * 0.85
-	_draw_ground_ring(o, rad_m, Color(0.32, 0.80, 0.44, a), 2.5)
-	_draw_ground_ring(o, rad_m * 0.7, Color(0.32, 0.80, 0.44, a * 0.5), 1.5)
 
 
 ## A ring lying FLAT on the ground: a world-space circle of radius `rad_m` metres about a
@@ -2563,21 +2520,18 @@ func _landmark_header(font: Font, p: Vector2, text: String, col: Color) -> void:
 	sel_layer.draw_string(font, Vector2(p.x - w * 0.5, p.y - 4.0), text, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, col)
 
 
-## A tiny allegiance pip over each contact you can SEE -- the v0.19 coloured-unit read. Fog of
-## war: pipped within your units' sight or a live scan. A SCAN paints RED targeting brackets on
-## every detected zombie/combatant for its reveal window; the Sanitation force wears the red
-## brackets + trefoil AUTOMATICALLY whenever it's within SANI_BRACKET_RANGE of your squad.
+## A tiny allegiance pip over each contact -- the v0.19 coloured-unit read. The AC-130 ISR paints the
+## whole battlefield: every HOSTILE (the horde + the human factions) is always marked; only neutral
+## CIVILIANS depend on your units' sight. The Sanitation force wears red brackets + trefoil whenever
+## it's within SANI_BRACKET_RANGE of your squad.
 func _draw_allegiance() -> void:
-	var scanning: bool = _scan_t < SCAN_REVEAL
 	for i in sim.count():
 		if not sim.alive[i] or sim.team[i] == WorldSim.SQUAD:
 			continue
 		var t: int = sim.team[i]
 		var san: bool = t == WorldSim.SANITATION
 		var sani_close: bool = san and _squad_near(sim.pos[i], SANI_BRACKET_RANGE)
-		# The gunship's thermal ISR sees the whole INFESTATION -- every warm infected body reads on the
-		# feed, so the horde is always marked (the "hundreds of enemies" the map should show). The sneaky
-		# HUMAN factions (bandits, survivors, rival teams) still have to be DETECTED -- scanning matters.
+		# hostiles are always identified now (see _identified); this only fogs neutral civilians
 		if t != WorldSim.INFECTED and not _identified(i) and not sani_close:
 			continue
 		var w: Vector3 = Vector3(sim.pos[i].x, 0.9, sim.pos[i].y)
@@ -2592,8 +2546,6 @@ func _draw_allegiance() -> void:
 			var col: Color = _alleg_color(t)
 			if col.a > 0.0:
 				sel_layer.draw_circle(p, 2.5, col)
-			if scanning:                                                    # a live scan targets what it detects
-				_corner_box(p, 4.5, TAG_ENEMY, 1.0)                        # red targeting bracket
 
 
 ## Is any of YOUR squad (element 0) within `r` metres of a point?
@@ -2822,8 +2774,7 @@ func _draw_hud() -> void:
 	var acw: float = font.get_string_size(ac_txt, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x
 	sel_layer.draw_string(font, Vector2(win.x - 18.0 - acw, win.y - 74.0), ac_txt, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, ac_col)
 
-	# (SCAN status now lives ON the SCAN button; the passive/stance line moved to the
-	#  top-left element roster + the PSV button.)
+	# (the passive/stance line lives on the top-left element roster + the PSV button.)
 	_draw_element_roster(win)
 	_draw_top_banner(font, win)
 	_draw_attitude(font, win)
@@ -3357,7 +3308,6 @@ func _input(e: InputEvent) -> void:
 					help.visible = show_help
 			KEY_V: _request_strike()          # arm the AC-130
 			KEY_B: _fire_reticle()            # fire it on the reticle
-			KEY_E: _request_scan()
 			KEY_P: _toggle_passive()          # passive stance -- hold fire with other passive teams
 			KEY_TAB: _cycle_unit_type()       # cycle which of your unit types is selected
 			KEY_Q: _cycle_unit_type()
@@ -3803,9 +3753,6 @@ func _build_touch_bar(host: CanvasLayer) -> void:
 	# --- lower-right: command + camera + AC-130 ---
 	var rbar: HBoxContainer = HBoxContainer.new()
 	rbar.add_theme_constant_override("separation", 6)
-	_scan_btn = _hud_button("SCAN", 74)          # shows the cooldown countdown, lit when ready
-	_scan_btn.pressed.connect(_request_scan)
-	rbar.add_child(_scan_btn)
 	# PSV: one passive-stance toggle (replaces WPN + PRLY). Two passive teams hold fire on
 	# each other and both keep firing on the infected + Sanitation.
 	_psv_btn = _hud_button("PSV")
@@ -3935,23 +3882,6 @@ func _update_ac_buttons() -> void:
 	_fire_btn.modulate = Color(1, 1, 1, 1.0) if fire_on else Color(1, 1, 1, 0.32)
 
 
-## The SCAN button carries its own cooldown: "SCAN Ns" while the reveal is live, a plain
-## countdown (dark, disabled) while recharging, then "SCAN" lit again when it's ready.
-func _update_scan_button() -> void:
-	if _scan_btn == null:
-		return
-	if _scan_t < SCAN_REVEAL:
-		_scan_btn.text = "SCAN %ds" % int(ceil(SCAN_REVEAL - _scan_t))
-		_scan_btn.modulate = Color(1, 1, 1, 1.0)
-		_scan_btn.disabled = false
-	elif _scan_t < SCAN_COOLDOWN:
-		_scan_btn.text = "%ds" % int(ceil(SCAN_COOLDOWN - _scan_t))
-		_scan_btn.modulate = Color(1, 1, 1, 0.4)
-		_scan_btn.disabled = true
-	else:
-		_scan_btn.text = "SCAN"
-		_scan_btn.modulate = Color(1, 1, 1, 1.0)
-		_scan_btn.disabled = false
 
 
 ## PSV carries a lock: a truce between rival teams is only allowed once the last evac helo
