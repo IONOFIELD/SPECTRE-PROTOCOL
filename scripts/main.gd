@@ -172,7 +172,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] truce (after evac)   [V
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 147
+const BUILD_PUSHES: int = 148
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -4225,6 +4225,14 @@ func _close_loadout() -> void:
 
 
 func _adjust_loadout(k: StringName, d: int) -> void:
+	if d > 0:
+		# the squad is a FIXED 26 (cdr + 25 choosable) -- you can't add past the total, only redistribute.
+		# Block the + step once you're at the cap; free up a slot elsewhere with - to add a different role.
+		var total: int = FIXED_CDR
+		for kk in _loadout:
+			total += int(_loadout[kk])
+		if total >= REQUIRED_TROOPS:
+			return
 	_loadout[k] = clampi(int(_loadout[k]) + d, 0, LOADOUT_MAX)
 	_refresh_loadout_labels()
 
