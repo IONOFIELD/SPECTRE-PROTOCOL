@@ -191,7 +191,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] truce (after evac)   [V
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 131
+const BUILD_PUSHES: int = 132
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -375,6 +375,10 @@ var _strike_target: Vector2 = Vector2.ZERO
 var _strike_tof: float = 0.0           # seconds since the round left the gun
 var _strike_pos: Vector2 = Vector2.ZERO
 var _strike_t: float = 999.0           # seconds since impact, for the blast FX
+# Sensor saturation: a hot blast overwhelms the detector for a beat -- the whole feed blooms bright,
+# then the AGC hauls it back. Driven here as a decaying bloom SPIKE added on top of the base bloom.
+var _sensor_flash: float = 0.0         # 0..1, decays each frame; set by _flash_sensor on hot blasts
+const SENSOR_FLASH_DECAY: float = 3.6  # how fast the wash recovers (per second)
 var _burst_volleys: int = BURST_VOLLEYS  # 25mm volleys left this fire mission
 var _burst_active: bool = false          # a burst is walking out its rounds
 var _burst_target: Vector2 = Vector2.ZERO
@@ -1656,6 +1660,8 @@ func _advance_panic(delta: float) -> void:
 				pc["emit"] = 0.0
 				_sfx_at(Vector3(pc["pos"].x, 1.0, pc["pos"].y), _sfx_expl, -2.0)
 				_spawn_fireball(pc["pos"], 4.5, 0.45, 8, 1.6)   # the car brews up in a churning fireball
+				if Vector2(cam_tx, cam_tz).distance_to(pc["pos"]) < 320.0:   # near the view centre -- a distant pop shouldn't wash the feed
+					_flash_sensor(0.5)
 		else:
 			# BURNING: a live writhing flame COLUMN off the wreck (rising, churning particles) rather than a
 			# single static box that read as an "ice cream cone". The car body already glows (burning mat).
@@ -1844,6 +1850,8 @@ func _process(delta: float) -> void:
 	_collect_hdd_pickups()
 	if _flame_sfx_cd > 0.0:
 		_flame_sfx_cd = maxf(0.0, _flame_sfx_cd - delta)
+	if _sensor_flash > 0.0:
+		_sensor_flash = maxf(0.0, _sensor_flash - SENSOR_FLASH_DECAY * delta)
 	if _gun_sfx_cd > 0.0:
 		_gun_sfx_cd = maxf(0.0, _gun_sfx_cd - delta)
 	if _gun_far_cd > 0.0:
@@ -1958,7 +1966,9 @@ func _process(delta: float) -> void:
 	# keep a healthy bloom FLOOR at altitude: the threshold (scene_median x2.2) already excludes the
 	# buildings, so only the very-hot things (fires, AC-130 rounds) glow -- and they should glow at
 	# every zoom, like the ground fires. (Full at tactical; eased to 0.30 wide, not to nothing.)
-	sensor_mat.set_shader_parameter("bloom", lerpf(0.50, 0.30, clampf((cam_dist - 380.0) / 800.0, 0.0, 1.0)))
+	# base bloom eased with altitude, PLUS the decaying sensor-saturation spike from a hot blast
+	var base_bloom: float = lerpf(0.50, 0.30, clampf((cam_dist - 380.0) / 800.0, 0.0, 1.0))
+	sensor_mat.set_shader_parameter("bloom", base_bloom + _sensor_flash * 1.4)
 
 	cut_mat.set_shader_parameter("cut_p", p)
 	cut_mat.set_shader_parameter("frame_n", frame_n)
@@ -2872,6 +2882,12 @@ func _spawn_tracer3d(to: Vector2, big: bool, dmg: bool = true, spread: float = 0
 
 ## Fly each 3D round along its slow arc, aligned nose-first; the 105mm drips a white/orange trail
 ## behind it. On arrival it detonates (105mm big ring, 25mm small pop) and the streak is freed.
+## A hot blast momentarily overwhelms the detector -- spike the sensor bloom; it then decays back as
+## the AGC hauls the exposure down. `amp` 0..1 (the big 105mm saturates hardest).
+func _flash_sensor(amp: float) -> void:
+	_sensor_flash = maxf(_sensor_flash, clampf(amp, 0.0, 1.0))
+
+
 func _age_tracers(delta: float) -> void:
 	var i: int = _tracers.size() - 1
 	while i >= 0:
@@ -2913,6 +2929,7 @@ func _age_tracers(delta: float) -> void:
 					sim.air_strike(pt, STRIKE_R, STRIKE_DMG)
 					_spawn_flash3d(pt, STRIKE_R * 0.6, 0.32, 3.0)             # the searing white core
 					_spawn_fireball(pt, STRIKE_R * 1.15, 0.85, 20, STRIKE_R * 0.28)
+					_flash_sensor(0.9)                                         # the blast whites out the detector, then AGC recovers
 					_strike_pos = pt
 					_strike_t = 0.0
 					_strike_pending = false
