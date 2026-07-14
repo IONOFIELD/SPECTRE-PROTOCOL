@@ -191,7 +191,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] truce (after evac)   [V
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 142
+const BUILD_PUSHES: int = 143
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -1111,7 +1111,7 @@ func _deploy_vehicle(base: Vector2, e: int, mode: int) -> void:
 		vm.size = Vector3(4.0, 2.2, 11.0) if boat else Vector3(3.0, 3.0, 7.0)
 		var veh: MeshInstance3D = MeshInstance3D.new()
 		veh.mesh = vm
-		veh.material_override = ThermalLib.get_material("hood_warm", snap_res)
+		veh.material_override = ThermalLib.get_material("hood_warm", snap_res, 0 if boat else -1)   # boat: snap OFF -- the hull ROTATES to follow the arc (a snapped-ON rotated box blows out bright)
 		var rest: Vector3
 		var start: Vector3
 		var anim_mode: int
@@ -1136,8 +1136,15 @@ func _deploy_vehicle(base: Vector2, e: int, mode: int) -> void:
 			rest = Vector3(base.x, 1.5, base.y)
 			start = Vector3(onto.x, 1.5, onto.y)
 			anim_mode = 1
-		var travel: Vector3 = rest - start
-		veh.rotation.y = 0.0 if absf(travel.x) < absf(travel.z) else PI * 0.5   # axis-snap to travel dir (a rotated box blows out)
+		if boat:
+			# bow leads: face the hull along the approach so it SAILS in bow-first. Element 0's boat is
+			# then re-aimed every frame down the arc tangent (see _advance_deploy); the others sit beached,
+			# facing the shore. Snap-OFF material (above) lets it rotate to any heading without blowing out.
+			var head0: Vector3 = (ctrl - start) if e == 0 else (rest - ctrl)
+			veh.rotation.y = atan2(head0.x, head0.z)
+		else:
+			var travel: Vector3 = rest - start
+			veh.rotation.y = 0.0 if absf(travel.x) < absf(travel.z) else PI * 0.5   # axis-snap to travel dir (a rotated box blows out)
 		veh.position = start if e == 0 else rest
 		veh.add_to_group("deploy_veh")      # cleared with the rest once the drop cinematic ends (no craft left floating)
 		city.add_child(veh)
@@ -1239,6 +1246,11 @@ func _advance_deploy(delta: float) -> void:
 				var bb: Vector3 = _deploy_anim["base"]
 				var cc: Vector3 = _deploy_anim["ctrl"]
 				body.position = a.lerp(cc, f).lerp(cc.lerp(bb, f), f)    # quadratic bezier -> a bowed approach
+				# bow LEADS: aim the hull down the curve's TANGENT so it turns as it sails in, instead of
+				# the centre sliding while the hull stays fixed (the crab-walk). Quadratic bezier derivative.
+				var tan: Vector3 = (cc - a) * (1.0 - f) + (bb - cc) * f
+				if tan.length() > 0.01:
+					body.rotation.y = atan2(tan.x, tan.z)
 			if f >= 1.0:
 				_deploy_anim = {}                                        # beached -- leave it at the shore
 		else:
