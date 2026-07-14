@@ -172,7 +172,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] truce (after evac)   [V
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 148
+const BUILD_PUSHES: int = 149
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -2590,6 +2590,12 @@ func _draw_allegiance() -> void:
 			var col: Color = _alleg_color(t)
 			if col.a > 0.0:
 				sel_layer.draw_circle(p, 2.5, col)
+		# a short HP bar on a DAMAGED hostile (not neutral civilians), when zoomed into a firefight -- reads
+		# who's near death. Full-health contacts show no bar, so the horde doesn't drown the feed in lines.
+		if cam_dist <= TEAM_CARET_ZOOM and t != WorldSim.CIVILIAN:
+			var mh: float = float(WorldSim.STATS[sim.kind[i]][1]) if WorldSim.STATS.has(sim.kind[i]) else 0.0
+			if mh > 0.0 and sim.hp[i] < mh:
+				_draw_hp_bar(p, sim.hp[i] / mh)
 
 
 ## Is any of YOUR squad (element 0) within `r` metres of a point?
@@ -2639,9 +2645,13 @@ func _draw_unit_boxes() -> void:
 		var col: Color = _squad_col(i)
 		_corner_box(p, 4.0, col, 1.0)                 # thin, small ID bracket (interior corners)
 		if sim.selected[i]:
-			_corner_box(p, 8.0, SEL_COL, 1.5)         # selection bracket overlays -- all in one
+			_corner_box(p, 6.0, SEL_COL, 1.5)         # selection bracket -- snug around the ID bracket, not a loose ring
 		# the role glyph over the head -- your team + any rival team you can see
 		_unit_glyph(sim.kind[i], p - Vector2(0.0, 13.0), 4.5, col)
+		# a short HP bar under the unit: your squad always, a visible rival once it's taken damage
+		var mh: float = float(WorldSim.STATS[sim.kind[i]][1]) if WorldSim.STATS.has(sim.kind[i]) else 0.0
+		if mh > 0.0 and (sim.element[i] == 0 or sim.hp[i] < mh):
+			_draw_hp_bar(p, sim.hp[i] / mh)
 
 
 ## The centre TARGETING ZONE: a landscape rectangle at the reticle centre. It's drawn as part of the
@@ -2702,6 +2712,24 @@ func _corner_box(p: Vector2, h: float, col: Color, width: float = 1.5) -> void:
 		var cn: Vector2 = p + Vector2(k.x * h, k.y * h)
 		sel_layer.draw_line(cn, cn - Vector2(k.x * a, 0.0), col, width)
 		sel_layer.draw_line(cn, cn - Vector2(0.0, k.y * a), col, width)
+
+
+## A short line HP bar under a unit at `p` -- green -> amber -> red by health `frac`, on a dark backing
+## so it reads over the bright feed. Small and low, so it clarifies squad + enemy state in a firefight.
+func _draw_hp_bar(p: Vector2, frac: float) -> void:
+	var f: float = clampf(frac, 0.0, 1.0)
+	var w: float = 12.0
+	var y: float = p.y + 8.0
+	var x0: float = p.x - w * 0.5
+	sel_layer.draw_line(Vector2(x0 - 0.5, y), Vector2(x0 + w + 0.5, y), Color(0.0, 0.0, 0.0, 0.55), 3.0)   # dark backing
+	var col: Color
+	if f > 0.5:
+		col = Color(0.35, 0.95, 0.40, 0.95)
+	elif f > 0.25:
+		col = Color(0.98, 0.82, 0.25, 0.95)
+	else:
+		col = Color(1.00, 0.30, 0.25, 0.95)
+	sel_layer.draw_line(Vector2(x0, y), Vector2(x0 + w * f, y), col, 2.0)
 
 
 ## A hollow triangle (outline) centred at p. down=true points the apex down (at a unit).
