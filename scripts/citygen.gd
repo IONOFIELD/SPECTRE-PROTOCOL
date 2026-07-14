@@ -34,6 +34,7 @@ var buildings: Array[Dictionary] = []
 var _surfaces: Dictionary = {}   # material -> Array[Rect2], all disjoint, all y = 0
 var _road_tris: PackedVector3Array = PackedVector3Array()   # asphalt (2-lane) road ribbons (free triangles, y = ROAD_Y)
 var _walk_tris: PackedVector3Array = PackedVector3Array()   # raised sidewalk kerbs flanking the roads (y = WALK_Y)
+var _mass_st: Dictionary = {}    # material -> SurfaceTool: ALL building boxes merge into one mesh per material (few draw calls, mobile-friendly)
 
 # geography, filled by generate() and read by main + the sim
 var land_poly: PackedVector2Array = PackedVector2Array()   # the SF coastline (irregular)
@@ -132,6 +133,7 @@ func generate(snap_res: Vector2i) -> void:
 	_surfaces.clear()
 	_road_tris.clear()
 	_walk_tris.clear()
+	_mass_st.clear()
 	road_lines.clear()
 	_no_build_lines.clear()
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
@@ -165,6 +167,7 @@ func generate(snap_res: Vector2i) -> void:
 	_lay_bay_bridge()                    # the Bay Bridge (McClintic-Marshall GLB): SF->TI span + the dogleg span
 
 	_lay_city(rng)          # STREET GRID: ground/park base + grid roads + buildings filling the blocks
+	_emit_massing()         # commit all the accumulated building boxes -> one merged mesh per material
 	_scatter_trees(rng)     # trees + shrubs -- a real, vegetated environment
 	_scatter_far_foliage(rng)   # wooded groves on the far landmasses (Marin / East Bay hills)
 	_emit_surfaces()
@@ -290,18 +293,20 @@ func _lay_blocks(rng: RandomNumberGenerator, sxs: Array, szs: Array) -> void:
 ## One block -> a small tidy grid of building plots, aligned to the streets. Occasional gaps read as
 ## yards / parking. Each plot's shell is skipped if it would spill into the water or a park.
 func _fill_block(rng: RandomNumberGenerator, block: Rect2, dc: float) -> void:
-	var np_x: int = maxi(1, int(round(block.size.x / 42.0)))
-	var np_z: int = maxi(1, int(round(block.size.y / 42.0)))
+	# Small plots + a low skip rate PACK each block with buildings (the dense "real city" coverage) --
+	# cheap now that the whole city is one merged mesh, so density costs a few triangles, not draw calls.
+	var np_x: int = maxi(1, int(round(block.size.x / 26.0)))
+	var np_z: int = maxi(1, int(round(block.size.y / 26.0)))
 	var pw: float = block.size.x / float(np_x)
 	var pd: float = block.size.y / float(np_z)
 	for a in np_x:
 		for b in np_z:
-			if rng.randf() < 0.10:
-				continue                                   # a yard / lot -- some open plots
-			var gap: float = 5.0
+			if rng.randf() < 0.06:
+				continue                                   # a yard / lot -- a few open plots
+			var gap: float = 3.5
 			var bw: float = pw - gap
 			var bd: float = pd - gap
-			if bw < 10.0 or bd < 10.0:
+			if bw < 8.0 or bd < 8.0:
 				continue
 			var bx: float = block.position.x + float(a) * pw + gap * 0.5
 			var bz: float = block.position.y + float(b) * pd + gap * 0.5
@@ -942,32 +947,11 @@ func _building(rng: RandomNumberGenerator, x: float, z: float, w: float, d: floa
 	var wall_mat: String = "brick" if rng.randf() < 0.35 else "wall"
 	buildings.append({"x": x, "z": z, "w": w, "d": d, "fl": fl, "loot": not tall})
 
-	# Prefer one stretched PSX shell (1–2 meshes) over 5+ greybox draw calls.
-	var pool: Array = SKYSCRAPERS if tall else LIGHT_BUILDINGS
-	var path: String = pool[rng.randi() % pool.size()]
-	# 0° / 90° only — keeps stretched footprints aligned to the parcel axes (and off the
-	# rotated-mesh bright-quad bug).
-	var yaw: float = PI * 0.5 if rng.randf() < 0.5 else 0.0
-	# spawn_fit scales to size_m in LOCAL space THEN yaws, so at 90deg the world footprint comes out
-	# SWAPPED (d x w). The collision box is (w x d), so SWAP size_m here to match -- otherwise the
-	# visual walls overhang the collision on rotated shells and units walk right through them.
-	var fit: Vector3 = Vector3(d, h, w) if yaw != 0.0 else Vector3(w, h, d)
-	var shell: Node3D = ThermalModel.spawn_fit(path, wall_mat, _snap_res, fit, yaw)
-	if shell != null:
-		# spawn_fit already grounded the base to y=0 (via _align_bottom_to_y0) -- KEEP that y and
-		# only place it in XZ. Overwriting y with 0.0 (the old bug) discarded the grounding, so any
-		# shell whose model origin wasn't at its base floated in the sky or sank into the ground.
-		shell.position.x = x + w * 0.5
-		shell.position.z = z + d * 0.5
-		add_child(shell)
-	else:
-		# Fallback if a GLB fails to load
-		_add_box(Vector3(x + w * 0.5, 0.0, z + d * 0.5), Vector3(w, h, d), wall_mat)
-		var t: float = maxf(0.6, minf(w, d) * 0.03)
-		_add_box(Vector3(x + w * 0.5, h, z + t * 0.5), Vector3(w, 0.9, t), "parapet")
-		_add_box(Vector3(x + w * 0.5, h, z + d - t * 0.5), Vector3(w, 0.9, t), "parapet")
-		_add_box(Vector3(x + t * 0.5, h, z + d * 0.5), Vector3(t, 0.9, d), "parapet")
-		_add_box(Vector3(x + w - t * 0.5, h, z + d * 0.5), Vector3(t, 0.9, d), "parapet")
+	# PROCEDURAL MASSING: boxes placed to the EXACT footprint, so the visual IS the collision box --
+	# no GLB-shell overhang, so units can never walk through a wall. Taller parcels get inset setback
+	# tiers for a tapered skyline. (Replaces the GLB shells: cheaper, exact, and the FLIR flattens
+	# building detail to a blob at range anyway, so the models bought nothing but bugs.)
+	_massing(rng, x + w * 0.5, z + d * 0.5, w, d, h, fl, wall_mat)
 
 	# LOOTABLE buildings wear a small hot rooftop beacon that strobes + blooms on the feed, so
 	# you can pick out what's worth breaching (skyscrapers don't get one -- they're not lootable).
@@ -983,3 +967,66 @@ func _building(rng: RandomNumberGenerator, x: float, z: float, w: float, d: floa
 		beacon.material_override = ThermalLib.get_material("loot_beacon", _snap_res)
 		beacon.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		add_child(beacon)
+
+
+## A building's mass: the ground box (== the collision footprint), a cool parapet lip round the roof,
+## a hot HVAC unit on low/mid roofs, and for taller parcels 1-2 INSET SETBACK TIERS -> a tapered
+## art-deco/SF skyline. Tiers sit ABOVE and INSET, so they never widen the ground footprint the sim
+## collides with. Centre (cx,cz); base w x d x h.
+func _massing(rng: RandomNumberGenerator, cx: float, cz: float, w: float, d: float, h: float, fl: int, wall_mat: String) -> void:
+	_mass_box(wall_mat, cx, cz, 0.0, w, h, d)          # the shell -- exactly the footprint
+	_roof_ring(cx, cz, w, d, h)
+	# a hot rooftop unit on low/mid roofs -> a bright spot on the feed (skyscraper roofs get tiers instead)
+	if fl < 6 and rng.randf() < 0.55:
+		var hv: float = clampf(minf(w, d) * rng.randf_range(0.22, 0.36), 1.5, 6.0)
+		_mass_box("hvac", cx + rng.randf_range(-w, w) * 0.18, cz + rng.randf_range(-d, d) * 0.18, h, hv, 1.8, hv)
+	# SETBACK TIERS for taller parcels -- each tier smaller + shorter, stacked, with its own parapet
+	if fl >= 6:
+		var tw: float = w
+		var td: float = d
+		var ty: float = h
+		var tiers: int = 1 if fl < 12 else 2
+		for _ti in tiers:
+			tw *= rng.randf_range(0.60, 0.76)
+			td *= rng.randf_range(0.60, 0.76)
+			if minf(tw, td) < 6.0:
+				break
+			var th: float = float(fl) * FLOOR_H * rng.randf_range(0.30, 0.50)
+			_mass_box(wall_mat, cx, cz, ty, tw, th, td)
+			_roof_ring(cx, cz, tw, td, ty + th)
+			ty += th
+
+
+## A thin cool parapet lip around a roof edge at height `top`, centred on (cx,cz), footprint w x d.
+func _roof_ring(cx: float, cz: float, w: float, d: float, top: float) -> void:
+	var t: float = clampf(minf(w, d) * 0.05, 0.6, 2.2)
+	_mass_box("parapet", cx, cz - d * 0.5 + t * 0.5, top, w, 0.9, t)
+	_mass_box("parapet", cx, cz + d * 0.5 - t * 0.5, top, w, 0.9, t)
+	_mass_box("parapet", cx - w * 0.5 + t * 0.5, cz, top, t, 0.9, d)
+	_mass_box("parapet", cx + w * 0.5 - t * 0.5, cz, top, t, 0.9, d)
+
+
+## Accumulate one box into the merged per-material building mesh. (cx,cz) centre, base at y0, size sx/sy/sz.
+## Uses BoxMesh + SurfaceTool.append_from so normals/UVs/winding come out correct, then all boxes of a
+## material commit as ONE MeshInstance in _emit_massing -> a handful of draw calls for the whole city.
+func _mass_box(mat: String, cx: float, cz: float, y0: float, sx: float, sy: float, sz: float) -> void:
+	if not _mass_st.has(mat):
+		var s: SurfaceTool = SurfaceTool.new()
+		s.begin(Mesh.PRIMITIVE_TRIANGLES)
+		_mass_st[mat] = s
+	var bm: BoxMesh = BoxMesh.new()
+	bm.size = Vector3(sx, sy, sz)
+	(_mass_st[mat] as SurfaceTool).append_from(bm, 0, Transform3D(Basis(), Vector3(cx, y0 + sy * 0.5, cz)))
+
+
+## Commit every accumulated building box: one merged, tangent-generated mesh per material (buildings
+## keep the PS1 vertex-snap -- the wobble is the point; only the flat TERRAIN opted out of snap).
+func _emit_massing() -> void:
+	for mat in _mass_st:
+		var st: SurfaceTool = _mass_st[mat]
+		st.generate_tangents()
+		var mi: MeshInstance3D = MeshInstance3D.new()
+		mi.mesh = st.commit()
+		mi.material_override = ThermalLib.get_material(mat, _snap_res)
+		add_child(mi)
+	_mass_st.clear()
