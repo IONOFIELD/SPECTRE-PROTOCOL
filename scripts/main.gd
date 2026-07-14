@@ -191,7 +191,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] truce (after evac)   [V
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 134
+const BUILD_PUSHES: int = 135
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -3938,7 +3938,7 @@ func _place_touch_bar() -> void:
 		help.visible = show_help and win.x >= win.y and not _menu_active
 
 
-## The startup menu: SOLO (default-highlighted) / 2-4 TEAMS / TUTORIAL, over the slowly
+## The startup menu: SOLO (default-highlighted) / 2-4 TEAMS -- no tutorial, over the slowly
 ## rotating feed with music1 playing. Picking one deploys that many teams from spread edges.
 ## The build stamp -- v0.19 (the prototype) + one v0.01 per push -- small in the HUD font,
 ## top-right, on its own top layer so it shows over the menu AND gameplay at all times.
@@ -3998,17 +3998,14 @@ func _build_menu() -> void:
 	(_menu_teams as VBoxContainer).add_theme_constant_override("separation", 9)
 	(_menu_teams as VBoxContainer).alignment = BoxContainer.ALIGNMENT_CENTER
 	box.add_child(_menu_teams)
-	# A REAL game is the default (SOLO first + focused) so the natural "tap the highlighted
-	# button" instinct drops you into the actual match, not the calm tutorial. TUTORIAL sits
-	# last -- a deliberate opt-in (tapping it goes straight in; the others open the loadout).
+	# No tutorial -- new players learn by doing (there are only a handful of controls). Every option
+	# is a real match; SOLO is first + default-focused so the natural "tap the highlighted button" drops
+	# you straight into the loadout, then the fight.
 	var first: Button = null
-	for o in [["SOLO", 1], ["2 TEAMS", 2], ["3 TEAMS", 3], ["4 TEAMS", 4], ["TUTORIAL", -1]]:
+	for o in [["SOLO", 1], ["2 TEAMS", 2], ["3 TEAMS", 3], ["4 TEAMS", 4]]:
 		var b: Button = _menu_button(String(o[0]))
 		var cnt: int = int(o[1])
-		if cnt < 0:
-			b.pressed.connect(_start_game.bind(cnt))   # tutorial: the default squad, straight in
-		else:
-			b.pressed.connect(_open_loadout.bind(cnt))
+		b.pressed.connect(_open_loadout.bind(cnt))
 		_menu_teams.add_child(b)
 		if first == null:
 			first = b

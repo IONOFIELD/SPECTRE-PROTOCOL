@@ -139,7 +139,7 @@ func generate(snap_res: Vector2i) -> void:
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 	rng.seed = seed_value
 
-	land_poly = _smooth_coast(_sf_polygon(), 2)   # round the 20-vertex silhouette so the shore reads smooth
+	land_poly = _smooth_coast(_sf_polygon(), 3)   # Chaikin 3x -> a smooth shoreline all the way round (was 2, still a touch faceted)
 	_lay_geography()
 
 	# The ocean: a cold thermal plane under and around the peninsula, extended far past the
@@ -198,6 +198,7 @@ func _lay_city(rng: RandomNumberGenerator) -> void:
 	_lay_park_roads()              # a loop road AROUND each park, so grid streets connect around it (not dead-end in)
 	_lay_bridge_spurs()            # a short road from the grid onto each bridge deck (so a road actually leads to it)
 	_lay_blocks(rng, sxs, szs)     # buildings filling each block, inside the ring + clear of ALL the above roads
+	_lay_diag_buildings(rng)       # a cluster of angled buildings filling the gap by Market St, east of GGP
 
 
 ## Evenly spaced street centres from lo..hi on a BLOCK pitch (half a block of margin at each end).
@@ -232,7 +233,8 @@ func _lay_grid_roads(sxs: Array, szs: Array) -> void:
 		while z < poly_hi.y - 0.5:
 			var e: float = minf(z + step, poly_hi.y)
 			var mid: Vector2 = Vector2(sx, (z + e) * 0.5)
-			if _in_ring(mid) and not _in_park(mid):
+			# in the ring, out of parks, and NOT running alongside the coastal loop (kills the parallel doubling)
+			if _in_ring(mid) and not _in_park(mid) and not _ring_parallel(mid, Vector2(0.0, 1.0), ROAD_W + 6.0):
 				_road_seg(Vector2(sx, z), Vector2(sx, e), half, STREET_DY)
 			z = e
 	for sz in szs:
@@ -240,7 +242,7 @@ func _lay_grid_roads(sxs: Array, szs: Array) -> void:
 		while x < poly_hi.x - 0.5:
 			var e: float = minf(x + step, poly_hi.x)
 			var mid: Vector2 = Vector2((x + e) * 0.5, sz)
-			if _in_ring(mid) and not _in_park(mid):
+			if _in_ring(mid) and not _in_park(mid) and not _ring_parallel(mid, Vector2(1.0, 0.0), ROAD_W + 6.0):
 				_road_seg(Vector2(x, sz), Vector2(e, sz), half, 0.0)
 			x = e
 
@@ -266,6 +268,46 @@ func _lay_market_st() -> void:
 		# clip to LAND (not the ring inset) so the NE tip runs right up to the bridge approach; never in a park
 		if _in_land(mid) and not _in_park(mid):
 			_road_seg(p0, p1, half, STREET_DY + 0.16)   # rides highest -> wins over the grid at every crossing
+
+
+## A short cluster of ANGLED buildings filling the empty band by Market St, just east of GG Park's end
+## -- sheared to follow Market's diagonal (real SF: the blocks along Market are turned to the avenue, not
+## the cardinal grid). The rotated boxes render with snap OFF (the PS1 vertex-snap blows rotated geometry
+## out bright -- same reason the flat terrain opts out); collision is the axis-aligned box of the turn.
+func _lay_diag_buildings(rng: RandomNumberGenerator) -> void:
+	var ma: Vector2 = Vector2(bridges[1].position.x - 20.0, bridges[1].position.y + bridges[1].size.y * 0.5)
+	var md: Vector2 = (Vector2(455.0, 725.0) - ma).normalized()    # Market St heading
+	var perp: Vector2 = Vector2(-md.y, md.x)
+	var yaw: float = atan2(md.x, md.y)                             # align each box's long axis to the avenue
+	var base: Vector2 = Vector2(645.0, 600.0)                      # the gap east of GGP's end, alongside Market
+	for row in [-1.0, 1.0]:
+		for k in range(-2, 3):
+			var c: Vector2 = base + md * (float(k) * 32.0) + perp * (row * 27.0)
+			if not _in_land(c) or _in_park(c) or _near_ring(c, ROAD_W) or _footprint_hits_road(c.x - 14.0, c.y - 14.0, 28.0, 28.0):
+				continue
+			var w: float = rng.randf_range(19.0, 26.0)
+			var d: float = rng.randf_range(24.0, 34.0)
+			var fl: int = 3 + rng.randi() % 4
+			_diag_box(c.x, c.y, 0.0, w, float(fl) * FLOOR_H, d, yaw, "brick" if rng.randf() < 0.4 else "wall")
+			# collision = the AABB of the rotated footprint (units route around the whole turned block)
+			var cw: float = absf(cos(yaw))
+			var sw: float = absf(sin(yaw))
+			var ax: float = w * 0.5 * cw + d * 0.5 * sw
+			var az: float = w * 0.5 * sw + d * 0.5 * cw
+			buildings.append({"x": c.x - ax, "z": c.y - az, "w": ax * 2.0, "d": az * 2.0, "fl": fl, "loot": true})
+
+
+## One rotated box as its own MeshInstance (snap OFF so the vertex-snap won't blow the turned faces out
+## bright). Used only for the handful of diagonal Market-St buildings -- the cardinal city stays merged.
+func _diag_box(cx: float, cz: float, y0: float, sx: float, sy: float, sz: float, yaw: float, mat: String) -> void:
+	var bm: BoxMesh = BoxMesh.new()
+	bm.size = Vector3(sx, sy, sz)
+	var mi: MeshInstance3D = MeshInstance3D.new()
+	mi.mesh = bm
+	mi.transform = Transform3D(Basis(Vector3.UP, yaw), Vector3(cx, y0 + sy * 0.5, cz))
+	mi.material_override = ThermalLib.get_material(mat, _snap_res, 0)
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mi)
 
 
 ## Fill each block (the land between four streets) with buildings ALIGNED to the grid + set back from
@@ -473,6 +515,22 @@ func _near_ring(p: Vector2, d: float) -> bool:
 	for i in n:
 		if _dist_point_seg(p, ring_poly[i], ring_poly[(i + 1) % n]) < d:
 			return true
+	return false
+
+
+## Is p within `d` of the ring AND heading roughly PARALLEL to it? Grid streets that satisfy this run
+## ALONGSIDE the perimeter loop (the parallel-road doubling the user flagged at the coast / bridge
+## mouths / GGP-by-the-beach / curves) -- we drop those. A street CROSSING the ring perpendicular is
+## kept: it feeds the grid into the loop cleanly.
+func _ring_parallel(p: Vector2, dir: Vector2, d: float) -> bool:
+	var n: int = ring_poly.size()
+	if n < 2:
+		return false
+	for i in n:
+		var a: Vector2 = ring_poly[i]
+		var b: Vector2 = ring_poly[(i + 1) % n]
+		if _dist_point_seg(p, a, b) < d and absf(dir.dot((b - a).normalized())) > 0.7:
+			return true          # within ~45deg of the ring's heading here -> it's running alongside
 	return false
 
 
