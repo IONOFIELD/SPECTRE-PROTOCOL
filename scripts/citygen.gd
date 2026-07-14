@@ -603,19 +603,14 @@ func _lay_bridge_spurs() -> void:
 	for deck in bridges:
 		# the deck's LONG axis tells us which end sits on the peninsula + which way to run the spur inland
 		var horizontal: bool = deck.size.x >= deck.size.y
-		var endp: Vector2
-		var inland: Vector2
-		if horizontal:                                   # Bay: runs E-W, peninsula end at min-x (west)
-			endp = Vector2(deck.position.x, deck.position.y + deck.size.y * 0.5)
-			inland = endp + Vector2(-80.0, 0.0)
-		else:                                            # GG: runs N-S, peninsula end at max-z (south)
-			endp = Vector2(deck.position.x + deck.size.x * 0.5, deck.position.y + deck.size.y)
-			inland = endp + Vector2(0.0, 80.0)
-			# the GG lands ON the Presidio now -- carry the approach ACROSS the park to the grid on the far
-			# side (like the real Doyle Dr / US-101) so it connects, instead of dead-ending in the green.
-			while _in_park(inland) and inland.y < endp.y + 300.0:
-				inland += Vector2(0.0, 16.0)
-			inland += Vector2(0.0, 24.0)                 # a touch into the grid so it junctions the first street
+		if not horizontal:
+			# The GG lands ON the Presidio PARKLAND. It gets NO spur: a road driven across the green read
+			# as "the bridge extending over the park" (the user's repeated flag). The deck is walkable, so
+			# units simply cross it onto the park; the network connects around the park via the park loop.
+			continue
+		# Bay: runs E-W, peninsula end at min-x (west) -- a short spur into the CITY grid (not a park)
+		var endp: Vector2 = Vector2(deck.position.x, deck.position.y + deck.size.y * 0.5)
+		var inland: Vector2 = endp + Vector2(-80.0, 0.0)
 		road_lines.append([inland, endp])
 		_no_build_lines.append([inland, endp])
 		var steps: int = maxi(1, int(ceil(inland.distance_to(endp) / 16.0)))

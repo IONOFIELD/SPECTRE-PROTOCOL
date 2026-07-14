@@ -172,7 +172,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] truce (after evac)   [V
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 151
+const BUILD_PUSHES: int = 152
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -421,7 +421,7 @@ func _ready() -> void:
 		ThermalLib.maps_on = false
 	if OS.get_environment("SPECTRE_NOSNAP") != "":
 		ThermalLib.snap_default = false
-	if (_shot_dir != "" or _map_dir != "") and OS.get_environment("SPECTRE_MENU") == "":
+	if (_shot_dir != "" or _map_dir != "" or OS.get_environment("SPECTRE_BRIDGE") != "") and OS.get_environment("SPECTRE_MENU") == "":
 		_menu_sim = false          # captures/dev hooks show the real game, not the menu sweep
 		_menu_active = false       # straight into gameplay -- set BEFORE _spawn so the disembark stages
 		_intro_t = 0.0             # capture runs still play the intro (deploy hold -> wide pull)
@@ -2138,6 +2138,8 @@ func _process(delta: float) -> void:
 
 	if _map_dir != "":
 		_map_overview()
+	if OS.get_environment("SPECTRE_BRIDGE") != "":
+		_bridge_oblique()
 
 
 ## SPECTRE_MAP=<dir>: override the optic to a near-top-down frame of the WHOLE map
@@ -2171,6 +2173,28 @@ func _map_overview() -> void:
 	cam.look_at(Vector3(cx, 0.0, cz), Vector3.UP)
 	if int(frame_n) == 150:
 		_grab_map(_map_dir + "/sf_map_overview.png")
+
+
+## SPECTRE_BRIDGE=<dir>: an OBLIQUE 3D view of the Golden Gate landfall on the Presidio, to check the
+## deck/superstructure against the park at a real gameplay angle (top-down hides the overhang). Dev hook.
+func _bridge_oblique() -> void:
+	if city == null:
+		return
+	mode = 0
+	cctv = 0.0
+	sensor_mat.set_shader_parameter("bloom", 0.0)
+	sensor_mat.set_shader_parameter("noise_amt", 0.0)
+	sensor_mat.set_shader_parameter("fpn_amt", 0.0)
+	sensor_mat.set_shader_parameter("vignette", 0.0)
+	sensor_mat.set_shader_parameter("dither", false)
+	var target: Vector3 = Vector3(300.0, 5.0, 250.0)          # the Presidio centre
+	cam.near = 5.0
+	cam.far = 3000.0
+	cam.fov = 52.0
+	cam.position = target + Vector3(300.0, 260.0, 210.0)      # SE + moderate elevation, off the bridge axis, looking NW
+	cam.look_at(target, Vector3.UP)
+	if int(frame_n) == 150:
+		_grab_map(OS.get_environment("SPECTRE_BRIDGE") + "/gg_oblique.png")
 
 
 func _grab_map(path: String) -> void:
