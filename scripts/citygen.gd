@@ -617,6 +617,11 @@ func _lay_bridge_spurs() -> void:
 		else:                                            # GG: runs N-S, peninsula end at max-z (south)
 			endp = Vector2(deck.position.x + deck.size.x * 0.5, deck.position.y + deck.size.y)
 			inland = endp + Vector2(0.0, 80.0)
+			# the GG lands ON the Presidio now -- carry the approach ACROSS the park to the grid on the far
+			# side (like the real Doyle Dr / US-101) so it connects, instead of dead-ending in the green.
+			while _in_park(inland) and inland.y < endp.y + 300.0:
+				inland += Vector2(0.0, 16.0)
+			inland += Vector2(0.0, 24.0)                 # a touch into the grid so it junctions the first street
 		road_lines.append([inland, endp])
 		_no_build_lines.append([inland, endp])
 		var steps: int = maxi(1, int(ceil(inland.distance_to(endp) / 16.0)))
@@ -932,7 +937,7 @@ func _lay_geography() -> void:
 	# shape; the other, larger parks are unchanged.
 	parks = [
 		Rect2(155, 552, 430, 105),   # Golden Gate Park -- the long E-W green, west-centre (RECTANGLE, standalone)
-		Rect2(220, 205, 175, 135),   # the Presidio -- NW, by the GG Bridge (pulled inside the coast so its NW corner no longer laps into the water by the bridge)
+		Rect2(220, 165, 175, 175),   # the Presidio -- NW, reaches the COAST (z165) so the GG Bridge lands on its north edge at the shore (was z205, leaving a coastal-land strip the bridge hung over). The park fill clips to land_poly, so the NW corner poking past the coast never renders in the water.
 		Rect2(180, 297, 76, 76),     # Lincoln Park / Lands End -- NW coast
 		Rect2(642, 715, 45, 45),     # Dolores Park -- the Mission
 		Rect2(727, 892, 100, 100),   # McLaren Park -- SE
@@ -943,7 +948,7 @@ func _lay_geography() -> void:
 	# Oakland (never reached). The walkable decks (nav / gauntlet / escape) are the axis-aligned Rect2s
 	# below; the dogleg past Treasure Island is a VISUAL deck only. WIN zones sit on the reachable decks.
 	bridges = [
-		Rect2(251, -450, 34, 655),   # Golden Gate: Marin (~z-405) -> lands on the PRESIDIO's north edge (z=205), the way the Bay Bridge plugs into the city edge (was z=180, stopping amid the coastal blocks). Narrow -- the GLB rides here.
+		Rect2(251, -450, 34, 615),   # Golden Gate: Marin (~z-405) -> ends at the SHORELINE (z=165) = the Presidio's north edge, so the deck no longer hangs over the coastal-land roads (was z=205, 40 m out over the strip). Narrow -- the GLB rides here.
 		Rect2(950, 456, 340, 30),    # Bay Bridge, east: SF coast (~x940) -> Treasure Island (~x1290). Narrow -- the GLB rides here.
 	]
 	escapes = [
