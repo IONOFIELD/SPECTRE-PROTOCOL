@@ -253,27 +253,53 @@ func _grid_road_lines(sxs: Array, szs: Array) -> void:
 
 ## Lay the grid streets, clipped to land + out of parks. N-S streets ride STREET_DY ABOVE the E-W
 ## ones, so where they cross the raised street simply draws on top -- a clean intersection with NO
-## coplanar overlap (that overlap was the "glitchy shimmer"). Both run continuously; no gaps needed.
+## coplanar overlap (that overlap was the "glitchy shimmer").
+##
+## Each street is laid as CONTINUOUS spans (not the old 16 m chunks, which fragmented streets into
+## stubs and left them ending short of the coast -- the dead-ends the user flagged). Every span is
+## EXTENDED a touch at each end so it punches into whatever bounds it (the perimeter loop, a park loop),
+## making a real T-junction instead of a gap. A span is dropped only if it hugs the coast PARALLEL for
+## almost its whole length (pure loop-doubling) -- an all-or-nothing rule, so no partial stubs remain.
 func _lay_grid_roads(sxs: Array, szs: Array) -> void:
 	var half: float = ROAD_W * 0.5
-	var step: float = 16.0
 	for sx in sxs:
-		var z: float = poly_lo.y
-		while z < poly_hi.y - 0.5:
-			var e: float = minf(z + step, poly_hi.y)
-			var mid: Vector2 = Vector2(sx, (z + e) * 0.5)
-			# in the ring, out of parks, and NOT running alongside the coastal loop (kills the parallel doubling)
-			if _in_ring(mid) and not _in_park(mid) and not _ring_parallel(mid, Vector2(0.0, 1.0), ROAD_W + 6.0):
-				_road_seg(Vector2(sx, z), Vector2(sx, e), half, STREET_DY)
-			z = e
+		_lay_street_axis(Vector2(sx, 0.0), Vector2(0.0, 1.0), poly_lo.y, poly_hi.y, half, STREET_DY)
 	for sz in szs:
-		var x: float = poly_lo.x
-		while x < poly_hi.x - 0.5:
-			var e: float = minf(x + step, poly_hi.x)
-			var mid: Vector2 = Vector2((x + e) * 0.5, sz)
-			if _in_ring(mid) and not _in_park(mid) and not _ring_parallel(mid, Vector2(1.0, 0.0), ROAD_W + 6.0):
-				_road_seg(Vector2(x, sz), Vector2(e, sz), half, 0.0)
-			x = e
+		_lay_street_axis(Vector2(0.0, sz), Vector2(1.0, 0.0), poly_lo.x, poly_hi.x, half, 0.0)
+
+
+## One street: walk t0..t1 along `dir` (cross-coordinate fixed by `base`), collect contiguous spans that
+## are in the ring and out of parks, and lay each kept span as a SINGLE ribbon extended `over` past both
+## ends so it laps into the bounding road (loop / park loop) -> a real junction, never a dangling stub.
+func _lay_street_axis(base: Vector2, dir: Vector2, t0: float, t1: float, half: float, dy: float) -> void:
+	var step: float = 5.0
+	var over: float = ROAD_W * 0.5 + WALK_W + 3.0     # end overlap -- reaches across the road it joins
+	var in_span: bool = false
+	var span_a: float = t0
+	var par_hits: int = 0
+	var span_n: int = 0
+	var t: float = t0
+	while t <= t1 + 0.001:
+		var p: Vector2 = base + dir * t
+		var ok: bool = _in_ring(p) and not _in_park(p)
+		if ok and not in_span:
+			in_span = true
+			span_a = t
+			par_hits = 0
+			span_n = 0
+		if ok:
+			span_n += 1
+			if _ring_parallel(p, dir, ROAD_W + 6.0):     # this sample hugs the coastal loop, parallel
+				par_hits += 1
+		if in_span and (not ok or t >= t1):
+			var span_b: float = t1 if (ok and t >= t1) else t - step
+			# keep unless the span is almost entirely coast-hugging (pure doubling of the perimeter loop)
+			if span_n >= 2 and float(par_hits) / float(span_n) < 0.82:
+				var a: Vector2 = base + dir * maxf(t0, span_a - over)
+				var b: Vector2 = base + dir * minf(t1, span_b + over)
+				_road_seg(a, b, half, dy)
+			in_span = false
+		t += step
 
 
 ## Round every grid crossing into a smooth junction: fill the four re-entrant corners (the notches
@@ -290,7 +316,9 @@ func _round_grid_junctions(sxs: Array, szs: Array) -> void:
 	for sx in sxs:
 		for sz in szs:
 			var p: Vector2 = Vector2(sx, sz)
-			if _in_ring(p) and not _in_park(p):
+			# interior crossings only -- past the coast-hug zone where a parallel street span may be
+			# dropped (filleting a lone road there would leave little perpendicular stubs, not a junction)
+			if _in_ring(p) and not _in_park(p) and not _near_ring(p, ROAD_W + 8.0):
 				_road_round(p, rh, r, y)
 
 
