@@ -191,7 +191,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] truce (after evac)   [V
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 138
+const BUILD_PUSHES: int = 139
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -1675,6 +1675,8 @@ func _drain_audio() -> void:
 				_spawn_flash3d(e["pos"], 6.0, 0.40, 2.0)
 			"turn":
 				_turn_view(int(e.get("idx", -1)), at)   # a civilian just rose as a zombie -- swap its shape
+			"arm":
+				_arm_view(int(e.get("idx", -1)), at)     # a civilian grabbed a weapon -- swap to the survivor shape
 			"man_down":
 				pass   # (no callout -- the squad's together, no backup to call)
 
@@ -1693,6 +1695,22 @@ func _turn_view(i: int, at: Vector3) -> void:
 	views[i] = v
 	_anim[i] = Animator.new(v, _rng) if v != null else null
 	_sfx_at(at, _sfx_claw, -1.0)   # a wet, close turn
+
+
+## A civilian just ARMED UP (the sim made it a SURVIVOR). Swap its warm civilian shape for the survivor
+## combatant one -- it now reads as an armed red-dot fighter turning on the horde.
+func _arm_view(i: int, at: Vector3) -> void:
+	if i < 0 or i >= views.size():
+		return
+	if views[i] != null:
+		views[i].queue_free()
+	var v: Node3D = _make_unit_view(WorldSim.SURVIVOR, &"svr", _rng)
+	if v != null:
+		v.position = Vector3(sim.pos[i].x, 0.0, sim.pos[i].y)
+		vp.add_child(v)
+	views[i] = v
+	_anim[i] = Animator.new(v, _rng) if v != null else null
+	_sfx_at(at, _sfx_gun, -4.0)    # a rack + first shot as they grab a weapon
 
 
 ## Ambient war: every few seconds, a distant blast or a burst of gunfire somewhere on
@@ -3622,8 +3640,8 @@ func _swarm_upkeep(delta: float) -> void:
 			for _z in n:
 				if total >= _swarm_cap:
 					break
-				var hw: float = bd["w"] * 0.5 + 3.0
-				var hd: float = bd["d"] * 0.5 + 3.0
+				var hw: float = bd["w"] * 0.42   # spawn INSIDE the footprint; the collision slide shoves them OUT the nearest wall -> emerge + roam, no reentry
+				var hd: float = bd["d"] * 0.42
 				var p: Vector2 = c + Vector2(_rng.randf_range(-hw, hw), _rng.randf_range(-hd, hd))
 				_spawn_infected_at(p, &"run" if _rng.randf() < 0.3 else &"zed")
 				total += 1

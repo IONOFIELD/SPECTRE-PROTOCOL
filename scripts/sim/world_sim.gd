@@ -877,6 +877,7 @@ func _reap() -> void:
 				selected[k] = false
 				vel[k] = Vector2.ZERO
 				events.append({"kind": "turn", "idx": k, "pos": pos[k], "team": INFECTED, "unit": &"zed"})
+				_arm_witnesses(k)          # the friends who saw it happen grab weapons and turn on the turned
 				continue
 			alive[k] = false
 			vel[k] = Vector2.ZERO
@@ -885,6 +886,30 @@ func _reap() -> void:
 			foe[k] = -1
 			var kd: String = "man_down" if team[k] == SQUAD else ("zed_death" if team[k] == INFECTED else "kill")
 			events.append({"kind": kd, "pos": pos[k], "team": team[k], "unit": kind[k]})
+
+
+## When a civilian TURNS, a couple of the nearest still-human civilians who saw it happen GRAB WEAPONS
+## and become armed SURVIVORS -- red-dot combatants who now hunt the infected (their turned friend
+## included). The emergent "the group turns on its own" moment; deterministic (no rng) so the sim stays
+## replayable. Survivors killed by the horde just die -- they don't re-turn -- so it can't cascade forever.
+func _arm_witnesses(turned: int) -> void:
+	var armed: int = 0
+	for j in count():
+		if armed >= 2:
+			break
+		if not alive[j] or team[j] != CIVILIAN:
+			continue
+		if pos[turned].distance_squared_to(pos[j]) > 15.0 * 15.0:
+			continue
+		team[j] = SURVIVOR
+		kind[j] = &"svr"
+		hp[j] = STATS[&"svr"][1]
+		foe[j] = -1
+		has_order[j] = false
+		selected[j] = false
+		vel[j] = Vector2.ZERO
+		events.append({"kind": "arm", "idx": j, "pos": pos[j], "team": SURVIVOR, "unit": &"svr"})
+		armed += 1
 
 
 ## An AC-130 fire mission on a point: everything within `radius` takes `dmg` at
