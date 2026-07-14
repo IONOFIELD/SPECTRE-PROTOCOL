@@ -625,7 +625,7 @@ func _lay_alcatraz() -> void:
 		ctr + Vector2(39.0, 2.0), ctr + Vector2(27.0, 24.0), ctr + Vector2(-6.0, 29.0), ctr + Vector2(-36.0, 13.0),
 	])
 	_fill_polygon(isle, "ground", -0.05)
-	_add_box(Vector3(ctr.x, 0.0, ctr.y), Vector3(36.0, 9.0, 13.0), "wall")   # the cellhouse -- one long block
+	_add_box(Vector3(ctr.x, 0.0, ctr.y), Vector3(28.0, 9.0, 10.0), "wall")   # the cellhouse -- one long block, kept well inside the rock so it never laps the water
 
 
 ## A copy of `poly` rotated by `ang` (about its own centroid) and re-centred on `ctr` -- used to

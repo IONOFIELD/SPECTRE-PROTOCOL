@@ -362,6 +362,34 @@ func _on_bridge(p: Vector2) -> bool:
 	return false
 
 
+## Local steering: swing a hunter's heading around whatever is DIRECTLY AHEAD -- a building, the
+## water's edge, the coast (all via _solid, which is bgrid-accelerated so this is cheap). Probes a
+## short forward arc and returns the first clear bearing, so the pack routes AROUND blocks and flows
+## along the shore toward a bridge instead of grinding straight into the wall (the "wall-hug" fix).
+func _avoid(i: int, dir: Vector2) -> Vector2:
+	if dir.length_squared() < 1e-6:
+		return dir
+	var here: Vector2 = pos[i]
+	var probe: float = RADIUS + 10.0
+	if not _solid(here + dir * probe):
+		return dir
+	for ang in [0.5, -0.5, 1.0, -1.0, 1.5, -1.5, 2.1, -2.1]:
+		var cand: Vector2 = dir.rotated(ang)
+		if not _solid(here + cand * probe):
+			return cand
+	return dir   # boxed in -- push straight, the per-axis slide in step() handles the rest
+
+
+## The mouth of the bridge deck that `target` sits on -- the point on that deck nearest `from`. A hunter
+## whose prey has fled onto a bridge aims HERE first, so it makes for the deck entrance and then chases
+## across, instead of beelining into the water beside the span.
+func _bridge_mouth(from: Vector2, target: Vector2) -> Vector2:
+	for b in bridges:
+		if b.has_point(target):
+			return Vector2(clampf(from.x, b.position.x, b.end.x), clampf(from.y, b.position.y, b.end.y))
+	return target
+
+
 func step(dt: float) -> void:
 	grid.rebuild(pos, alive)
 	events.clear()
@@ -617,7 +645,7 @@ func _combat(i: int, sp: float) -> Vector2:
 			if cd[i] <= 0.0:
 				_strike(i, f)
 			return Vector2.ZERO
-		return (pos[f] - pos[i]) / maxf(d, 1e-5) * sp
+		return _avoid(i, (pos[f] - pos[i]) / maxf(d, 1e-5)) * sp   # zeds route around blocks too
 	# shooters: squad, bandits, survivors. Fire in range, clear line.
 	# Only the squad's trigger is disciplined (weapons_free); the rest fire at will.
 	if d <= reach and _los(pos[i], pos[f]):
@@ -625,7 +653,7 @@ func _combat(i: int, sp: float) -> Vector2:
 			_strike(i, f)
 		return Vector2.ZERO          # in range: stand and shoot
 	if _unit_hunts(i):
-		return (pos[f] - pos[i]) / maxf(d, 1e-5) * sp   # rivals, bandits close in
+		return _avoid(i, (pos[f] - pos[i]) / maxf(d, 1e-5)) * sp   # rivals, bandits close in
 	return Vector2.ZERO              # your squad + survivors hold (player-ordered; survivor digs in)
 
 
@@ -649,14 +677,17 @@ func _san_combat(i: int, sp: float) -> Vector2:
 	# ROAM as one tight pack: steer to the shared hunt target + cohesion toward the centre
 	var dir: Vector2 = Vector2.ZERO
 	if _san_foe != -1 and alive[_san_foe]:
-		dir += (pos[_san_foe] - pos[i]).normalized()
+		var goal: Vector2 = pos[_san_foe]
+		if _on_bridge(goal) and not _on_bridge(pos[i]):
+			goal = _bridge_mouth(pos[i], goal)   # prey fled onto a deck -> make for the mouth, then chase across
+		dir += (goal - pos[i]).normalized()
 	var coh: Vector2 = _san_c - pos[i]
 	var cl: float = coh.length()
 	if cl > SAN_PACK_R:
 		dir += coh / cl * SAN_COHESION          # reel a straggler back into formation
 	if dir.length() < 1e-4:
 		return Vector2.ZERO
-	return dir.normalized() * sp
+	return _avoid(i, dir.normalized()) * sp       # route around blocks instead of grinding the wall
 
 
 ## The Sanitation pack's shared brain: its centroid (cohesion anchor) + one shared hunt
