@@ -191,7 +191,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] truce (after evac)   [V
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 137
+const BUILD_PUSHES: int = 138
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -391,7 +391,7 @@ const FLASH_LIFE: float = 0.12         # seconds a muzzle flash stays lit
 const FLASH_MAX: int = 80              # cap, so a big firefight can't flood the overlay
 # 3D thermal blasts: hot emissive blobs in the feed that bloom + fade -- reused
 # for the AC-130 strike, EOD grenades, the sanitation flamethrower + flash-nades.
-const FLASH3D_POOL: int = 150              # flamethrower jets + AC-130 fireball SWARMS (20+/blast) + trails
+const FLASH3D_POOL: int = 240              # flamethrower jets + AC-130 fireball SWARMS (20+/blast) + denser wreck columns
 var _flash3d: Array[MeshInstance3D] = []   # free pool
 var _flash3d_busy: Array = []              # active: [{node, t, life, peak}]
 const FLAME_LEN: float = 11.0              # visible reach of the fire jet, m
@@ -3052,14 +3052,14 @@ func _age_flashes(delta: float) -> void:
 
 
 func _build_flash_pool() -> void:
-	var mat: ShaderMaterial = ThermalLib.get_material("fire", snap_res)
+	# VOXEL EMBERS, not smooth spheres: each flame particle is a small BOX, tumbled to a random angle on
+	# spawn, so a fire reads as a swarm of flickering cubes (the voxel-fire look) rather than the smooth
+	# "ice cream scoop" a sphere gives. Snap OFF so the tumbled boxes don't trip the vertex-snap bright bug.
+	var mat: ShaderMaterial = ThermalLib.get_material("fire", snap_res, 0)
 	for _i in FLASH3D_POOL:
 		var mi: MeshInstance3D = MeshInstance3D.new()
-		var s: SphereMesh = SphereMesh.new()
-		s.radius = 1.0
-		s.height = 2.0
-		s.radial_segments = 12
-		s.rings = 6
+		var s: BoxMesh = BoxMesh.new()
+		s.size = Vector3(1.0, 1.35, 1.0)
 		mi.mesh = s
 		mi.material_override = mat
 		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
@@ -3075,12 +3075,14 @@ func _spawn_flash3d(pos: Vector2, peak: float, life: float, h: float = 2.0, vel:
 		return
 	var mi: MeshInstance3D = _flash3d.pop_back()
 	mi.position = Vector3(pos.x, h, pos.y)
+	mi.rotation = Vector3(_rng.randf() * TAU, _rng.randf() * TAU, _rng.randf() * TAU)   # tumbled ember
 	mi.scale = Vector3.ONE * 0.02
 	mi.visible = true
-	# ph/wamp drive a per-particle lateral CHURN in _age_flash3d so each hot blob writhes as it
-	# rises, instead of ballooning as a smooth sphere (the "ice cream scoop" look).
+	# ph/wamp drive a per-particle lateral CHURN in _age_flash3d so each hot ember writhes + tumbles as
+	# it rises, instead of ballooning as a smooth sphere (the "ice cream scoop" look).
 	_flash3d_busy.append({"node": mi, "t": 0.0, "life": life, "peak": peak, "vel": vel,
-		"ph": _rng.randf() * TAU, "wamp": clampf(peak, 0.0, 4.0) * 1.3})
+		"ph": _rng.randf() * TAU, "wamp": clampf(peak, 0.0, 4.0) * 1.4,
+		"spin": Vector3(_rng.randf_range(-3.0, 3.0), _rng.randf_range(-3.0, 3.0), _rng.randf_range(-3.0, 3.0))})
 
 
 ## A churning fireball: a SWARM of n small hot particles bursting outward + boiling upward with
@@ -3102,11 +3104,11 @@ func _spawn_fireball(pos: Vector2, radius: float, life: float, n: int, h: float 
 ## A short writhing flame COLUMN off a burning wreck -- a few small hot particles rising + churning,
 ## re-emitted every ~0.13 s while it burns (see _advance_panic) so the fire lives instead of sitting static.
 func _spawn_flame_column(pos: Vector2) -> void:
-	for _k in 3:
-		var off: Vector2 = Vector2(_rng.randf_range(-1.3, 1.3), _rng.randf_range(-1.3, 1.3))
-		var sz: float = _rng.randf_range(1.1, 2.3)
-		var v3: Vector3 = Vector3(_rng.randf_range(-1.2, 1.2), _rng.randf_range(4.5, 7.5), _rng.randf_range(-1.2, 1.2))
-		_spawn_flash3d(pos + off, sz, _rng.randf_range(0.4, 0.7), 1.4 + _rng.randf_range(0.0, 1.6), v3)
+	for _k in 6:
+		var off: Vector2 = Vector2(_rng.randf_range(-1.4, 1.4), _rng.randf_range(-1.4, 1.4))
+		var sz: float = _rng.randf_range(0.7, 1.7)                  # more, smaller embers -> a dense flickering column
+		var v3: Vector3 = Vector3(_rng.randf_range(-1.4, 1.4), _rng.randf_range(4.5, 8.5), _rng.randf_range(-1.4, 1.4))
+		_spawn_flash3d(pos + off, sz, _rng.randf_range(0.35, 0.65), 1.2 + _rng.randf_range(0.0, 1.8), v3)
 
 
 ## Sanitation flamethrower: a streaming jet of hot particles. A single burst sprays a
@@ -3148,14 +3150,16 @@ func _age_flash3d(delta: float) -> void:
 			_flash3d.append(f["node"])
 			_flash3d_busy.remove_at(i)
 		else:
-			# flicker the scale a touch (not a clean sin bell) so the blob shimmers like live fire
+			# HARD voxel-fire flicker: two fast beat frequencies so each ember pulses hot/cool + jitters in
+			# size rather than swelling as one smooth bell -> a live crackling swarm, not a scoop.
 			var bell: float = sin(k * PI)
-			var flick: float = 1.0 + 0.14 * sin(f["t"] * 34.0 + float(f["ph"]))
+			var flick: float = 0.72 + 0.34 * sin(f["t"] * 41.0 + float(f["ph"])) + 0.16 * sin(f["t"] * 97.0 + float(f["ph"]) * 2.3)
 			f["node"].scale = Vector3.ONE * maxf(0.02, float(f["peak"]) * bell * flick)
-			# stream/rise + a lateral CHURN that grows as it climbs -> the flame writhes and rolls
+			# stream/rise + a lateral CHURN that grows as it climbs, and the ember TUMBLES -> writhes + rolls
 			var wob: float = f["t"] * 9.0 + float(f["ph"])
 			var churn: Vector3 = Vector3(sin(wob), 0.3, cos(wob * 1.3)) * float(f["wamp"])
 			f["node"].position += ((f["vel"] as Vector3) + churn) * delta
+			f["node"].rotation += (f["spin"] as Vector3) * delta
 		i -= 1
 
 

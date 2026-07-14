@@ -286,16 +286,24 @@ func _lay_diag_buildings(rng: RandomNumberGenerator) -> void:
 			var c: Vector2 = base + md * (float(k) * 28.0) + perp * (row * 25.0)
 			if not _in_land(c) or _in_park(c) or _near_ring(c, ROAD_W) or _footprint_hits_road(c.x - 12.0, c.y - 12.0, 24.0, 24.0):
 				continue
-			var w: float = rng.randf_range(17.0, 23.0)
-			var d: float = rng.randf_range(21.0, 29.0)
 			var fl: int = 3 + rng.randi() % 4
-			_diag_box(c.x, c.y, 0.0, w, float(fl) * FLOOR_H, d, yaw, "brick" if rng.randf() < 0.4 else "wall")
-			# collision = the AABB of the rotated footprint (units route around the whole turned block)
-			var cw: float = absf(cos(yaw))
-			var sw: float = absf(sin(yaw))
-			var ax: float = w * 0.5 * cw + d * 0.5 * sw
-			var az: float = w * 0.5 * sw + d * 0.5 * cw
-			buildings.append({"x": c.x - ax, "z": c.y - az, "w": ax * 2.0, "d": az * 2.0, "fl": fl, "loot": true})
+			var mat: String = "brick" if rng.randf() < 0.4 else "wall"
+			if rng.randf() < 0.4:
+				# a TRIANGULAR parcel -- a 3-sided prism, turned to a random angle, to fill the wedge gaps
+				# the diagonal avenue leaves against the cardinal grid (real SF has these flatiron blocks).
+				var r: float = rng.randf_range(11.0, 16.0)
+				_diag_tri(c.x, c.y, r, float(fl) * FLOOR_H, yaw + rng.randf_range(-0.5, 0.5), mat)
+				buildings.append({"x": c.x - r, "z": c.y - r, "w": r * 2.0, "d": r * 2.0, "fl": fl, "loot": true})
+			else:
+				var w: float = rng.randf_range(17.0, 23.0)
+				var d: float = rng.randf_range(21.0, 29.0)
+				_diag_box(c.x, c.y, 0.0, w, float(fl) * FLOOR_H, d, yaw, mat)
+				# collision = the AABB of the rotated footprint (units route around the whole turned block)
+				var cw: float = absf(cos(yaw))
+				var sw: float = absf(sin(yaw))
+				var ax: float = w * 0.5 * cw + d * 0.5 * sw
+				var az: float = w * 0.5 * sw + d * 0.5 * cw
+				buildings.append({"x": c.x - ax, "z": c.y - az, "w": ax * 2.0, "d": az * 2.0, "fl": fl, "loot": true})
 
 
 ## One rotated box as its own MeshInstance (snap OFF so the vertex-snap won't blow the turned faces out
@@ -306,6 +314,22 @@ func _diag_box(cx: float, cz: float, y0: float, sx: float, sy: float, sz: float,
 	var mi: MeshInstance3D = MeshInstance3D.new()
 	mi.mesh = bm
 	mi.transform = Transform3D(Basis(Vector3.UP, yaw), Vector3(cx, y0 + sy * 0.5, cz))
+	mi.material_override = ThermalLib.get_material(mat, _snap_res, 0)
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mi)
+
+
+## A TRIANGULAR building -- a 3-sided prism (a CylinderMesh with 3 radial segments) turned by `yaw`.
+## Snap OFF (rotated geometry) so it never trips the vertex-snap bright bug. The flatiron/wedge filler.
+func _diag_tri(cx: float, cz: float, r: float, h: float, yaw: float, mat: String) -> void:
+	var cm: CylinderMesh = CylinderMesh.new()
+	cm.top_radius = r
+	cm.bottom_radius = r
+	cm.height = h
+	cm.radial_segments = 3
+	var mi: MeshInstance3D = MeshInstance3D.new()
+	mi.mesh = cm
+	mi.transform = Transform3D(Basis(Vector3.UP, yaw), Vector3(cx, h * 0.5, cz))
 	mi.material_override = ThermalLib.get_material(mat, _snap_res, 0)
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(mi)
