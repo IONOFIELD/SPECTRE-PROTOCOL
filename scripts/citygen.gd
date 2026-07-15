@@ -939,7 +939,7 @@ func _lay_geography() -> void:
 	# Oakland (never reached). The walkable decks (nav / gauntlet / escape) are the axis-aligned Rect2s
 	# below; the dogleg past Treasure Island is a VISUAL deck only. WIN zones sit on the reachable decks.
 	bridges = [
-		Rect2(345, -608, 34, 763),   # Golden Gate: Marin (z-608) -> the SHORELINE (z=155). Length set so the peninsula end LANDS ON THE COAST (land starts ~z145 here) -- a deck ending over open water can't be walked onto, which also breaks the win-zone escape. x/Marin end are the user's placement; only the length was corrected to reach land.
+		Rect2(345, -608, 34, 600),   # Golden Gate -- USER-PLACED, do not restretch. Marin (z-608) -> deck end at z=-8, held OFFSHORE on purpose so it does NOT run across the coastal streets/park. Never extend the length to "reach land" -- that jams the south end back through the shoreline blocks.
 		Rect2(950, 460, 340, 30),    # Bay Bridge, east: SF coast (~x940) -> Treasure Island (~x1290). Narrow -- the GLB rides here.
 	]
 	escapes = [
