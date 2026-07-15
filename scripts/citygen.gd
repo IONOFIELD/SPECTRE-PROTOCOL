@@ -1070,8 +1070,12 @@ func _lay_gg_bridge() -> void:
 		Vector3(deck.size.x, sh, model.z * s), 0.0)     # width = the FULL deck (covers the tile); length = deck
 	if node == null:
 		return
-	node.position.x = deck.position.x + deck.size.x * 0.5   # centre on the deck
-	node.position.z = deck.position.y + deck.size.y * 0.5
+	# Centre the model's FOOTPRINT on the deck, not its origin: the GLB's geometry sits off its local
+	# origin, and spawn_fit only grounds Y, so a plain position=deck-centre left the superstructure drifting
+	# off the walkable tile. Subtracting footprint_offset lands the model's actual centre on the deck tile.
+	var foff: Vector2 = ThermalModel.footprint_offset(node)
+	node.position.x = deck.position.x + deck.size.x * 0.5 - foff.x
+	node.position.z = deck.position.y + deck.size.y * 0.5 - foff.y
 	node.position.y += ROAD_Y - sh * GG_SINK           # roadway lands at ROAD level (just above the deck tile, no z-fight)
 	add_child(node)
 	# Keep buildings off the over-land APPROACH (coast -> Presidio edge), so nothing clips the deck or

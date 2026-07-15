@@ -125,6 +125,23 @@ static func _align_bottom_to_y0(root: Node3D) -> void:
 	root.position.y -= aabb.position.y * root.scale.y
 
 
+## The X/Z offset of the model's geometry CENTRE from the node's own origin, in PARENT space (scaled by
+## the node's scale, then turned by its yaw). spawn_fit grounds Y but leaves X/Z uncentred, so a GLB whose
+## geometry sits off its local origin renders shifted from node.position -- e.g. the GG deck model drifting
+## off its walkable tile. Callers that must land the model's FOOTPRINT (not its origin) on a target should
+## subtract this from the target: `node.position.x = target.x - footprint_offset(node).x`.
+static func footprint_offset(root: Node3D) -> Vector2:
+	var aabb: AABB = _combined_aabb(root)
+	if aabb.size == Vector3.ZERO:
+		return Vector2.ZERO
+	var local: Vector3 = Vector3(
+		(aabb.position.x + aabb.size.x * 0.5) * root.scale.x,
+		0.0,
+		(aabb.position.z + aabb.size.z * 0.5) * root.scale.z)
+	var world: Vector3 = local.rotated(Vector3.UP, root.rotation.y)
+	return Vector2(world.x, world.z)
+
+
 static func _combined_aabb(root: Node3D) -> AABB:
 	var has: bool = false
 	var out: AABB = AABB()
