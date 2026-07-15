@@ -18,15 +18,15 @@ const PERIM_INSET: float = 30.0 # the coastal RING road runs this far inside the
 const STREET_DY: float = 0.24   # N-S streets ride this much above E-W so crossings never z-fight
 const ROAD_W: float = 15.0      # street WIDTH -- a narrow 2-lane street, to the scale of the cars/buildings
 const ROAD_Y: float = 0.70      # roads sit clearly above the ground base. MOBILE's depth buffer resolves
-                                # much less than desktop's at the max-zoom altitude (~0.5 m floor if it's a
-                                # 16-bit buffer), so this is raised past 0.5 to clear it -- still ~sub-pixel
-                                # at gameplay zooms. Paired with a tightened camera near/far.
+								# much less than desktop's at the max-zoom altitude (~0.5 m floor if it's a
+								# 16-bit buffer), so this is raised past 0.5 to clear it -- still ~sub-pixel
+								# at gameplay zooms. Paired with a tightened camera near/far.
 const WALK_W: float = 2.3       # sidewalk width each side of the asphalt
 const WALK_Y: float = 0.84      # sidewalks sit a touch higher than the road -> reads as a raised kerb
 const BEACH_W: float = 24.0     # how far the sand reaches inland from the coastline
 const BEACH_SEA: float = 10.0   # ...and how far it laps out over the water
 const BRIDGE_Y: float = 0.06    # bridge decks sit a hair above the ground fill -> the deck WINS at the landfall
-                                # (at y=0 it z-fought the ground where it laps the coast -- the GG-bridge flicker)
+								# (at y=0 it z-fought the ground where it laps the coast -- the GG-bridge flicker)
 const PARK_Y: float = 0.10      # park fills sit a hair above the ground fill so they read over it (was disjoint cells)
 
 @export var grid_n: int = 13     # (kept for compat; the layout is arterial-driven now)
@@ -48,8 +48,8 @@ var far_lands: Array = []        # large model-free landmasses the bridges run t
 var parks: Array[Rect2] = []     # Golden Gate Park, the Presidio, the Panhandle, Twin Peaks, ...
 var road_lines: Array = []       # street centrelines [a, b] -- cars ride these; truck deploy snaps to them
 var _no_build_lines: Array = []  # NON-grid road centrelines (perimeter loop + park borders + bridge spurs)
-                                 # that buildings must clear -- the block grid already sets them back from
-                                 # the GRID streets, but not from these, so shells used to sit on them
+								 # that buildings must clear -- the block grid already sets them back from
+								 # the GRID streets, but not from these, so shells used to sit on them
 var ring_poly: PackedVector2Array = PackedVector2Array()   # the coastal RING road path (inset land_poly); city fits inside it
 var land: Rect2 = Rect2()        # polygon bounding box, for ambient population scatter
 var poly_lo: Vector2 = Vector2.ZERO
@@ -927,8 +927,7 @@ func _lay_geography() -> void:
 	# shape; the other, larger parks are unchanged.
 	parks = [
 		Rect2(155, 552, 430, 105),   # Golden Gate Park -- the long E-W green, west-centre (RECTANGLE, standalone)
-		Rect2(220, 210, 175, 130),   # the Presidio -- NW, pulled INLAND (north edge z210) so it sits behind the coastal city, NOT under the GG bridge. Enlarging it to the coast put its long N-S border road right by the deck, which read as the bridge extending over the park. Now the bridge lands on the coastal GRID and the park is separate, inland.
-		Rect2(180, 297, 76, 76),     # Lincoln Park / Lands End -- NW coast
+		Rect2(220, 210, 175, 130),   # the Presidio -- NW, pulled INLAND (north edge z210) so it sits behind the coastal city, NOT under the GG bridge. The bridge lands on the coastal GRID; the park is separate, inland. (Lincoln Park -- the small square that used to hang off this one's SW -- was removed per the user.)
 		Rect2(642, 715, 45, 45),     # Dolores Park -- the Mission
 		Rect2(727, 892, 100, 100),   # McLaren Park -- SE
 		Rect2(435, 690, 110, 110),   # Twin Peaks / Mount Sutro -- the central hills
@@ -938,11 +937,11 @@ func _lay_geography() -> void:
 	# Oakland (never reached). The walkable decks (nav / gauntlet / escape) are the axis-aligned Rect2s
 	# below; the dogleg past Treasure Island is a VISUAL deck only. WIN zones sit on the reachable decks.
 	bridges = [
-		Rect2(290, -450, 34, 600),   # Golden Gate: Marin (~z-405) -> SHORELINE (z=150). Deck centre x=307 sits BETWEEN grid streets (176/268/360) so no N-S street is collinear with it -- that alignment (deck on the x=268 street) was making the street continue the deck's line into the city, which read as the bridge extending inland. Narrow -- the GLB rides here.
-		Rect2(950, 456, 340, 30),    # Bay Bridge, east: SF coast (~x940) -> Treasure Island (~x1290). Narrow -- the GLB rides here.
+		Rect2(345, -608, 34, 763),   # Golden Gate: Marin (z-608) -> the SHORELINE (z=155). Length set so the peninsula end LANDS ON THE COAST (land starts ~z145 here) -- a deck ending over open water can't be walked onto, which also breaks the win-zone escape. x/Marin end are the user's placement; only the length was corrected to reach land.
+		Rect2(950, 460, 340, 30),    # Bay Bridge, east: SF coast (~x940) -> Treasure Island (~x1290). Narrow -- the GLB rides here.
 	]
 	escapes = [
-		Rect2(290, -120, 34, 46),    # Marin end -- win zone on the GG deck (x follows the deck: 290)
+		Rect2(345, -120, 34, 46),    # Marin end -- win zone on the GG deck (x follows the deck: 345)
 		Rect2(1246, 456, 44, 30),    # Treasure Island end -- win zone on the Bay deck (narrowed to the deck)
 	]
 	# Large, MODEL-FREE landmasses (NOT in land_poly -> nothing spawns or walks there; pure backdrop).
