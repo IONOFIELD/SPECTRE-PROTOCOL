@@ -172,7 +172,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] truce (after evac)   [V
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 162
+const BUILD_PUSHES: int = 163
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -1408,7 +1408,9 @@ func _deploy_sanitation() -> void:
 	if _sani_deployed or sim == null:
 		return
 	_sani_deployed = true
-	sim.san_speed = WorldSim.STATS[&"cbt"][0] * 1.05   # in-game: only 5% faster than your troopers
+	sim.san_speed = WorldSim.STATS[&"cbt"][0] * 1.30   # AGGRESSIVE hunt: ~30% over a rifleman (8.6 m/s) so the
+	# pack visibly runs teams down instead of trailing them. Still under the scout's 10.6, so a fast element can
+	# kite/break for a bridge -- that's the counterplay. (Was 1.05 = barely faster = it never closed = felt passive.)
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
 	rng.randomize()
 	# The wipe force BOILS OUT OF A BIO LAB -- the containment breach made flesh. Spawn point is a random
@@ -3632,6 +3634,9 @@ func _resolve_loot(bidx: int) -> void:
 	_loot_count += 1
 	_score += LOOT_PTS
 	var b: Dictionary = city.buildings[bidx]
+	var bcn: Node = b.get("beacon")                  # switch this building's rooftop loot beacon OFF -- it's been checked
+	if bcn != null:
+		bcn.visible = false
 	var c: Vector2 = Vector2(b["x"] + b["w"] * 0.5, b["z"] + b["d"] * 0.5)
 	var unit: int = _nearest_player_unit(c, 120.0)   # who breached (nearest of your team)
 	match _loot_class(bidx):

@@ -1206,6 +1206,9 @@ func _building(rng: RandomNumberGenerator, x: float, z: float, w: float, d: floa
 		beacon.material_override = ThermalLib.get_material("loot_beacon", _snap_res)
 		beacon.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		add_child(beacon)
+		# Keep this beacon on its building record so looting can switch THIS one off (the "loot_beacon"
+		# material is shared/cached, so we hide the NODE, not the material -- editing the mat blanks them all).
+		buildings[buildings.size() - 1]["beacon"] = beacon
 
 
 ## A building's mass: the ground box (== the collision footprint), a cool parapet lip round the roof,
