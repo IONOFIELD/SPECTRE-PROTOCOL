@@ -67,7 +67,8 @@ function Draw-Spaced($text, $sizePx, $brush, $centreY, $tracking, $wordGap) {
 
 Draw-Spaced "SPECTRE PROTOCOL" 52 $brushBright 276 10 30
 Draw-Spaced "AC-130 GUNSHIP THERMAL ISR" 19 $brushDim 336 6 18
-Draw-Spaced $version 19 $brushDim 372 7 14
+# version: bottom-centre, on the line of the bottom corner brackets (y = H - m = 538)
+Draw-Spaced $version 18 $brushDim ($H - $m) 7 14
 
 $bmp.Save($out, [System.Drawing.Imaging.ImageFormat]::Png)
 $g.Dispose(); $bmp.Dispose()
