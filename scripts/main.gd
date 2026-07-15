@@ -115,7 +115,9 @@ var _menu_ping_age: float = 999.0        # seconds since the last scanner ping (
 var _menu_ping_next: float = 1.2         # seconds until the next ping (irregular)
 var _menu_resetting: bool = false        # a fade-out / respawn / fade-in cycle is running
 const MENU_PING_SHOW: float = 5.0        # a ping's markers live this long, then fade for the next
-const MENU_RAY_MAX: int = 48             # cap the contacts a ping paints, so the fan stays legible
+var _menu_isr_t: float = 0.0             # menu ISR-dive clock: every MENU_ISR_PERIOD, zoom onto the Sanitation pack
+const MENU_ISR_PERIOD: float = 30.0      # how often the menu dives to watch the wipe force directly
+const MENU_ISR_DUR: float = 8.0          # the dive window: ease in -> hold on the pack -> ease back to wide
 var _sfx_scan: AudioStream               # the sonar-like ping -- MENU scanner backdrop + menu-select blips only now
 const FOG_SIGHT: float = 100.0           # a unit passively sees CIVILIANS this close (hostiles read on the ISR always)
 const FOG_SIGHT_SNP: float = 150.0       # the sniper's optic reaches further -- a scout's eyes
@@ -172,7 +174,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] truce (after evac)   [V
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 163
+const BUILD_PUSHES: int = 164
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -2307,12 +2309,23 @@ const SEL_COL: Color = Color(0.85, 1.00, 0.85, 0.95)   # bright selection overla
 func _update_menu(delta: float) -> void:
 	if sim == null:
 		return
-	# top-down look over the whole map for the menu backdrop (always slowly turning)
-	cam_el = 1.45
-	cam_dist = 1600.0
-	if city != null:
-		cam_tx = city.land.get_center().x
-		cam_tz = city.land.get_center().y
+	# Wide top-down sweep over the whole map -- but every MENU_ISR_PERIOD, DIVE to the Sanitation pack for a
+	# close ISR look (ease in -> hold on them as they roam + sanitize -> ease back out to the wide view).
+	_menu_isr_t += delta
+	var wide: Vector2 = city.land.get_center() if city != null else Vector2(cam_tx, cam_tz)
+	var san: Vector2 = _menu_san_centroid()
+	var blend: float = 0.0
+	if is_finite(san.x) and not _menu_resetting:
+		var ph: float = fmod(_menu_isr_t, MENU_ISR_PERIOD)
+		var w0: float = MENU_ISR_PERIOD - MENU_ISR_DUR
+		if ph >= w0:
+			var u: float = (ph - w0) / MENU_ISR_DUR                        # 0..1 across the dive window
+			blend = smoothstep(0.0, 0.22, u) - smoothstep(0.78, 1.0, u)    # ease in -> hold -> ease out
+	var tgt: Vector2 = san if is_finite(san.x) else wide
+	cam_tx = lerpf(cam_tx, lerpf(wide.x, tgt.x, blend), minf(1.0, delta * 4.0))   # smooth pan + follow the pack
+	cam_tz = lerpf(cam_tz, lerpf(wide.y, tgt.y, blend), minf(1.0, delta * 4.0))
+	cam_dist = lerpf(1600.0, 360.0, blend)                                # wide sweep -> close ISR on the pack
+	cam_el = lerpf(1.45, 0.76, blend)                                     # top-down -> oblique gunship look
 	_menu_ping_age += delta
 	if _menu_ping_age >= _menu_ping_next:
 		_menu_ping_age = 0.0
@@ -2330,6 +2343,19 @@ func _menu_prey_left() -> int:
 		if sim.alive[i] and sim.team[i] != WorldSim.SANITATION:
 			n += 1
 	return n
+
+
+## The Sanitation pack's centre of mass (the ISR-dive look-at). Vector2(INF,INF) if none are alive.
+func _menu_san_centroid() -> Vector2:
+	if sim == null:
+		return Vector2(INF, INF)
+	var c: Vector2 = Vector2.ZERO
+	var n: int = 0
+	for i in sim.count():
+		if sim.alive[i] and sim.team[i] == WorldSim.SANITATION:
+			c += sim.pos[i]
+			n += 1
+	return c / float(n) if n > 0 else Vector2(INF, INF)
 
 
 ## The Sanitation force is all that's left: fade the feed to black, respawn a fresh city
@@ -2355,42 +2381,25 @@ func _menu_reset_cycle() -> void:
 func _draw_menu_scan() -> void:
 	if sim == null or _menu_title == null:
 		return
-	# ALWAYS mark the Sanitation force in red so you can watch them roam + sanitize the map.
-	for i in sim.count():
-		if sim.alive[i] and sim.team[i] == WorldSim.SANITATION:
-			var sw: Vector3 = Vector3(sim.pos[i].x, 0.9, sim.pos[i].y)
-			if not cam.is_position_behind(sw):
-				_corner_box(_screen_point(sw), 6.0, TAG_ENEMY)
-	var t: float = _menu_ping_age
-	if t >= MENU_PING_SHOW:
-		return
 	var origin: Vector2 = _menu_title.get_global_rect().get_center()
-	var reach: float = clampf(t / 0.5, 0.0, 1.0)                       # rays lance out over 0.5 s
-	var fade: float = 1.0 if t < 1.0 else clampf(1.0 - (t - 1.0) / (MENU_PING_SHOW - 1.0), 0.0, 1.0)
-	var strobe: float = 1.0
-	if t < 0.6:
-		strobe = 0.3 + 0.7 * (0.5 + 0.5 * sin(t * 47.0))              # irregular flicker as it fires
-	var a: float = fade * strobe
-	if a <= 0.01:
-		return
-	var green: Color = Color(0.32, 0.80, 0.44, a)
-	var ray: Color = Color(0.32, 0.80, 0.44, a * 0.45)
-	var drawn: int = 0
+	# The scan is PERSISTENT: a ray from the title to EVERY living zombie on the map, always connected, so
+	# you watch the Sanitation force erase the horde contact by contact. The ping beat just brightens the fan.
+	var t: float = _menu_ping_age
+	var pulse: float = clampf(1.0 - t / MENU_PING_SHOW, 0.0, 1.0)          # 1 right after a ping -> 0 by the gap
+	var flick: float = (0.55 + 0.45 * sin(t * 47.0)) if t < 0.6 else 1.0   # firing shimmer on the beat
+	var a: float = (0.26 + 0.5 * pulse) * flick                            # dim persistent -> bright on the ping
+	var ray: Color = Color(0.32, 0.80, 0.44, a * 0.55)
 	for i in sim.count():
-		if drawn >= MENU_RAY_MAX:
-			break
 		if not sim.alive[i]:
 			continue
 		var w: Vector3 = Vector3(sim.pos[i].x, 0.9, sim.pos[i].y)
 		if cam.is_position_behind(w):
 			continue
 		var tp: Vector2 = _screen_point(w)
-		sel_layer.draw_line(origin, origin.lerp(tp, reach), ray, 1.0)
-		if reach >= 1.0:
-			# the Sanitation force keeps its red brackets on every ping; the rest green
-			var bcol: Color = TAG_ENEMY if sim.team[i] == WorldSim.SANITATION else green
-			_corner_box(tp, 5.0, Color(bcol.r, bcol.g, bcol.b, a))
-		drawn += 1
+		if sim.team[i] == WorldSim.SANITATION:
+			_corner_box(tp, 6.0, TAG_ENEMY)                # the hunters: a red bracket, no ray
+		elif sim.team[i] == WorldSim.INFECTED:
+			sel_layer.draw_line(origin, tp, ray, 1.0)      # every zombie: a live scan ray from the title
 
 
 func _draw_selection() -> void:
