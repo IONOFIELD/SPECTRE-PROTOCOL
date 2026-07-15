@@ -588,20 +588,21 @@ func _lay_park_roads() -> void:
 			var mid: Vector2 = (corners[i] + corners[(i + 1) % 4]) * 0.5
 			var sdir: Vector2 = (corners[(i + 1) % 4] - corners[i]).normalized()
 			laid[i] = _in_ring(mid) and not (_near_ring(mid, ROAD_W + 6.0) and _ring_parallel(mid, sdir, ROAD_W + 6.0))
-		# PASS 2 -- lay each kept side. Where an end meets a SKIPPED (coast) side, EXTEND it out to the
-		# perimeter loop so the park perimeter ties INTO the coast road instead of dead-ending a lane short
-		# of it -- that short dead-end at a coast corner was the stub. Laid-to-laid corners just meet (disc
-		# cap below, no overshoot -> no nub).
+		# PASS 2 -- lay each kept side, corner to corner, as one clean segment. Coast-facing sides are just
+		# skipped (the perimeter loop is that edge); the kept sides END at the park corners and do NOT reach
+		# out toward the coast -- those little reach-out pieces in the coast band were flagged for removal.
 		for i in 4:
 			if not laid[i]:
 				continue
 			var a: Vector2 = corners[i]
 			var b: Vector2 = corners[(i + 1) % 4]
 			var dir: Vector2 = (b - a).normalized()
+			# Where an end meets a SKIPPED (coast) side, pull it BACK off the coast so the edge doesn't run
+			# a stub out into the coast band beside the perimeter loop -- those coast-band stubs were flagged.
 			if not laid[(i + 3) % 4]:
-				a = _reach_ring(a, -dir, ROAD_W + 4.0)
+				a = _pull_off_ring(a, dir, 55.0)
 			if not laid[(i + 1) % 4]:
-				b = _reach_ring(b, dir, ROAD_W + 4.0)
+				b = _pull_off_ring(b, -dir, 55.0)
 			road_lines.append([a, b])
 			_no_build_lines.append([a, b])
 			var steps: int = maxi(1, int(ceil(a.distance_to(b) / 16.0)))
@@ -616,18 +617,19 @@ func _lay_park_roads() -> void:
 				_road_disc(corners[i], ROAD_W * 0.5, cap_y)
 
 
-## March from p along dir up to max_ext metres, returning the furthest point still on land (in the ring).
-## Used to run a coast-facing park edge OUT until it meets the perimeter loop, so the park perimeter ties
-## into the coast road cleanly instead of dead-ending a lane short of it (the corner stub).
-func _reach_ring(p: Vector2, dir: Vector2, max_ext: float) -> Vector2:
-	var best: Vector2 = p
-	var steps: int = 6
+## Pull a park-edge END back toward the park (along `dir`) until it clears the coastal ring, so a coast-
+## facing edge stops at the block line instead of running a stub out into the band beside the perimeter
+## loop. Returns p unchanged if it's already clear; caps the pull at max_pull.
+func _pull_off_ring(p: Vector2, dir: Vector2, max_pull: float) -> Vector2:
+	var clear_d: float = 48.0                          # pull the end back until it is this far off the coast
+	if not _near_ring(p, clear_d):
+		return p
+	var steps: int = 12
 	for k in range(1, steps + 1):
-		var q: Vector2 = p + dir * (max_ext * float(k) / float(steps))
-		if not _in_ring(q):
-			break
-		best = q
-	return best
+		var q: Vector2 = p + dir * (max_pull * float(k) / float(steps))
+		if not _near_ring(q, clear_d):
+			return q
+	return p + dir * max_pull
 
 
 ## A short road spur from the grid onto each bridge deck's peninsula end, so a road actually LEADS onto
