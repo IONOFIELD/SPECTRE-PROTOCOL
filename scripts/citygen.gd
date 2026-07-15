@@ -607,7 +607,9 @@ func _lay_bridge_spurs() -> void:
 		var inland: Vector2
 		if horizontal:                                   # Bay: E-W, peninsula end at min-x (west)
 			endp = Vector2(deck.position.x, deck.position.y + deck.size.y * 0.5)
-			inland = endp + Vector2(-80.0, 0.0)
+			inland = endp + Vector2(-40.0, 0.0)          # SHORT stub: just enough to meet the easternmost grid street.
+			# Was 80 m, which drove a long tongue past that street deep into a block -- the tail the user flagged
+			# as the spur "extending from the bridge itself". 40 m lands it on the grid and stops.
 		else:                                            # GG: N-S, peninsula end at max-z (south) -- a SHORT
 			# spur into the coastal CITY grid. The Presidio sits inland now, so this never touches a park.
 			endp = Vector2(deck.position.x + deck.size.x * 0.5, deck.position.y + deck.size.y)
