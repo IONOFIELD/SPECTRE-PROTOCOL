@@ -172,7 +172,7 @@ const HELP_TEXT: String = "[LMB] pick   [RMB] move   [P] truce (after evac)   [V
 const HUD_COL: Color = Color(0.30, 0.82, 0.36, 0.95)   # deep radiation green -- saturated, high contrast
 const HUD_DIM: Color = Color(0.30, 0.82, 0.36, 0.45)
 # Build version: v0.19 (the prototype) + one v0.01 per push. Bump BUILD_PUSHES by 1 each push.
-const BUILD_PUSHES: int = 156
+const BUILD_PUSHES: int = 157
 const HUD_RED: Color = Color(1.00, 0.34, 0.28, 0.95)   # threat / alert
 # target-tag palette (AC-130): yellow vehicles, green friendlies, red hostiles
 const TAG_FRIEND: Color = Color(0.36, 0.76, 0.56, 0.95)
@@ -2187,11 +2187,11 @@ func _bridge_oblique() -> void:
 	sensor_mat.set_shader_parameter("fpn_amt", 0.0)
 	sensor_mat.set_shader_parameter("vignette", 0.0)
 	sensor_mat.set_shader_parameter("dither", false)
-	var target: Vector3 = Vector3(362.0, 5.0, 55.0)           # the GG landing, southern portion (deck end z-8 <-> coast z~145)
+	var target: Vector3 = Vector3(308.0, 5.0, 275.0)          # the Presidio park centre
 	cam.near = 5.0
 	cam.far = 3000.0
-	cam.fov = 54.0
-	cam.position = Vector3(362.0, 250.0, 430.0)              # DUE SOUTH, elevated, looking N: coast near/bottom, deck end far/top
+	cam.fov = 55.0
+	cam.position = Vector3(255.0, 330.0, 585.0)              # SSW + elevated, looking N/NE (N up, matches the user's framing)
 	cam.look_at(target, Vector3.UP)
 	if int(frame_n) == 150:
 		_grab_map(OS.get_environment("SPECTRE_BRIDGE") + "/gg_oblique.png")

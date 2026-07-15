@@ -315,11 +315,8 @@ func _round_all_junctions(sxs: Array, szs: Array) -> void:
 			var p: Vector2 = Vector2(sx, sz)
 			if _in_ring(p) and not _in_park(p):
 				_road_disc(p, r, y)
-	# each park loop's four corners (the hard L bends around the greens), where a park road runs
-	for pk in parks:
-		for corner in [pk.position, Vector2(pk.end.x, pk.position.y), pk.end, Vector2(pk.position.x, pk.end.y)]:
-			if _in_ring(corner) and not _near_ring(corner, ROAD_W + 6.0):
-				_road_disc(corner, r, y)
+	# (park-loop corners are rounded in _lay_park_roads now -- only where two laid sides meet, so a
+	# skipped coast-side edge never leaves an isolated corner disc floating as a stub.)
 
 
 ## A filled asphalt disc (radius r, height y) -- a rounded junction cap. Up-facing triangle fan.
@@ -578,22 +575,59 @@ func _lay_perimeter_loop() -> void:
 ## that routes around it instead of dead-ending at the edge. Rides a touch above the grid at junctions.
 func _lay_park_roads() -> void:
 	var half: float = ROAD_W * 0.5
+	var cap_y: float = ROAD_Y + STREET_DY + 0.14           # disc caps ride above every road layer
 	for pk in parks:
 		var corners: Array = [pk.position, Vector2(pk.end.x, pk.position.y), pk.end, Vector2(pk.position.x, pk.end.y)]
+		# PASS 1 -- decide which of the 4 sides get a road, per SIDE (not per sub-segment: sub-segment
+		# skipping let the coast ring's CURVE clip just the corner pieces, leaving the broken hooks the
+		# user flagged). Skip a side ONLY when it runs ALONGSIDE the coast (mid hugs the ring AND parallels
+		# it) -- there the perimeter LOOP already IS that edge, and a second lane on top is the coast
+		# "doubling" the user disliked. Every other side is laid as one clean, unbroken road.
+		var laid: Array = [false, false, false, false]
 		for i in 4:
+			var mid: Vector2 = (corners[i] + corners[(i + 1) % 4]) * 0.5
+			var sdir: Vector2 = (corners[(i + 1) % 4] - corners[i]).normalized()
+			laid[i] = _in_ring(mid) and not (_near_ring(mid, ROAD_W + 6.0) and _ring_parallel(mid, sdir, ROAD_W + 6.0))
+		# PASS 2 -- lay each kept side. Where an end meets a SKIPPED (coast) side, EXTEND it out to the
+		# perimeter loop so the park perimeter ties INTO the coast road instead of dead-ending a lane short
+		# of it -- that short dead-end at a coast corner was the stub. Laid-to-laid corners just meet (disc
+		# cap below, no overshoot -> no nub).
+		for i in 4:
+			if not laid[i]:
+				continue
 			var a: Vector2 = corners[i]
 			var b: Vector2 = corners[(i + 1) % 4]
+			var dir: Vector2 = (b - a).normalized()
+			if not laid[(i + 3) % 4]:
+				a = _reach_ring(a, -dir, ROAD_W + 4.0)
+			if not laid[(i + 1) % 4]:
+				b = _reach_ring(b, dir, ROAD_W + 4.0)
 			road_lines.append([a, b])
 			_no_build_lines.append([a, b])
 			var steps: int = maxi(1, int(ceil(a.distance_to(b) / 16.0)))
 			for k in steps:
 				var p0: Vector2 = a.lerp(b, float(k) / float(steps))
 				var p1: Vector2 = a.lerp(b, float(k + 1) / float(steps))
-				var mid: Vector2 = (p0 + p1) * 0.5
-				# skip where the park border hugs the coast -- the perimeter LOOP already runs there, so
-				# laying the park road on top of it was the "GGP meeting the beach" overlap the user saw.
-				if _in_ring(mid) and not _near_ring(mid, ROAD_W + 6.0):
-					_road_seg(p0, p1, half, STREET_DY + 0.11)
+				_road_seg(p0, p1, half, STREET_DY + 0.11)
+		# Round a corner ONLY where two laid sides actually meet (a real L-bend) -- never an isolated disc
+		# floating off a skipped coast side, which is what read as a little round road stub.
+		for i in 4:
+			if laid[i] and laid[(i + 3) % 4]:
+				_road_disc(corners[i], ROAD_W * 0.5, cap_y)
+
+
+## March from p along dir up to max_ext metres, returning the furthest point still on land (in the ring).
+## Used to run a coast-facing park edge OUT until it meets the perimeter loop, so the park perimeter ties
+## into the coast road cleanly instead of dead-ending a lane short of it (the corner stub).
+func _reach_ring(p: Vector2, dir: Vector2, max_ext: float) -> Vector2:
+	var best: Vector2 = p
+	var steps: int = 6
+	for k in range(1, steps + 1):
+		var q: Vector2 = p + dir * (max_ext * float(k) / float(steps))
+		if not _in_ring(q):
+			break
+		best = q
+	return best
 
 
 ## A short road spur from the grid onto each bridge deck's peninsula end, so a road actually LEADS onto
@@ -939,7 +973,7 @@ func _lay_geography() -> void:
 	# Oakland (never reached). The walkable decks (nav / gauntlet / escape) are the axis-aligned Rect2s
 	# below; the dogleg past Treasure Island is a VISUAL deck only. WIN zones sit on the reachable decks.
 	bridges = [
-		Rect2(345, -608, 34, 600),   # Golden Gate -- USER-PLACED, do not restretch. Marin (z-608) -> deck end at z=-8, held OFFSHORE on purpose so it does NOT run across the coastal streets/park. Never extend the length to "reach land" -- that jams the south end back through the shoreline blocks.
+		Rect2(347, -608, 34, 600),   # Golden Gate -- USER-PLACED, do not restretch. Marin (z-608) -> deck end at z=-8, held OFFSHORE on purpose so it does NOT run across the coastal streets/park. Never extend the length to "reach land" -- that jams the south end back through the shoreline blocks.
 		Rect2(950, 460, 340, 30),    # Bay Bridge, east: SF coast (~x940) -> Treasure Island (~x1290). Narrow -- the GLB rides here.
 	]
 	escapes = [
